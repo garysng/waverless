@@ -133,6 +133,14 @@ install() {
     log_info "Waiting for Redis..."
     kubectl wait --for=condition=ready pod -l app=waverless-redis -n "${NAMESPACE}" --timeout=120s || true
 
+    # Deploy MySQL
+    log_info "Deploying MySQL..."
+    apply_yaml "k8s/mysql-deployment.yaml"
+
+    # Wait for MySQL to be ready
+    log_info "Waiting for MySQL..."
+    kubectl wait --for=condition=ready pod -l app=waverless-mysql -n "${NAMESPACE}" --timeout=180s || true
+
     # Deploy Waverless
     log_info "Deploying Waverless..."
     apply_yaml "k8s/waverless-deployment.yaml"
