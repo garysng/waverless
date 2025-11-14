@@ -1,0 +1,276 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: waverless-mysql
+  namespace: wavespeed
+  labels:
+    app: waverless-mysql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: waverless-mysql
+  template:
+    metadata:
+      labels:
+        app: waverless-mysql
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        ports:
+        - containerPort: 3306
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: "waverless_root_pass"
+        - name: MYSQL_DATABASE
+          value: "waverless"
+        - name: MYSQL_USER
+          value: "waverless"
+        - name: MYSQL_PASSWORD
+          value: "waverless_pass"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        volumeMounts:
+        - name: mysql-data
+          mountPath: /var/lib/mysql
+        - name: mysql-init
+          mountPath: /docker-entrypoint-initdb.d
+        livenessProbe:
+          exec:
+            command:
+            - mysqladmin
+            - ping
+            - -h
+            - localhost
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - mysqladmin
+            - ping
+            - -h
+            - localhost
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+      volumes:
+      - name: mysql-data
+        emptyDir: {}
+      - name: mysql-init
+        configMap:
+          name: waverless-mysql-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: waverless-mysql-svc
+  namespace: wavespeed
+  labels:
+    app: waverless-mysql
+spec:
+  selector:
+    app: waverless-mysql
+  ports:
+  - name: mysql
+    port: 3306
+    targetPort: 3306
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: waverless-mysql-init
+  namespace: wavespeed
+data:
+  init.sql: |
+    -- Waverless Database Initialization Script
+
+    USE waverless;
+
+    -- Tasks table
+    CREATE TABLE IF NOT EXISTS tasks (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        task_id VARCHAR(255) NOT NULL UNIQUE,
+        endpoint VARCHAR(255) NOT NULL,
+        input JSON,
+        output JSON,
+        status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+        worker_id VARCHAR(255),
+        error_message TEXT,
+        error_type VARCHAR(100),
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+        started_at DATETIME(3),
+        completed_at DATETIME(3),
+        extend JSON COMMENT 'Task execution history summary',
+        INDEX idx_endpoint_status (endpoint, status),
+        INDEX idx_worker_id (worker_id),
+        INDEX idx_status (status),
+        INDEX idx_created_at (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    -- Endpoints table
+    CREATE TABLE IF NOT EXISTS endpoints (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        endpoint VARCHAR(255) NOT NULL UNIQUE,
+        spec_name VARCHAR(255) NOT NULL,
+        image VARCHAR(500) NOT NULL,
+        replicas INT NOT NULL DEFAULT 0,
+        min_replicas INT NOT NULL DEFAULT 0,
+        max_replicas INT NOT NULL DEFAULT 10,
+        metadata JSON,
+        status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+        INDEX idx_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    -- Autoscaler config table
+    CREATE TABLE IF NOT EXISTS autoscaler_config (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        endpoint VARCHAR(255) NOT NULL UNIQUE,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        target_queue_length INT NOT NULL DEFAULT 5,
+        scale_up_threshold INT NOT NULL DEFAULT 10,
+        scale_down_threshold INT NOT NULL DEFAULT 2,
+        cooldown_seconds INT NOT NULL DEFAULT 60,
+        priority INT NOT NULL DEFAULT 5,
+        last_task_completed_at DATETIME(3),
+        last_scale_time DATETIME(3),
+        first_pending_task_time DATETIME(3),
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+        INDEX idx_enabled (enabled)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    -- Scaling events table
+    CREATE TABLE IF NOT EXISTS scaling_events (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        event_id VARCHAR(255) NOT NULL UNIQUE,
+        endpoint VARCHAR(255) NOT NULL,
+        event_type VARCHAR(50) NOT NULL,
+        from_replicas INT NOT NULL,
+        to_replicas INT NOT NULL,
+        reason VARCHAR(500),
+        metadata JSON,
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        INDEX idx_endpoint_created (endpoint, created_at),
+        INDEX idx_event_type (event_type)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    -- Task events table
+    CREATE TABLE IF NOT EXISTS task_events (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        event_id VARCHAR(255) NOT NULL UNIQUE,
+        task_id VARCHAR(255) NOT NULL,
+        endpoint VARCHAR(255) NOT NULL,
+        event_type VARCHAR(50) NOT NULL,
+        event_time DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        worker_id VARCHAR(255),
+        worker_pod_name VARCHAR(255),
+        from_status VARCHAR(50),
+        to_status VARCHAR(50),
+        error_message TEXT,
+        error_type VARCHAR(100),
+        retry_count INT DEFAULT 0,
+        metadata JSON,
+        INDEX idx_task_id_event_time (task_id, event_time),
+        INDEX idx_endpoint_event_time (endpoint, event_time),
+        INDEX idx_worker_id (worker_id),
+        INDEX idx_event_type (event_type),
+        INDEX idx_event_time (event_time)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    -- Task statistics table
+    CREATE TABLE IF NOT EXISTS task_statistics (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        scope_type VARCHAR(50) NOT NULL,
+        scope_value VARCHAR(255) DEFAULT NULL,
+        pending_count INT DEFAULT 0,
+        in_progress_count INT DEFAULT 0,
+        completed_count INT DEFAULT 0,
+        failed_count INT DEFAULT 0,
+        cancelled_count INT DEFAULT 0,
+        total_count INT DEFAULT 0,
+        updated_at DATETIME(3) NOT NULL,
+        UNIQUE KEY uk_scope (scope_type, scope_value),
+        INDEX idx_updated_at (updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    -- GPU usage records table
+    CREATE TABLE IF NOT EXISTS gpu_usage_records (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        task_id VARCHAR(255) NOT NULL,
+        endpoint VARCHAR(255) NOT NULL,
+        worker_id VARCHAR(255),
+        spec_name VARCHAR(255),
+        gpu_count INT NOT NULL,
+        gpu_type VARCHAR(100),
+        gpu_memory_gb INT,
+        started_at DATETIME(3) NOT NULL,
+        completed_at DATETIME(3) NOT NULL,
+        duration_seconds INT NOT NULL,
+        gpu_hours DECIMAL(10, 4) NOT NULL,
+        status VARCHAR(50),
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        INDEX idx_endpoint_completed (endpoint, completed_at),
+        INDEX idx_spec_name (spec_name),
+        INDEX idx_completed_at (completed_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    -- GPU usage statistics minute table
+    CREATE TABLE IF NOT EXISTS gpu_usage_statistics_minute (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        time_bucket DATETIME NOT NULL,
+        scope_type VARCHAR(50) NOT NULL,
+        scope_value VARCHAR(255),
+        total_tasks INT DEFAULT 0,
+        gpu_hours DECIMAL(10, 4) DEFAULT 0,
+        avg_gpu_count DECIMAL(10, 2) DEFAULT 0,
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        UNIQUE KEY uk_time_scope (time_bucket, scope_type, scope_value),
+        INDEX idx_time_bucket (time_bucket)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    -- GPU usage statistics hourly table
+    CREATE TABLE IF NOT EXISTS gpu_usage_statistics_hourly (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        time_bucket DATETIME NOT NULL,
+        scope_type VARCHAR(50) NOT NULL,
+        scope_value VARCHAR(255),
+        total_tasks INT DEFAULT 0,
+        gpu_hours DECIMAL(10, 4) DEFAULT 0,
+        avg_gpu_count DECIMAL(10, 2) DEFAULT 0,
+        peak_minute_gpu_hours DECIMAL(10, 4) DEFAULT 0,
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        UNIQUE KEY uk_time_scope (time_bucket, scope_type, scope_value),
+        INDEX idx_time_bucket (time_bucket)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    -- GPU usage statistics daily table
+    CREATE TABLE IF NOT EXISTS gpu_usage_statistics_daily (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        time_bucket DATE NOT NULL,
+        scope_type VARCHAR(50) NOT NULL,
+        scope_value VARCHAR(255),
+        total_tasks INT DEFAULT 0,
+        gpu_hours DECIMAL(10, 4) DEFAULT 0,
+        avg_gpu_count DECIMAL(10, 2) DEFAULT 0,
+        peak_hour_gpu_hours DECIMAL(10, 4) DEFAULT 0,
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        UNIQUE KEY uk_time_scope (time_bucket, scope_type, scope_value),
+        INDEX idx_time_bucket (time_bucket)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    -- Insert initial global statistics
+    INSERT INTO task_statistics (scope_type, scope_value, updated_at)
+    VALUES ('global', NULL, NOW())
+    ON DUPLICATE KEY UPDATE updated_at = NOW();
