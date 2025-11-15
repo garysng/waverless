@@ -1,5 +1,5 @@
 <div align="center">
-  <a href="https://wavespeed.ai">
+  <a href="https://wavespeed.ai" target="_blank" rel="noopener noreferrer">
     <img src="docs/images/wavespeed-dark-logo.png" alt="Wavespeed.ai Logo" width="200"/>
   </a>
 
@@ -10,7 +10,8 @@
   </p>
 
   <p>
-    <a href="https://wavespeed.ai">🌐 Visit Wavespeed.ai</a> •
+    <a href="https://wavespeed.ai"
+    target="_blank" rel="noopener noreferrer">🌐 Visit Wavespeed.ai</a> •
     <a href="docs/USER_GUIDE.md">📖 Documentation</a> •
     <a href="https://github.com/wavespeedai/waverless/issues">💬 Issues</a>
   </p>
