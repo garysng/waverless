@@ -1,6 +1,6 @@
 <div align="center">
   <a href="https://wavespeed.ai">
-    <img src="docs/images/wavespeed-logo.png" alt="Wavespeed.ai Logo" width="200"/>
+    <img src="docs/images/wavespeed-dark-logo.png" alt="Wavespeed.ai Logo" width="200"/>
   </a>
 
   <h1>Waverless</h1>
