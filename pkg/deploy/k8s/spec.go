@@ -1,10 +1,14 @@
 package k8s
 
 import (
+	"context"
 	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
+
+	"waverless/pkg/interfaces"
+	"waverless/pkg/logger"
 )
 
 // ResourceSpec 资源规格定义
@@ -22,8 +26,8 @@ type SpecResources struct {
 	Memory            string `yaml:"memory" json:"memory"`
 	GPU               string `yaml:"gpu,omitempty" json:"gpu,omitempty"`
 	GpuType           string `yaml:"gpuType,omitempty" json:"gpuType,omitempty"`
-	Disk              string `yaml:"disk" json:"disk"`
 	EphemeralStorage  string `yaml:"ephemeralStorage" json:"ephemeralStorage"`
+	ShmSize           string `yaml:"shmSize,omitempty" json:"shmSize,omitempty"` // Shared memory size
 }
 
 // PlatformConfig 平台特定配置
@@ -47,9 +51,17 @@ type SpecsConfig struct {
 	Specs []ResourceSpec `yaml:"specs"`
 }
 
+// SpecRepositoryInterface defines the interface for spec repository
+type SpecRepositoryInterface interface {
+	GetSpec(ctx context.Context, name string) (*interfaces.SpecInfo, error)
+	ListSpecs(ctx context.Context) ([]*interfaces.SpecInfo, error)
+	ListSpecsByCategory(ctx context.Context, category string) ([]*interfaces.SpecInfo, error)
+}
+
 // SpecManager 规格管理器
 type SpecManager struct {
-	specs map[string]*ResourceSpec
+	specs       map[string]*ResourceSpec
+	specRepo    SpecRepositoryInterface // Database repository (optional, takes priority if available)
 }
 
 // NewSpecManager 创建规格管理器
@@ -75,8 +87,24 @@ func NewSpecManager(configPath string) (*SpecManager, error) {
 	}, nil
 }
 
-// GetSpec 获取规格
+// SetSpecRepository sets the spec repository for database access
+func (m *SpecManager) SetSpecRepository(repo SpecRepositoryInterface) {
+	m.specRepo = repo
+}
+
+// GetSpec 获取规格 (优先从数据库读取，如果数据库不可用则从内存读取)
 func (m *SpecManager) GetSpec(name string) (*ResourceSpec, error) {
+	// Try database first if repository is available
+	if m.specRepo != nil {
+		dbSpec, err := m.specRepo.GetSpec(context.Background(), name)
+		if err == nil && dbSpec != nil {
+			// Convert database spec to k8s ResourceSpec
+			return m.convertSpecInfoToResourceSpec(dbSpec), nil
+		}
+		logger.WarnCtx(context.Background(), "Failed to get spec from database, falling back to YAML: %v", err)
+	}
+
+	// Fallback to YAML-based specs
 	spec, exists := m.specs[name]
 	if !exists {
 		return nil, fmt.Errorf("spec not found: %s", name)
@@ -84,8 +112,22 @@ func (m *SpecManager) GetSpec(name string) (*ResourceSpec, error) {
 	return spec, nil
 }
 
-// ListSpecs 列出所有规格
+// ListSpecs 列出所有规格 (优先从数据库读取)
 func (m *SpecManager) ListSpecs() []*ResourceSpec {
+	// Try database first if repository is available
+	if m.specRepo != nil {
+		dbSpecs, err := m.specRepo.ListSpecs(context.Background())
+		if err == nil && len(dbSpecs) > 0 {
+			result := make([]*ResourceSpec, len(dbSpecs))
+			for i, spec := range dbSpecs {
+				result[i] = m.convertSpecInfoToResourceSpec(spec)
+			}
+			return result
+		}
+		logger.WarnCtx(context.Background(), "Failed to list specs from database, falling back to YAML: %v", err)
+	}
+
+	// Fallback to YAML-based specs
 	result := make([]*ResourceSpec, 0, len(m.specs))
 	for _, spec := range m.specs {
 		result = append(result, spec)
@@ -93,8 +135,22 @@ func (m *SpecManager) ListSpecs() []*ResourceSpec {
 	return result
 }
 
-// ListSpecsByCategory 按类别列出规格
+// ListSpecsByCategory 按类别列出规格 (优先从数据库读取)
 func (m *SpecManager) ListSpecsByCategory(category string) []*ResourceSpec {
+	// Try database first if repository is available
+	if m.specRepo != nil {
+		dbSpecs, err := m.specRepo.ListSpecsByCategory(context.Background(), category)
+		if err == nil && len(dbSpecs) > 0 {
+			result := make([]*ResourceSpec, len(dbSpecs))
+			for i, spec := range dbSpecs {
+				result[i] = m.convertSpecInfoToResourceSpec(spec)
+			}
+			return result
+		}
+		logger.WarnCtx(context.Background(), "Failed to list specs from database, falling back to YAML: %v", err)
+	}
+
+	// Fallback to YAML-based specs
 	result := make([]*ResourceSpec, 0)
 	for _, spec := range m.specs {
 		if spec.Category == category {
@@ -114,4 +170,87 @@ func (s *ResourceSpec) GetPlatformConfig(platform string) PlatformConfig {
 		return config
 	}
 	return PlatformConfig{}
+}
+
+// convertSpecInfoToResourceSpec converts interfaces.SpecInfo to k8s.ResourceSpec
+func (m *SpecManager) convertSpecInfoToResourceSpec(specInfo *interfaces.SpecInfo) *ResourceSpec {
+	// Convert platforms from map[string]interface{} to map[string]PlatformConfig
+	platforms := make(map[string]PlatformConfig)
+	if specInfo.Platforms != nil {
+		for platformName, platformData := range specInfo.Platforms {
+			if platformMap, ok := platformData.(map[string]interface{}); ok {
+				platform := PlatformConfig{}
+
+				// Convert nodeSelector
+				if nodeSelector, ok := platformMap["nodeSelector"].(map[string]interface{}); ok {
+					platform.NodeSelector = make(map[string]string)
+					for k, v := range nodeSelector {
+						if str, ok := v.(string); ok {
+							platform.NodeSelector[k] = str
+						}
+					}
+				}
+
+				// Convert labels
+				if labels, ok := platformMap["labels"].(map[string]interface{}); ok {
+					platform.Labels = make(map[string]string)
+					for k, v := range labels {
+						if str, ok := v.(string); ok {
+							platform.Labels[k] = str
+						}
+					}
+				}
+
+				// Convert annotations
+				if annotations, ok := platformMap["annotations"].(map[string]interface{}); ok {
+					platform.Annotations = make(map[string]string)
+					for k, v := range annotations {
+						if str, ok := v.(string); ok {
+							platform.Annotations[k] = str
+						}
+					}
+				}
+
+				// Convert tolerations
+				if tolerationsData, ok := platformMap["tolerations"].([]interface{}); ok {
+					platform.Tolerations = make([]Toleration, 0, len(tolerationsData))
+					for _, t := range tolerationsData {
+						if tolMap, ok := t.(map[string]interface{}); ok {
+							toleration := Toleration{}
+							if key, ok := tolMap["key"].(string); ok {
+								toleration.Key = key
+							}
+							if operator, ok := tolMap["operator"].(string); ok {
+								toleration.Operator = operator
+							}
+							if value, ok := tolMap["value"].(string); ok {
+								toleration.Value = value
+							}
+							if effect, ok := tolMap["effect"].(string); ok {
+								toleration.Effect = effect
+							}
+							platform.Tolerations = append(platform.Tolerations, toleration)
+						}
+					}
+				}
+
+				platforms[platformName] = platform
+			}
+		}
+	}
+
+	return &ResourceSpec{
+		Name:        specInfo.Name,
+		DisplayName: specInfo.DisplayName,
+		Category:    specInfo.Category,
+		Resources: SpecResources{
+			CPU:              specInfo.Resources.CPU,
+			Memory:           specInfo.Resources.Memory,
+			GPU:              specInfo.Resources.GPU,
+			GpuType:          specInfo.Resources.GPUType,
+			EphemeralStorage: specInfo.Resources.EphemeralStorage,
+			ShmSize:          specInfo.Resources.ShmSize,
+		},
+		Platforms: platforms,
+	}
 }
