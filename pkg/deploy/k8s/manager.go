@@ -245,11 +245,15 @@ func NewManager(namespace, platformName, configDir string) (*Manager, error) {
 // DeployAppRequest deployment request (simplified version)
 type DeployAppRequest struct {
 	// Core variables (user input)
-	Endpoint    string `json:"endpoint" binding:"required"` // Endpoint name
-	SpecName    string `json:"specName" binding:"required"` // Spec name
-	Image       string `json:"image" binding:"required"`    // Image
-	Replicas    int    `json:"replicas,omitempty"`          // Replica count (default 1)
-	TaskTimeout int    `json:"taskTimeout,omitempty"`       // Task execution timeout in seconds (0 = use global default)
+	Endpoint     string                     `json:"endpoint" binding:"required"` // Endpoint name
+	SpecName     string                     `json:"specName" binding:"required"` // Spec name
+	Image        string                     `json:"image" binding:"required"`    // Image
+	Replicas     int                        `json:"replicas,omitempty"`          // Replica count (default 1)
+	TaskTimeout  int                        `json:"taskTimeout,omitempty"`       // Task execution timeout in seconds (0 = use global default)
+	VolumeMounts []interfaces.VolumeMount `json:"volumeMounts,omitempty"`      // PVC volume mounts
+	ShmSize      string                     `json:"shmSize,omitempty"`           // Shared memory size (e.g., "1Gi", "512Mi")
+	EnablePtrace bool                       `json:"enablePtrace,omitempty"`      // Enable SYS_PTRACE capability for debugging (only for fixed resource pools)
+	Env          map[string]string          `json:"env,omitempty"`               // Custom environment variables
 
 	// Auto-scaling configuration (optional)
 	MinReplicas       int   `json:"minReplicas,omitempty"`       // Minimum replica count (default 0)
@@ -380,6 +384,42 @@ func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) 
 		taskTimeout = 300 // Default 5 minutes
 	}
 	ctx.TerminationGracePeriodSeconds = int64(taskTimeout + 30)
+
+	// Process volume mounts
+	if len(req.VolumeMounts) > 0 {
+		ctx.Volumes = make([]VolumeInfo, len(req.VolumeMounts))
+		ctx.VolumeMounts = make([]VolumeMountInfo, len(req.VolumeMounts))
+		for i, vm := range req.VolumeMounts {
+			// Use pvc name as volume name (replace special chars to make it k8s-safe)
+			volumeName := fmt.Sprintf("pvc-%d", i)
+			ctx.Volumes[i] = VolumeInfo{
+				Name:    volumeName,
+				PVCName: vm.PVCName,
+			}
+			ctx.VolumeMounts[i] = VolumeMountInfo{
+				Name:      volumeName,
+				MountPath: vm.MountPath,
+			}
+		}
+	}
+
+	// Shared memory size
+	// Priority: request.ShmSize > spec.ShmSize
+	if req.ShmSize != "" {
+		ctx.ShmSize = req.ShmSize
+	} else if spec.Resources.ShmSize != "" {
+		ctx.ShmSize = spec.Resources.ShmSize
+	}
+
+	// Enable ptrace capability (only for fixed resource pools)
+	ctx.EnablePtrace = req.EnablePtrace
+
+	// Environment variables
+	if req.Env != nil {
+		ctx.Env = req.Env
+	} else {
+		ctx.Env = make(map[string]string)
+	}
 
 	return ctx, nil
 }
@@ -526,18 +566,20 @@ func (m *Manager) PreviewYAML(req *DeployAppRequest) (string, error) {
 
 // AppInfo application information
 type AppInfo struct {
-	Name              string            `json:"name"`
-	Namespace         string            `json:"namespace"`
-	Type              string            `json:"type"` // Pod or Deployment
-	Status            string            `json:"status"`
-	Replicas          int32             `json:"replicas,omitempty"`          // Deployment desired replica count
-	ReadyReplicas     int32             `json:"readyReplicas,omitempty"`     // Deployment ready replica count
-	AvailableReplicas int32             `json:"availableReplicas,omitempty"` // Deployment available replica count
-	PodIP             string            `json:"podIp,omitempty"`
-	HostIP            string            `json:"hostIp,omitempty"`
-	Image             string            `json:"image"`
-	Labels            map[string]string `json:"labels"`
-	CreatedAt         string            `json:"createdAt"`
+	Name              string                     `json:"name"`
+	Namespace         string                     `json:"namespace"`
+	Type              string                     `json:"type"` // Pod or Deployment
+	Status            string                     `json:"status"`
+	Replicas          int32                      `json:"replicas,omitempty"`          // Deployment desired replica count
+	ReadyReplicas     int32                      `json:"readyReplicas,omitempty"`     // Deployment ready replica count
+	AvailableReplicas int32                      `json:"availableReplicas,omitempty"` // Deployment available replica count
+	PodIP             string                     `json:"podIp,omitempty"`
+	HostIP            string                     `json:"hostIp,omitempty"`
+	Image             string                     `json:"image"`
+	Labels            map[string]string          `json:"labels"`
+	CreatedAt         string                     `json:"createdAt"`
+	ShmSize           string                     `json:"shmSize,omitempty"`      // Shared memory size from deployment volumes
+	VolumeMounts      []interfaces.VolumeMount `json:"volumeMounts,omitempty"` // PVC volume mounts from deployment
 }
 
 // GetApp gets application details
@@ -625,6 +667,52 @@ func (m *Manager) ListApps(ctx context.Context) ([]*AppInfo, error) {
 	if !usePodCache {
 		logger.DebugCtx(ctx, "pod informer not ready, using live API")
 		result = append(result, m.listPodsViaAPI(ctx)...)
+	}
+
+	return result, nil
+}
+
+// ListPVCs lists all PersistentVolumeClaims in the namespace
+func (m *Manager) ListPVCs(ctx context.Context) ([]*interfaces.PVCInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	pvcList, err := m.client.CoreV1().PersistentVolumeClaims(m.namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list PVCs: %w", err)
+	}
+
+	result := make([]*interfaces.PVCInfo, 0, len(pvcList.Items))
+	for _, pvc := range pvcList.Items {
+		// Get capacity
+		capacity := ""
+		if storage, ok := pvc.Status.Capacity[corev1.ResourceStorage]; ok {
+			capacity = storage.String()
+		}
+
+		// Get access modes
+		accessModes := ""
+		if len(pvc.Status.AccessModes) > 0 {
+			accessModes = string(pvc.Status.AccessModes[0])
+		}
+
+		// Get storage class
+		storageClass := ""
+		if pvc.Spec.StorageClassName != nil {
+			storageClass = *pvc.Spec.StorageClassName
+		}
+
+		result = append(result, &interfaces.PVCInfo{
+			Name:         pvc.Name,
+			Namespace:    pvc.Namespace,
+			Status:       string(pvc.Status.Phase),
+			Volume:       pvc.Spec.VolumeName,
+			Capacity:     capacity,
+			AccessModes:  accessModes,
+			StorageClass: storageClass,
+			CreatedAt:    pvc.CreationTimestamp.Format(time.RFC3339),
+		})
 	}
 
 	return result, nil
@@ -1026,6 +1114,41 @@ func deploymentToAppInfo(deployment *appsv1.Deployment) *AppInfo {
 		info.Status = "Pending"
 	}
 
+	// Extract shmSize and volumeMounts from deployment
+	if len(deployment.Spec.Template.Spec.Volumes) > 0 {
+		// Extract ShmSize from dshm volume
+		for _, vol := range deployment.Spec.Template.Spec.Volumes {
+			if vol.Name == "dshm" && vol.EmptyDir != nil && vol.EmptyDir.Medium == corev1.StorageMediumMemory {
+				if vol.EmptyDir.SizeLimit != nil {
+					info.ShmSize = vol.EmptyDir.SizeLimit.String()
+				}
+				break
+			}
+		}
+
+		// Extract PVC volume mounts
+		volumeMounts := make([]interfaces.VolumeMount, 0)
+		for _, vol := range deployment.Spec.Template.Spec.Volumes {
+			if vol.PersistentVolumeClaim != nil {
+				// Find corresponding mount path from container volumeMounts
+				if len(deployment.Spec.Template.Spec.Containers) > 0 {
+					for _, mount := range deployment.Spec.Template.Spec.Containers[0].VolumeMounts {
+						if mount.Name == vol.Name {
+							volumeMounts = append(volumeMounts, interfaces.VolumeMount{
+								PVCName:   vol.PersistentVolumeClaim.ClaimName,
+								MountPath: mount.MountPath,
+							})
+							break
+						}
+					}
+				}
+			}
+		}
+		if len(volumeMounts) > 0 {
+			info.VolumeMounts = volumeMounts
+		}
+	}
+
 	return info
 }
 
@@ -1144,7 +1267,7 @@ func (m *Manager) GetSpec(name string) (*ResourceSpec, error) {
 }
 
 // UpdateDeployment updates deployment
-func (m *Manager) UpdateDeployment(ctx context.Context, endpoint string, specName string, image string, replicas *int) error {
+func (m *Manager) UpdateDeployment(ctx context.Context, endpoint string, specName string, image string, replicas *int, volumeMounts *[]interfaces.VolumeMount, shmSize *string, enablePtrace *bool, env *map[string]string) error {
 	deployments := m.client.AppsV1().Deployments(m.namespace)
 
 	// Get existing deployment
@@ -1303,6 +1426,207 @@ func (m *Manager) UpdateDeployment(ctx context.Context, endpoint string, specNam
 	if replicas != nil {
 		r := int32(*replicas)
 		deployment.Spec.Replicas = &r
+	}
+
+	// Update volume mounts if provided
+	if volumeMounts != nil && len(deployment.Spec.Template.Spec.Containers) > 0 {
+		// Build volumes and volumeMounts
+		var volumes []corev1.Volume
+		var mounts []corev1.VolumeMount
+
+		// Keep non-PVC volumes (e.g., dshm for shared memory)
+		for _, vol := range deployment.Spec.Template.Spec.Volumes {
+			if vol.PersistentVolumeClaim == nil {
+				volumes = append(volumes, vol)
+			}
+		}
+
+		// Keep non-PVC volume mounts
+		for _, mount := range deployment.Spec.Template.Spec.Containers[0].VolumeMounts {
+			// Check if this mount corresponds to a PVC volume
+			isPVC := false
+			for _, vol := range deployment.Spec.Template.Spec.Volumes {
+				if vol.Name == mount.Name && vol.PersistentVolumeClaim != nil {
+					isPVC = true
+					break
+				}
+			}
+			if !isPVC {
+				mounts = append(mounts, mount)
+			}
+		}
+
+		// Add new PVC volumes and mounts
+		for i, vm := range *volumeMounts {
+			volumeName := fmt.Sprintf("pvc-%d", i)
+			volumes = append(volumes, corev1.Volume{
+				Name: volumeName,
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: vm.PVCName,
+					},
+				},
+			})
+			mounts = append(mounts, corev1.VolumeMount{
+				Name:      volumeName,
+				MountPath: vm.MountPath,
+			})
+		}
+
+		deployment.Spec.Template.Spec.Volumes = volumes
+		deployment.Spec.Template.Spec.Containers[0].VolumeMounts = mounts
+	}
+
+	// Update shared memory size if provided
+	if shmSize != nil && len(deployment.Spec.Template.Spec.Containers) > 0 {
+		// Find or create dshm volume
+		dshmVolumeIndex := -1
+		for i, vol := range deployment.Spec.Template.Spec.Volumes {
+			if vol.Name == "dshm" {
+				dshmVolumeIndex = i
+				break
+			}
+		}
+
+		if *shmSize != "" {
+			// Add or update dshm volume
+			shmSizeQuantity := resource.MustParse(*shmSize)
+			dshmVolume := corev1.Volume{
+				Name: "dshm",
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{
+						Medium:    corev1.StorageMediumMemory,
+						SizeLimit: &shmSizeQuantity,
+					},
+				},
+			}
+
+			if dshmVolumeIndex >= 0 {
+				// Update existing volume
+				deployment.Spec.Template.Spec.Volumes[dshmVolumeIndex] = dshmVolume
+			} else {
+				// Add new volume
+				deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, dshmVolume)
+			}
+
+			// Ensure volumeMount exists for /dev/shm
+			dshmMountExists := false
+			for i, mount := range deployment.Spec.Template.Spec.Containers[0].VolumeMounts {
+				if mount.Name == "dshm" {
+					deployment.Spec.Template.Spec.Containers[0].VolumeMounts[i].MountPath = "/dev/shm"
+					dshmMountExists = true
+					break
+				}
+			}
+			if !dshmMountExists {
+				deployment.Spec.Template.Spec.Containers[0].VolumeMounts = append(
+					deployment.Spec.Template.Spec.Containers[0].VolumeMounts,
+					corev1.VolumeMount{
+						Name:      "dshm",
+						MountPath: "/dev/shm",
+					},
+				)
+			}
+		} else {
+			// Remove dshm volume if shmSize is empty
+			if dshmVolumeIndex >= 0 {
+				deployment.Spec.Template.Spec.Volumes = append(
+					deployment.Spec.Template.Spec.Volumes[:dshmVolumeIndex],
+					deployment.Spec.Template.Spec.Volumes[dshmVolumeIndex+1:]...,
+				)
+			}
+
+			// Remove dshm volume mount
+			for i, mount := range deployment.Spec.Template.Spec.Containers[0].VolumeMounts {
+				if mount.Name == "dshm" {
+					deployment.Spec.Template.Spec.Containers[0].VolumeMounts = append(
+						deployment.Spec.Template.Spec.Containers[0].VolumeMounts[:i],
+						deployment.Spec.Template.Spec.Containers[0].VolumeMounts[i+1:]...,
+					)
+					break
+				}
+			}
+		}
+	}
+
+	// Update ptrace capability if provided
+	if enablePtrace != nil && len(deployment.Spec.Template.Spec.Containers) > 0 {
+		container := &deployment.Spec.Template.Spec.Containers[0]
+
+		if *enablePtrace {
+			// Add SYS_PTRACE capability
+			if container.SecurityContext == nil {
+				container.SecurityContext = &corev1.SecurityContext{}
+			}
+			if container.SecurityContext.Capabilities == nil {
+				container.SecurityContext.Capabilities = &corev1.Capabilities{}
+			}
+
+			// Check if SYS_PTRACE already exists
+			hasptrace := false
+			for _, cap := range container.SecurityContext.Capabilities.Add {
+				if cap == "SYS_PTRACE" {
+					hasptrace = true
+					break
+				}
+			}
+			if !hasptrace {
+				container.SecurityContext.Capabilities.Add = append(
+					container.SecurityContext.Capabilities.Add,
+					"SYS_PTRACE",
+				)
+			}
+		} else {
+			// Remove SYS_PTRACE capability
+			if container.SecurityContext != nil && container.SecurityContext.Capabilities != nil {
+				var newCaps []corev1.Capability
+				for _, cap := range container.SecurityContext.Capabilities.Add {
+					if cap != "SYS_PTRACE" {
+						newCaps = append(newCaps, cap)
+					}
+				}
+				container.SecurityContext.Capabilities.Add = newCaps
+
+				// Clean up empty SecurityContext if no capabilities left
+				if len(container.SecurityContext.Capabilities.Add) == 0 && len(container.SecurityContext.Capabilities.Drop) == 0 {
+					container.SecurityContext.Capabilities = nil
+				}
+				if container.SecurityContext.Capabilities == nil &&
+					container.SecurityContext.RunAsUser == nil &&
+					container.SecurityContext.RunAsGroup == nil &&
+					container.SecurityContext.Privileged == nil {
+					container.SecurityContext = nil
+				}
+			}
+		}
+	}
+
+	// Update environment variables if provided
+	if env != nil && len(deployment.Spec.Template.Spec.Containers) > 0 {
+		container := &deployment.Spec.Template.Spec.Containers[0]
+
+		// Separate system env vars (RUNPOD_*) from custom env vars
+		var systemEnvVars []corev1.EnvVar
+		for _, envVar := range container.Env {
+			// Keep system env vars (those starting with RUNPOD_)
+			if len(envVar.Name) >= 7 && envVar.Name[:7] == "RUNPOD_" {
+				systemEnvVars = append(systemEnvVars, envVar)
+			}
+		}
+
+		// Start with system env vars
+		newEnvVars := systemEnvVars
+
+		// Add custom env vars from the provided map
+		for key, value := range *env {
+			newEnvVars = append(newEnvVars, corev1.EnvVar{
+				Name:  key,
+				Value: value,
+			})
+		}
+
+		// Update container env vars
+		container.Env = newEnvVars
 	}
 
 	// Update deployment
@@ -1558,4 +1882,25 @@ func (m *Manager) GetRestConfig() *rest.Config {
 // GetNamespace returns the namespace this manager operates in
 func (m *Manager) GetNamespace() string {
 	return m.namespace
+}
+
+// GetDefaultEnvFromConfigMap reads the wavespeed-config ConfigMap and returns its data as environment variables
+// Returns nil if the ConfigMap doesn't exist (not an error, just no defaults)
+func (m *Manager) GetDefaultEnvFromConfigMap(ctx context.Context) (map[string]string, error) {
+	configMaps := m.client.CoreV1().ConfigMaps(m.namespace)
+
+	cm, err := configMaps.Get(ctx, "wavespeed-config", metav1.GetOptions{})
+	if err != nil {
+		// ConfigMap doesn't exist - return empty map, not an error
+		if strings.Contains(err.Error(), "not found") {
+			return make(map[string]string), nil
+		}
+		return nil, fmt.Errorf("failed to get wavespeed-config ConfigMap: %v", err)
+	}
+
+	if cm.Data == nil {
+		return make(map[string]string), nil
+	}
+
+	return cm.Data, nil
 }

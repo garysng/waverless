@@ -78,11 +78,6 @@ spec:
           value: {{.Endpoint}}
         - name: RUNPOD_PING_INTERVAL
           value: "10000"
-        - name: RUNPOD_AI_API_KEY
-          valueFrom:
-            configMapKeyRef:
-              name: wavespeed-config
-              key: RUNPOD_AI_API_KEY
         - name: RUNPOD_WEBHOOK_GET_JOB
           value: http://waverless-svc/v2/{{.Endpoint}}/job-take/$ID?
         - name: RUNPOD_WEBHOOK_PING
@@ -99,9 +94,27 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
-        envFrom:
-        - configMapRef:
-            name: wavespeed-config
+{{- range $key, $value := .Env}}
+        - name: {{$key}}
+          value: "{{$value}}"
+{{- end}}
+{{- if or .VolumeMounts .ShmSize}}
+        volumeMounts:
+{{- if .ShmSize}}
+        - name: dshm
+          mountPath: /dev/shm
+{{- end}}
+{{- range .VolumeMounts}}
+        - name: {{.Name}}
+          mountPath: {{.MountPath}}
+{{- end}}
+{{- end}}
+{{- if .EnablePtrace}}
+        securityContext:
+          capabilities:
+            add:
+              - SYS_PTRACE
+{{- end}}
         resources:
           requests:
             memory: "{{.MemoryRequest}}"
@@ -131,6 +144,20 @@ spec:
           protocol: TCP
       imagePullSecrets:
       - name: dockerhub-secret
+{{- if or .Volumes .ShmSize}}
+      volumes:
+{{- if .ShmSize}}
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: {{.ShmSize}}
+{{- end}}
+{{- range .Volumes}}
+      - name: {{.Name}}
+        persistentVolumeClaim:
+          claimName: {{.PVCName}}
+{{- end}}
+{{- end}}
       restartPolicy: Always
       # Termination grace period: Maximum time K8s waits before sending SIGKILL
       # Formula: Expected task timeout + 30s buffer

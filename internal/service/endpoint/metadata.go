@@ -256,31 +256,33 @@ func (m *MetadataManager) saveAutoscalerConfig(ctx context.Context, meta *interf
 
 func toMySQLEndpoint(endpoint *interfaces.EndpointMetadata) *mysql.Endpoint {
 	return &mysql.Endpoint{
-		Endpoint:    endpoint.Name,
-		SpecName:    endpoint.SpecName,
-		Image:       endpoint.Image,
-		Replicas:    endpoint.Replicas,
-		TaskTimeout: endpoint.TaskTimeout,
-		Env:         mysql.StringMapToJSONMap(endpoint.Env),
-		Labels:      mysql.StringMapToJSONMap(endpoint.Labels),
-		Status:      endpoint.Status,
-		CreatedAt:   endpoint.CreatedAt,
-		UpdatedAt:   endpoint.UpdatedAt,
+		Endpoint:     endpoint.Name,
+		SpecName:     endpoint.SpecName,
+		Image:        endpoint.Image,
+		Replicas:     endpoint.Replicas,
+		TaskTimeout:  endpoint.TaskTimeout,
+		EnablePtrace: endpoint.EnablePtrace,
+		Env:          mysql.StringMapToJSONMap(endpoint.Env),
+		Labels:       mysql.StringMapToJSONMap(endpoint.Labels),
+		Status:       endpoint.Status,
+		CreatedAt:    endpoint.CreatedAt,
+		UpdatedAt:    endpoint.UpdatedAt,
 	}
 }
 
 func fromMySQLEndpoint(endpoint *mysql.Endpoint) *interfaces.EndpointMetadata {
 	return &interfaces.EndpointMetadata{
-		Name:        endpoint.Endpoint,
-		SpecName:    endpoint.SpecName,
-		Image:       endpoint.Image,
-		Replicas:    endpoint.Replicas,
-		TaskTimeout: endpoint.TaskTimeout,
-		Env:         mysql.JSONMapToStringMap(endpoint.Env),
-		Labels:      mysql.JSONMapToStringMap(endpoint.Labels),
-		Status:      endpoint.Status,
-		CreatedAt:   endpoint.CreatedAt,
-		UpdatedAt:   endpoint.UpdatedAt,
+		Name:         endpoint.Endpoint,
+		SpecName:     endpoint.SpecName,
+		Image:        endpoint.Image,
+		Replicas:     endpoint.Replicas,
+		TaskTimeout:  endpoint.TaskTimeout,
+		EnablePtrace: endpoint.EnablePtrace,
+		Env:          mysql.JSONMapToStringMap(endpoint.Env),
+		Labels:       mysql.JSONMapToStringMap(endpoint.Labels),
+		Status:       endpoint.Status,
+		CreatedAt:    endpoint.CreatedAt,
+		UpdatedAt:    endpoint.UpdatedAt,
 	}
 }
 

@@ -36,10 +36,14 @@ func NewK8sDeploymentProvider(cfg *config.Config) (interfaces.DeploymentProvider
 func (p *K8sDeploymentProvider) Deploy(ctx context.Context, req *interfaces.DeployRequest) (*interfaces.DeployResponse, error) {
 	// Convert to DeployAppRequest
 	k8sReq := &DeployAppRequest{
-		Endpoint: req.Endpoint,
-		SpecName: req.SpecName,
-		Image:    req.Image,
-		Replicas: req.Replicas,
+		Endpoint:     req.Endpoint,
+		SpecName:     req.SpecName,
+		Image:        req.Image,
+		Replicas:     req.Replicas,
+		TaskTimeout:  req.TaskTimeout,
+		Env:          req.Env,
+		VolumeMounts: req.VolumeMounts,
+		ShmSize:      req.ShmSize,
 	}
 
 	if err := p.manager.DeployApp(ctx, k8sReq); err != nil {
@@ -72,6 +76,8 @@ func (p *K8sDeploymentProvider) GetApp(ctx context.Context, endpoint string) (*i
 		Image:             app.Image,
 		Labels:            app.Labels,
 		CreatedAt:         app.CreatedAt,
+		ShmSize:           app.ShmSize,
+		VolumeMounts:      app.VolumeMounts,
 	}, nil
 }
 
@@ -96,6 +102,8 @@ func (p *K8sDeploymentProvider) ListApps(ctx context.Context) ([]*interfaces.App
 			Image:             app.Image,
 			Labels:            app.Labels,
 			CreatedAt:         app.CreatedAt,
+			ShmSize:           app.ShmSize,
+			VolumeMounts:      app.VolumeMounts,
 		})
 	}
 
@@ -157,7 +165,6 @@ func (p *K8sDeploymentProvider) ListSpecs(ctx context.Context) ([]*interfaces.Sp
 				GPUType:          spec.Resources.GpuType,
 				CPU:              spec.Resources.CPU,
 				Memory:           spec.Resources.Memory,
-				Disk:             spec.Resources.Disk,
 				EphemeralStorage: spec.Resources.EphemeralStorage,
 			},
 			Platforms: platforms,
@@ -189,7 +196,6 @@ func (p *K8sDeploymentProvider) GetSpec(ctx context.Context, specName string) (*
 			GPUType:          spec.Resources.GpuType,
 			CPU:              spec.Resources.CPU,
 			Memory:           spec.Resources.Memory,
-			Disk:             spec.Resources.Disk,
 			EphemeralStorage: spec.Resources.EphemeralStorage,
 		},
 		Platforms: platforms,
@@ -211,7 +217,7 @@ func (p *K8sDeploymentProvider) PreviewDeploymentYAML(ctx context.Context, req *
 
 // UpdateDeployment 更新部署
 func (p *K8sDeploymentProvider) UpdateDeployment(ctx context.Context, req *interfaces.UpdateDeploymentRequest) (*interfaces.DeployResponse, error) {
-	if err := p.manager.UpdateDeployment(ctx, req.Endpoint, req.SpecName, req.Image, req.Replicas); err != nil {
+	if err := p.manager.UpdateDeployment(ctx, req.Endpoint, req.SpecName, req.Image, req.Replicas, req.VolumeMounts, req.ShmSize, req.EnablePtrace, req.Env); err != nil {
 		return nil, err
 	}
 
@@ -225,6 +231,11 @@ func (p *K8sDeploymentProvider) UpdateDeployment(ctx context.Context, req *inter
 // GetSpecManager 获取规格管理器（用于自动扩缩容）
 func (p *K8sDeploymentProvider) GetSpecManager() *SpecManager {
 	return p.manager.specManager
+}
+
+// GetDefaultEnv 获取默认环境变量（从 wavespeed-config ConfigMap 读取）
+func (p *K8sDeploymentProvider) GetDefaultEnv(ctx context.Context) (map[string]string, error) {
+	return p.manager.GetDefaultEnvFromConfigMap(ctx)
 }
 
 // IsPodDraining 检查Pod是否正在排空
@@ -389,4 +400,12 @@ func (p *K8sDeploymentProvider) DescribePod(ctx context.Context, endpoint string
 		return nil, fmt.Errorf("k8s manager not initialized")
 	}
 	return p.manager.DescribePod(ctx, endpoint, podName)
+}
+
+// ListPVCs lists all PersistentVolumeClaims in the namespace
+func (p *K8sDeploymentProvider) ListPVCs(ctx context.Context) ([]*interfaces.PVCInfo, error) {
+	if p.manager == nil {
+		return nil, fmt.Errorf("k8s manager not initialized")
+	}
+	return p.manager.ListPVCs(ctx)
 }

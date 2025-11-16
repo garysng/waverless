@@ -15,10 +15,11 @@ type Router struct{
 	autoscalerHandler *handler.AutoScalerHandler
 	statisticsHandler *handler.StatisticsHandler
 	gpuUsageHandler   *handler.GPUUsageHandler
+	specHandler       *handler.SpecHandler
 }
 
 // NewRouter creates a new Router
-func NewRouter(taskHandler *handler.TaskHandler, workerHandler *handler.WorkerHandler, endpointHandler *handler.EndpointHandler, autoscalerHandler *handler.AutoScalerHandler, statisticsHandler *handler.StatisticsHandler, gpuUsageHandler *handler.GPUUsageHandler) *Router {
+func NewRouter(taskHandler *handler.TaskHandler, workerHandler *handler.WorkerHandler, endpointHandler *handler.EndpointHandler, autoscalerHandler *handler.AutoScalerHandler, statisticsHandler *handler.StatisticsHandler, gpuUsageHandler *handler.GPUUsageHandler, specHandler *handler.SpecHandler) *Router {
 	return &Router{
 		taskHandler:       taskHandler,
 		workerHandler:     workerHandler,
@@ -26,6 +27,7 @@ func NewRouter(taskHandler *handler.TaskHandler, workerHandler *handler.WorkerHa
 		autoscalerHandler: autoscalerHandler,
 		statisticsHandler: statisticsHandler,
 		gpuUsageHandler:   gpuUsageHandler,
+		specHandler:       specHandler,
 	}
 }
 
@@ -99,9 +101,30 @@ func (r *Router) Setup(engine *gin.Engine) {
 				tasks.GET("/:task_id/timeline", r.taskHandler.GetTaskTimeline)                  // Get timeline
 			}
 
-			// Spec related APIs
-			api.GET("/specs", r.endpointHandler.ListSpecs)
-			api.GET("/specs/:name", r.endpointHandler.GetSpec)
+
+			// Spec management APIs (CRUD, from database)
+			if r.specHandler != nil {
+				specs := api.Group("/specs")
+				{
+					specs.POST("", r.specHandler.CreateSpec)       // Create spec
+					specs.GET("", r.specHandler.ListSpecs)         // List specs
+					specs.GET("/:name", r.specHandler.GetSpec)     // Get spec
+					specs.PUT("/:name", r.specHandler.UpdateSpec)  // Update spec
+					specs.DELETE("/:name", r.specHandler.DeleteSpec) // Delete spec
+				}
+			}
+
+			// K8s resources APIs
+			k8s := api.Group("/k8s")
+			{
+				k8s.GET("/pvcs", r.endpointHandler.ListPVCs) // List PVCs
+			}
+
+			// Configuration APIs
+			config := api.Group("/config")
+			{
+				config.GET("/default-env", r.endpointHandler.GetDefaultEnv) // Get default environment variables from ConfigMap
+			}
 
 			// AutoScaler management
 			if r.autoscalerHandler != nil {

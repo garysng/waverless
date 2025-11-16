@@ -88,6 +88,12 @@ func (m *DeploymentManager) Update(ctx context.Context, req *interfaces.UpdateDe
 			if req.TaskTimeout != nil {
 				meta.TaskTimeout = *req.TaskTimeout
 			}
+			if req.EnablePtrace != nil {
+				meta.EnablePtrace = *req.EnablePtrace
+			}
+			if req.Env != nil {
+				meta.Env = *req.Env
+			}
 			if err := m.metadata.Save(ctx, meta); err != nil {
 				return resp, fmt.Errorf("deployment updated but failed to persist metadata: %w", err)
 			}

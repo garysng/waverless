@@ -76,3 +76,11 @@ func (p *DockerDeploymentProvider) GetPods(ctx context.Context, endpoint string)
 func (p *DockerDeploymentProvider) DescribePod(ctx context.Context, endpoint string, podName string) (*interfaces.PodDetail, error) {
 	return nil, p.unsupported("DescribePod")
 }
+
+func (p *DockerDeploymentProvider) ListPVCs(ctx context.Context) ([]*interfaces.PVCInfo, error) {
+	return nil, p.unsupported("ListPVCs")
+}
+
+func (p *DockerDeploymentProvider) GetDefaultEnv(ctx context.Context) (map[string]string, error) {
+	return nil, p.unsupported("GetDefaultEnv")
+}

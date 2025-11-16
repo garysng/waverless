@@ -53,6 +53,8 @@ import {
   GlobalOutlined,
   BranchesOutlined,
   UnorderedListOutlined,
+  DatabaseOutlined,
+  PlusOutlined,
 } from '@ant-design/icons';
 import { api } from '@/api/client';
 import type {
@@ -141,6 +143,7 @@ const AppsPage = () => {
   const queryClient = useQueryClient();
   const [selectedApp, setSelectedApp] = useState<string>('');
   const [updateModalVisible, setUpdateModalVisible] = useState(false);
+  const [selectedUpdateSpec, setSelectedUpdateSpec] = useState<string>(''); // Track selected spec in Update modal
   const [metadataModalVisible, setMetadataModalVisible] = useState(false);
   const [globalConfigModalVisible, setGlobalConfigModalVisible] = useState(false);
   const [detailsDrawerVisible, setDetailsDrawerVisible] = useState(false);
@@ -201,6 +204,15 @@ const AppsPage = () => {
     queryKey: ['specs'],
     queryFn: async () => {
       const response = await api.specs.list();
+      return response.data;
+    },
+  });
+
+  // Fetch PVCs
+  const { data: pvcs } = useQuery({
+    queryKey: ['pvcs'],
+    queryFn: async () => {
+      const response = await api.k8s.listPVCs();
       return response.data;
     },
   });
@@ -386,6 +398,31 @@ const AppsPage = () => {
     if (values.image) request.image = values.image;
     if (values.replicas !== undefined && values.replicas !== null) {
       request.replicas = values.replicas;
+    }
+    if (values.volumeMounts && values.volumeMounts.length > 0) {
+      request.volumeMounts = values.volumeMounts
+        .filter((vm: any) => vm && vm.pvcName && vm.mountPath)
+        .map((vm: any) => ({
+          pvcName: vm.pvcName,
+          mountPath: vm.mountPath,
+        }));
+    }
+    if (values.shmSize !== undefined) {
+      request.shmSize = values.shmSize;
+    }
+    if (values.enablePtrace !== undefined) {
+      request.enablePtrace = values.enablePtrace;
+    }
+    if (values.envVars && values.envVars.length > 0) {
+      const env: Record<string, string> = {};
+      values.envVars
+        .filter((item: any) => item && item.key && item.value)
+        .forEach((item: any) => {
+          env[item.key] = item.value;
+        });
+      if (Object.keys(env).length > 0) {
+        request.env = env;
+      }
     }
 
     updateMutation.mutate({ name: selectedApp, request });
@@ -666,13 +703,38 @@ const AppsPage = () => {
                 size="small"
                 type="text"
                 icon={<EditOutlined />}
-                onClick={(e) => {
+                onClick={async (e) => {
                   e.stopPropagation();
                   setSelectedApp(record.name);
+                  setSelectedUpdateSpec(record.specName || ''); // Set initial selected spec
+
+                  // Convert env object to array format for Form.List
+                  let envVars: Array<{ key: string; value: string }> = [];
+
+                  if (record.env && Object.keys(record.env).length > 0) {
+                    // Priority 1: Use env from endpoint table
+                    envVars = Object.entries(record.env).map(([key, value]) => ({ key, value }));
+                  } else {
+                    // Priority 2: Fetch default env from wavespeed-config ConfigMap
+                    try {
+                      const response = await api.config.getDefaultEnv();
+                      if (response.data && Object.keys(response.data).length > 0) {
+                        envVars = Object.entries(response.data).map(([key, value]) => ({ key, value }));
+                      }
+                    } catch (error) {
+                      console.error('Failed to fetch default env:', error);
+                      // Keep envVars as empty array if fetch fails
+                    }
+                  }
+
                   updateForm.setFieldsValue({
                     specName: record.specName || '',
                     image: record.image || '',
                     replicas: record.replicas || 1,
+                    shmSize: record.shmSize || '',
+                    volumeMounts: record.volumeMounts || [],
+                    enablePtrace: record.enablePtrace || false, // Read from backend
+                    envVars: envVars,
                   });
                   setUpdateModalVisible(true);
                 }}
@@ -1085,6 +1147,7 @@ const AppsPage = () => {
         onOk={() => updateForm.submit()}
         onCancel={() => {
           setUpdateModalVisible(false);
+          setSelectedUpdateSpec(''); // Clear selected spec
           updateForm.resetFields();
         }}
         confirmLoading={updateMutation.isPending}
@@ -1095,6 +1158,14 @@ const AppsPage = () => {
               placeholder="Select spec"
               allowClear
               showSearch
+              onChange={(value) => {
+                setSelectedUpdateSpec(value || '');
+                // Auto-fill shmSize from spec if available
+                const spec = specs?.find((s) => s.name === value);
+                if (spec?.resources?.shmSize) {
+                  updateForm.setFieldValue('shmSize', spec.resources.shmSize);
+                }
+              }}
               options={specs?.map((spec) => ({
                 label: `${spec.name} (${spec.category})`,
                 value: spec.name,
@@ -1107,6 +1178,167 @@ const AppsPage = () => {
           <Form.Item label="Replicas" name="replicas">
             <InputNumber min={0} max={100} style={{ width: '100%' }} />
           </Form.Item>
+
+          <Divider orientation="left">
+            <span>
+              <DatabaseOutlined /> Volume Mounts (Optional)
+            </span>
+          </Divider>
+          <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 16 }}>
+            Configure PVC volume mounts. Leave empty to keep existing mounts unchanged.
+          </Paragraph>
+
+          <Form.List name="volumeMounts">
+            {(fields, { add, remove }) => (
+              <>
+                {fields.map(({ key, name, ...restField }) => (
+                  <Card key={key} size="small" style={{ marginBottom: 12 }}>
+                    <Row gutter={12}>
+                      <Col span={11}>
+                        <Form.Item
+                          {...restField}
+                          name={[name, 'pvcName']}
+                          label="PVC Name"
+                          rules={[{ required: true, message: 'Select PVC' }]}
+                        >
+                          <Select placeholder="Select PVC" showSearch>
+                            {pvcs?.map((pvc) => (
+                              <Select.Option key={pvc.name} value={pvc.name}>
+                                <div>
+                                  <div>{pvc.name}</div>
+                                  <Text type="secondary" style={{ fontSize: 11 }}>
+                                    {pvc.capacity} | {pvc.status}
+                                  </Text>
+                                </div>
+                              </Select.Option>
+                            ))}
+                          </Select>
+                        </Form.Item>
+                      </Col>
+                      <Col span={11}>
+                        <Form.Item
+                          {...restField}
+                          name={[name, 'mountPath']}
+                          label="Mount Path"
+                          rules={[
+                            { required: true, message: 'Enter mount path' },
+                            { pattern: /^\/.*/, message: 'Must start with /' },
+                          ]}
+                        >
+                          <Input placeholder="/data" />
+                        </Form.Item>
+                      </Col>
+                      <Col span={2} style={{ display: 'flex', alignItems: 'center', paddingTop: 30 }}>
+                        <Button danger size="small" icon={<DeleteOutlined />} onClick={() => remove(name)} />
+                      </Col>
+                    </Row>
+                  </Card>
+                ))}
+                <Form.Item>
+                  <Button
+                    type="dashed"
+                    onClick={() => add()}
+                    block
+                    icon={<PlusOutlined />}
+                    size="small"
+                  >
+                    Add Volume Mount
+                  </Button>
+                </Form.Item>
+              </>
+            )}
+          </Form.List>
+
+          <Divider>
+            <DatabaseOutlined /> Shared Memory
+          </Divider>
+          <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 16 }}>
+            Configure shared memory size for /dev/shm. Leave empty to keep existing setting.
+          </Paragraph>
+
+          <Form.Item
+            name="shmSize"
+            label="Shared Memory Size"
+            tooltip="Size for /dev/shm (e.g., 1Gi, 512Mi). Empty to keep current, or specify new value. Auto-filled when spec changes."
+          >
+            <Input placeholder="e.g., 1Gi, 512Mi (auto-filled from spec)" />
+          </Form.Item>
+
+          {specs?.find((s) => s.name === selectedUpdateSpec)?.resourceType === 'fixed' && (
+            <>
+              <Divider>
+                <DatabaseOutlined /> Debugging (ptrace)
+              </Divider>
+              <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 16 }}>
+                Enable SYS_PTRACE capability for debugging tools (gdb, strace, etc.). Only available for fixed resource pools.
+              </Paragraph>
+
+              <Form.Item
+                name="enablePtrace"
+                label="Enable Debugging (ptrace)"
+                tooltip="Enable SYS_PTRACE capability for debugging. Only works for fixed resource pool specs."
+                valuePropName="checked"
+              >
+                <Switch checkedChildren="Enabled" unCheckedChildren="Disabled" />
+              </Form.Item>
+            </>
+          )}
+
+          <Divider>
+            <SettingOutlined /> Environment Variables
+          </Divider>
+          <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 16 }}>
+            Configure custom environment variables for your application. Leave empty to keep existing variables unchanged.
+          </Paragraph>
+
+          <Form.List name="envVars">
+            {(fields, { add, remove }) => (
+              <>
+                {fields.map((field) => (
+                  <Row gutter={16} key={field.key} style={{ marginBottom: 8 }}>
+                    <Col span={10}>
+                      <Form.Item
+                        {...field}
+                        name={[field.name, 'key']}
+                        rules={[{ required: true, message: 'Required' }]}
+                        style={{ marginBottom: 0 }}
+                      >
+                        <Input placeholder="KEY" />
+                      </Form.Item>
+                    </Col>
+                    <Col span={12}>
+                      <Form.Item
+                        {...field}
+                        name={[field.name, 'value']}
+                        rules={[{ required: true, message: 'Required' }]}
+                        style={{ marginBottom: 0 }}
+                      >
+                        <Input placeholder="value" />
+                      </Form.Item>
+                    </Col>
+                    <Col span={2}>
+                      <Button
+                        type="text"
+                        danger
+                        icon={<DeleteOutlined />}
+                        onClick={() => remove(field.name)}
+                      />
+                    </Col>
+                  </Row>
+                ))}
+                <Button
+                  type="dashed"
+                  onClick={() => add()}
+                  block
+                  icon={<PlusOutlined />}
+                  size="small"
+                  style={{ marginTop: 8 }}
+                >
+                  Add Environment Variable
+                </Button>
+              </>
+            )}
+          </Form.List>
         </Form>
       </Modal>
 
