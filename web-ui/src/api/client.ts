@@ -199,7 +199,6 @@ export const api = {
       cancelled: number;
       updated_at: string;
     }>(`/statistics/endpoints/${endpoint}`),
-    refresh: () => client.post<{ message: string }>('/statistics/refresh'),
   },
 
   // GPU Usage

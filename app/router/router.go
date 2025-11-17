@@ -162,7 +162,6 @@ func (r *Router) Setup(engine *gin.Engine) {
 					statistics.GET("/overview", r.statisticsHandler.GetOverview)                  // Global statistics
 					statistics.GET("/endpoints", r.statisticsHandler.GetTopEndpoints)             // Top endpoints by task volume
 					statistics.GET("/endpoints/:endpoint", r.statisticsHandler.GetEndpointStatistics) // Specific endpoint statistics
-					statistics.POST("/refresh", r.statisticsHandler.RefreshStatistics)            // Manual refresh
 				}
 			}
 

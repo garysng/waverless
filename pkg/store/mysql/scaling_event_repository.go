@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"gorm.io/gorm"
 )
 
 // ScalingEventRepository handles scaling event persistence in MySQL
@@ -21,19 +19,6 @@ func NewScalingEventRepository(ds *Datastore) *ScalingEventRepository {
 // Create creates a new scaling event
 func (r *ScalingEventRepository) Create(ctx context.Context, event *ScalingEvent) error {
 	return r.ds.DB(ctx).Create(event).Error
-}
-
-// Get retrieves a scaling event by ID
-func (r *ScalingEventRepository) Get(ctx context.Context, eventID string) (*ScalingEvent, error) {
-	var event ScalingEvent
-	err := r.ds.DB(ctx).Where("event_id = ?", eventID).First(&event).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get scaling event: %w", err)
-	}
-	return &event, nil
 }
 
 // ListByEndpoint retrieves scaling events for a specific endpoint
@@ -52,42 +37,6 @@ func (r *ScalingEventRepository) ListByEndpoint(ctx context.Context, endpoint st
 	err := query.Find(&events).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to list scaling events by endpoint: %w", err)
-	}
-	return events, nil
-}
-
-// ListByAction retrieves scaling events by action type
-func (r *ScalingEventRepository) ListByAction(ctx context.Context, action string, limit int) ([]*ScalingEvent, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-
-	var events []*ScalingEvent
-	err := r.ds.DB(ctx).
-		Where("action = ?", action).
-		Order("timestamp DESC").
-		Limit(limit).
-		Find(&events).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to list scaling events by action: %w", err)
-	}
-	return events, nil
-}
-
-// ListByEndpointAndAction retrieves scaling events by endpoint and action
-func (r *ScalingEventRepository) ListByEndpointAndAction(ctx context.Context, endpoint, action string, limit int) ([]*ScalingEvent, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-
-	var events []*ScalingEvent
-	err := r.ds.DB(ctx).
-		Where("endpoint = ? AND action = ?", endpoint, action).
-		Order("timestamp DESC").
-		Limit(limit).
-		Find(&events).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to list scaling events: %w", err)
 	}
 	return events, nil
 }

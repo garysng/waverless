@@ -188,6 +188,19 @@ func (h *EndpointHandler) GetEndpoint(c *gin.Context) {
 		}
 	}
 
+	// Enrich with task statistics
+	if h.endpointService != nil {
+		if stats, err := h.endpointService.GetEndpointStats(c.Request.Context(), name); err == nil {
+			metadata.PendingTasks = int64(stats.PendingTasks)
+			metadata.RunningTasks = int64(stats.RunningTasks)
+			metadata.TotalTasks = int64(stats.PendingTasks + stats.RunningTasks + stats.CompletedTasks + stats.FailedTasks)
+			metadata.CompletedTasks = int64(stats.CompletedTasks)
+			metadata.FailedTasks = int64(stats.FailedTasks)
+		} else {
+			logger.WarnCtx(c.Request.Context(), "failed to get endpoint stats for %s: %v", name, err)
+		}
+	}
+
 	c.JSON(http.StatusOK, metadata)
 }
 

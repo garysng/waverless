@@ -69,11 +69,6 @@ func (r *SpecRepository) Delete(ctx context.Context, name string) error {
 		Update("status", "deleted").Error
 }
 
-// HardDelete physically deletes a spec from database
-func (r *SpecRepository) HardDelete(ctx context.Context, name string) error {
-	return r.ds.DB(ctx).Where("name = ?", name).Delete(&model.Spec{}).Error
-}
-
 // UpdateStatus updates spec status
 func (r *SpecRepository) UpdateStatus(ctx context.Context, name string, status string) error {
 	return r.ds.DB(ctx).Model(&model.Spec{}).

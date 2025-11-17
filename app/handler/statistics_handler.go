@@ -133,22 +133,3 @@ func (h *StatisticsHandler) GetTopEndpoints(c *gin.Context) {
 		"total":     len(endpoints),
 	})
 }
-
-// RefreshStatistics manually refreshes all statistics
-// @Summary Refresh all statistics
-// @Description Manually trigger a full refresh of all statistics (global + all endpoints)
-// @Tags statistics
-// @Produce json
-// @Success 200 {object} map[string]string "Success message"
-// @Router /api/v1/statistics/refresh [post]
-func (h *StatisticsHandler) RefreshStatistics(c *gin.Context) {
-	if err := h.statsService.RefreshAllStatistics(c.Request.Context()); err != nil {
-		logger.ErrorCtx(c.Request.Context(), "failed to refresh statistics: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "statistics refreshed successfully",
-	})
-}

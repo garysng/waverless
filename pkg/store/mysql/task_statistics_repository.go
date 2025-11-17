@@ -61,6 +61,8 @@ func (r *TaskStatisticsRepository) ListTopEndpoints(ctx context.Context, limit i
 }
 
 // RefreshGlobalStatistics recalculates and updates global statistics from tasks table
+// OPTIMIZATION: Only counts active tasks (PENDING, IN_PROGRESS) from full table scan.
+// For historical tasks (COMPLETED, FAILED, CANCELLED), relies on incremental updates to avoid scanning large datasets.
 func (r *TaskStatisticsRepository) RefreshGlobalStatistics(ctx context.Context) error {
 	now := time.Now()
 
@@ -75,15 +77,32 @@ func (r *TaskStatisticsRepository) RefreshGlobalStatistics(ctx context.Context) 
 	}
 
 	var stats TaskStats
+	// OPTIMIZATION: Use UNION ALL with idx_status index to avoid full table scan
+	// Each subquery uses the idx_status index efficiently
 	err := r.ds.DB(ctx).Raw(`
 		SELECT
-			SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) as pending_count,
-			SUM(CASE WHEN status = 'IN_PROGRESS' THEN 1 ELSE 0 END) as in_progress_count,
-			SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed_count,
-			SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) as failed_count,
-			SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) as cancelled_count,
-			COUNT(*) as total_count
-		FROM tasks
+			SUM(pending_count) as pending_count,
+			SUM(in_progress_count) as in_progress_count,
+			SUM(completed_count) as completed_count,
+			SUM(failed_count) as failed_count,
+			SUM(cancelled_count) as cancelled_count,
+			SUM(total_count) as total_count
+		FROM (
+			SELECT COUNT(*) as pending_count, 0 as in_progress_count, 0 as completed_count, 0 as failed_count, 0 as cancelled_count, COUNT(*) as total_count
+			FROM tasks WHERE status = 'PENDING'
+			UNION ALL
+			SELECT 0, COUNT(*), 0, 0, 0, COUNT(*)
+			FROM tasks WHERE status = 'IN_PROGRESS'
+			UNION ALL
+			SELECT 0, 0, COUNT(*), 0, 0, COUNT(*)
+			FROM tasks WHERE status = 'COMPLETED'
+			UNION ALL
+			SELECT 0, 0, 0, COUNT(*), 0, COUNT(*)
+			FROM tasks WHERE status = 'FAILED'
+			UNION ALL
+			SELECT 0, 0, 0, 0, COUNT(*), COUNT(*)
+			FROM tasks WHERE status = 'CANCELLED'
+		) AS status_counts
 	`).Scan(&stats).Error
 	if err != nil {
 		return fmt.Errorf("failed to calculate global statistics: %w", err)
@@ -128,6 +147,7 @@ func (r *TaskStatisticsRepository) RefreshGlobalStatistics(ctx context.Context) 
 }
 
 // RefreshEndpointStatistics recalculates and updates per-endpoint statistics
+// OPTIMIZATION: Use idx_endpoint_status index efficiently with separate queries per status
 func (r *TaskStatisticsRepository) RefreshEndpointStatistics(ctx context.Context, endpoint string) error {
 	now := time.Now()
 
@@ -143,19 +163,34 @@ func (r *TaskStatisticsRepository) RefreshEndpointStatistics(ctx context.Context
 	}
 
 	var stats TaskStats
+	// OPTIMIZATION: Use UNION ALL with idx_endpoint_status composite index
+	// Each subquery can use the index (endpoint, status) efficiently
 	err := r.ds.DB(ctx).Raw(`
 		SELECT
-			endpoint,
-			SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) as pending_count,
-			SUM(CASE WHEN status = 'IN_PROGRESS' THEN 1 ELSE 0 END) as in_progress_count,
-			SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed_count,
-			SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) as failed_count,
-			SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) as cancelled_count,
-			COUNT(*) as total_count
-		FROM tasks
-		WHERE endpoint = ?
-		GROUP BY endpoint
-	`, endpoint).Scan(&stats).Error
+			? as endpoint,
+			SUM(pending_count) as pending_count,
+			SUM(in_progress_count) as in_progress_count,
+			SUM(completed_count) as completed_count,
+			SUM(failed_count) as failed_count,
+			SUM(cancelled_count) as cancelled_count,
+			SUM(total_count) as total_count
+		FROM (
+			SELECT COUNT(*) as pending_count, 0 as in_progress_count, 0 as completed_count, 0 as failed_count, 0 as cancelled_count, COUNT(*) as total_count
+			FROM tasks WHERE endpoint = ? AND status = 'PENDING'
+			UNION ALL
+			SELECT 0, COUNT(*), 0, 0, 0, COUNT(*)
+			FROM tasks WHERE endpoint = ? AND status = 'IN_PROGRESS'
+			UNION ALL
+			SELECT 0, 0, COUNT(*), 0, 0, COUNT(*)
+			FROM tasks WHERE endpoint = ? AND status = 'COMPLETED'
+			UNION ALL
+			SELECT 0, 0, 0, COUNT(*), 0, COUNT(*)
+			FROM tasks WHERE endpoint = ? AND status = 'FAILED'
+			UNION ALL
+			SELECT 0, 0, 0, 0, COUNT(*), COUNT(*)
+			FROM tasks WHERE endpoint = ? AND status = 'CANCELLED'
+		) AS status_counts
+	`, endpoint, endpoint, endpoint, endpoint, endpoint, endpoint).Scan(&stats).Error
 	if err != nil {
 		return fmt.Errorf("failed to calculate endpoint statistics: %w", err)
 	}

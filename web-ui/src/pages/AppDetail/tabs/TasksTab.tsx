@@ -401,6 +401,9 @@ const TasksTab = ({ endpoint, onJumpToWorker, workers = [] }: TasksTabProps) => 
                     borderRadius: '4px',
                     marginTop: '8px',
                     color: '#cf1322',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    overflowWrap: 'break-word',
                   }}
                 >
                   {taskDetail.error}

@@ -406,10 +406,10 @@ const AppDetailPage = () => {
                 <Card size="small" style={{ height: '100%' }}>
                   <Statistic
                     title={<Text type="secondary">Workers</Text>}
-                    value={workers?.filter((w: any) => w.status?.toLowerCase() === 'online' || w.status?.toLowerCase() === 'busy').length || 0}
+                    value={workers?.filter((w: any) => w.status?.toLowerCase() === 'busy').length || 0}
                     suffix={<Text type="secondary">/ {workers?.length || 0}</Text>}
                     prefix={<UserOutlined style={{ color: '#1890ff' }} />}
-                    valueStyle={{ color: workers?.filter((w: any) => w.status?.toLowerCase() === 'online' || w.status?.toLowerCase() === 'busy').length ? '#1890ff' : undefined }}
+                    valueStyle={{ color: workers?.filter((w: any) => w.status?.toLowerCase() === 'busy').length ? '#1890ff' : undefined }}
                   />
                 </Card>
               </Col>

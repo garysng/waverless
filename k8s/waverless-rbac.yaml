@@ -45,6 +45,10 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch"]
+
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
 ---
 # RoleBinding to bind the role to the service account
 apiVersion: rbac.authorization.k8s.io/v1
