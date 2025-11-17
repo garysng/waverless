@@ -42,6 +42,17 @@ type RenderContext struct {
 	Labels       map[string]string `json:"labels"`
 	Annotations  map[string]string `json:"annotations"`
 
+	// 存储配置
+	Volumes      []VolumeInfo      `json:"volumes,omitempty"`
+	VolumeMounts []VolumeMountInfo `json:"volumeMounts,omitempty"`
+	ShmSize      string            `json:"shmSize,omitempty"` // Shared memory size (e.g., "1Gi", "512Mi")
+
+	// 安全配置
+	EnablePtrace bool `json:"enablePtrace,omitempty"` // Enable SYS_PTRACE capability for debugging
+
+	// 环境变量配置
+	Env map[string]string `json:"env,omitempty"` // Custom environment variables
+
 	// 平台配置追踪（用于记录到 Deployment annotations）
 	PlatformLabelsJSON      string `json:"platformLabelsJSON,omitempty"`      // 平台labels的JSON记录
 	PlatformAnnotationsJSON string `json:"platformAnnotationsJSON,omitempty"` // 平台annotations的JSON记录
@@ -49,6 +60,18 @@ type RenderContext struct {
 	// 优雅关闭配置
 	TaskTimeout                    int   `json:"taskTimeout"`                    // 任务超时时间（秒），用于计算terminationGracePeriodSeconds
 	TerminationGracePeriodSeconds int64 `json:"terminationGracePeriodSeconds"` // Pod优雅关闭时间（秒）
+}
+
+// VolumeInfo PVC volume info for template rendering
+type VolumeInfo struct {
+	Name    string `json:"name"`
+	PVCName string `json:"pvcName"`
+}
+
+// VolumeMountInfo volume mount info for template rendering
+type VolumeMountInfo struct {
+	Name      string `json:"name"`
+	MountPath string `json:"mountPath"`
 }
 
 // Render 渲染模板

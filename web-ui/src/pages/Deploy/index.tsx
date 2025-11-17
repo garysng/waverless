@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
   Card,
@@ -17,7 +17,7 @@ import {
   Collapse,
   Switch,
 } from 'antd';
-import { RocketOutlined, EyeOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { RocketOutlined, EyeOutlined, ThunderboltOutlined, DatabaseOutlined, PlusOutlined, DeleteOutlined, SettingOutlined } from '@ant-design/icons';
 import { api } from '@/api/client';
 import type { DeployRequest } from '@/types';
 
@@ -62,6 +62,7 @@ const DeployPage = () => {
   const [selectedSpec, setSelectedSpec] = useState<string>('');
   const [yamlPreview, setYamlPreview] = useState<string>('');
   const [previewVisible, setPreviewVisible] = useState(false);
+  const [_defaultEnv, setDefaultEnv] = useState<Record<string, string>>({});
 
   // Fetch specs
   const { data: specs, isLoading: specsLoading } = useQuery({
@@ -71,6 +72,31 @@ const DeployPage = () => {
       return response.data;
     },
   });
+
+  // Fetch PVCs
+  const { data: pvcs, isLoading: pvcsLoading } = useQuery({
+    queryKey: ['pvcs'],
+    queryFn: async () => {
+      const response = await api.k8s.listPVCs();
+      return response.data;
+    },
+  });
+
+  // Fetch default environment variables from ConfigMap
+  useEffect(() => {
+    api.config.getDefaultEnv()
+      .then((response) => {
+        setDefaultEnv(response.data || {});
+        // Initialize form with default env vars
+        const envArray = Object.entries(response.data || {}).map(([key, value]) => ({ key, value }));
+        form.setFieldValue('envVars', envArray);
+      })
+      .catch((error) => {
+        console.error('Failed to fetch default env:', error);
+        // Initialize with empty array if fetch fails
+        form.setFieldValue('envVars', []);
+      });
+  }, [form]);
 
   // Get selected spec details
   const selectedSpecData = specs?.find((s) => s.name === selectedSpec);
@@ -113,7 +139,32 @@ const DeployPage = () => {
       image: values.image,
       replicas: values.replicas || 1,
       taskTimeout: values.taskTimeout || 0,
+      shmSize: values.shmSize,
+      enablePtrace: values.enablePtrace || false,
     };
+
+    // Add environment variables if provided
+    if (values.envVars && values.envVars.length > 0) {
+      const env: Record<string, string> = {};
+      values.envVars
+        .filter((item: any) => item && item.key && item.value)
+        .forEach((item: any) => {
+          env[item.key] = item.value;
+        });
+      if (Object.keys(env).length > 0) {
+        deployData.env = env;
+      }
+    }
+
+    // Add volume mounts if provided
+    if (values.volumeMounts && values.volumeMounts.length > 0) {
+      deployData.volumeMounts = values.volumeMounts
+        .filter((vm: any) => vm && vm.pvcName && vm.mountPath)
+        .map((vm: any) => ({
+          pvcName: vm.pvcName,
+          mountPath: vm.mountPath,
+        }));
+    }
 
     // Add autoscaler config if provided
     if (values.autoscaler) {
@@ -161,7 +212,22 @@ const DeployPage = () => {
         image: values.image,
         replicas: values.replicas || 1,
         taskTimeout: values.taskTimeout || 0,
+        shmSize: values.shmSize,
+        enablePtrace: values.enablePtrace || false,
       };
+
+      // Add environment variables if provided
+      if (values.envVars && values.envVars.length > 0) {
+        const env: Record<string, string> = {};
+        values.envVars
+          .filter((item: any) => item && item.key && item.value)
+          .forEach((item: any) => {
+            env[item.key] = item.value;
+          });
+        if (Object.keys(env).length > 0) {
+          previewData.env = env;
+        }
+      }
 
       // Add autoscaler config if provided
       if (values.autoscaler) {
@@ -253,7 +319,14 @@ const DeployPage = () => {
                 >
                   <Select
                     placeholder="Select a GPU spec"
-                    onChange={setSelectedSpec}
+                    onChange={(value) => {
+                      setSelectedSpec(value);
+                      // Auto-fill shmSize from spec if available
+                      const spec = specs?.find((s) => s.name === value);
+                      if (spec?.resources?.shmSize) {
+                        form.setFieldValue('shmSize', spec.resources.shmSize);
+                      }
+                    }}
                     options={specs?.map((spec) => ({
                       label: `${spec.displayName} (${spec.name})`,
                       value: spec.name,
@@ -290,10 +363,188 @@ const DeployPage = () => {
                   </Col>
                 </Row>
 
+                <Row gutter={16}>
+                  <Col span={24}>
+                    <Form.Item
+                      name="shmSize"
+                      label="Shared Memory Size (Optional)"
+                      tooltip="Shared memory size for /dev/shm (e.g., 1Gi, 512Mi). Auto-filled from spec if available. You can override or leave empty. Useful for ML workloads."
+                    >
+                      <Input placeholder="Auto-filled from spec, or specify custom value" />
+                    </Form.Item>
+                  </Col>
+                </Row>
+
+                {selectedSpecData?.resourceType === 'fixed' && (
+                  <Row gutter={16}>
+                    <Col span={24}>
+                      <Form.Item
+                        name="enablePtrace"
+                        label="Enable Debugging (ptrace)"
+                        tooltip="Enable SYS_PTRACE capability for debugging tools (gdb, strace, etc.). Only available for fixed resource pools."
+                        valuePropName="checked"
+                      >
+                        <Switch checkedChildren="Enabled" unCheckedChildren="Disabled" />
+                      </Form.Item>
+                    </Col>
+                  </Row>
+                )}
+
                 <Divider />
 
                 <Collapse
                   items={[
+                    {
+                      key: 'env',
+                      label: (
+                        <span>
+                          <SettingOutlined /> Environment Variables (Optional)
+                        </span>
+                      ),
+                      children: (
+                        <>
+                          <Paragraph type="secondary">
+                            Configure custom environment variables for your application.
+                            Default values from wavespeed-config ConfigMap are pre-filled below.
+                            You can modify, add, or remove variables as needed.
+                          </Paragraph>
+
+                          <Form.List name="envVars">
+                            {(fields, { add, remove }) => (
+                              <>
+                                {fields.map((field) => (
+                                  <Row gutter={16} key={field.key} style={{ marginBottom: 8 }}>
+                                    <Col span={10}>
+                                      <Form.Item
+                                        {...field}
+                                        name={[field.name, 'key']}
+                                        rules={[{ required: true, message: 'Required' }]}
+                                        style={{ marginBottom: 0 }}
+                                      >
+                                        <Input placeholder="KEY" />
+                                      </Form.Item>
+                                    </Col>
+                                    <Col span={12}>
+                                      <Form.Item
+                                        {...field}
+                                        name={[field.name, 'value']}
+                                        rules={[{ required: true, message: 'Required' }]}
+                                        style={{ marginBottom: 0 }}
+                                      >
+                                        <Input placeholder="value" />
+                                      </Form.Item>
+                                    </Col>
+                                    <Col span={2}>
+                                      <Button
+                                        type="text"
+                                        danger
+                                        icon={<DeleteOutlined />}
+                                        onClick={() => remove(field.name)}
+                                      />
+                                    </Col>
+                                  </Row>
+                                ))}
+                                <Button
+                                  type="dashed"
+                                  onClick={() => add()}
+                                  block
+                                  icon={<PlusOutlined />}
+                                  style={{ marginTop: 8 }}
+                                >
+                                  Add Environment Variable
+                                </Button>
+                              </>
+                            )}
+                          </Form.List>
+                        </>
+                      ),
+                    },
+                    {
+                      key: 'mount',
+                      label: (
+                        <span>
+                          <DatabaseOutlined /> Volume Mounts (Optional)
+                        </span>
+                      ),
+                      children: (
+                        <>
+                          <Paragraph type="secondary">
+                            Mount PersistentVolumeClaims to your application containers for persistent storage.
+                          </Paragraph>
+
+                          <Form.List name="volumeMounts">
+                            {(fields, { add, remove }) => (
+                              <>
+                                {fields.map(({ key, name, ...restField }) => (
+                                  <Card key={key} size="small" style={{ marginBottom: 16 }}>
+                                    <Row gutter={16}>
+                                      <Col span={11}>
+                                        <Form.Item
+                                          {...restField}
+                                          name={[name, 'pvcName']}
+                                          label="PVC Name"
+                                          rules={[{ required: true, message: 'Please select a PVC' }]}
+                                        >
+                                          <Select
+                                            placeholder="Select PVC"
+                                            loading={pvcsLoading}
+                                            showSearch
+                                            optionLabelProp="label"
+                                          >
+                                            {pvcs?.map((pvc) => (
+                                              <Select.Option
+                                                key={pvc.name}
+                                                value={pvc.name}
+                                                label={pvc.name}
+                                              >
+                                                <div>{pvc.name}</div>
+                                                <div style={{ fontSize: 11, color: '#999' }}>
+                                                  {pvc.capacity} | {pvc.status} | {pvc.storageClass}
+                                                </div>
+                                              </Select.Option>
+                                            ))}
+                                          </Select>
+                                        </Form.Item>
+                                      </Col>
+                                      <Col span={11}>
+                                        <Form.Item
+                                          {...restField}
+                                          name={[name, 'mountPath']}
+                                          label="Mount Path"
+                                          rules={[
+                                            { required: true, message: 'Please enter mount path' },
+                                            { pattern: /^\/.*/, message: 'Mount path must start with /' },
+                                          ]}
+                                        >
+                                          <Input placeholder="/data" />
+                                        </Form.Item>
+                                      </Col>
+                                      <Col span={2} style={{ display: 'flex', alignItems: 'center', paddingTop: 30 }}>
+                                        <Button
+                                          danger
+                                          icon={<DeleteOutlined />}
+                                          onClick={() => remove(name)}
+                                        />
+                                      </Col>
+                                    </Row>
+                                  </Card>
+                                ))}
+                                <Form.Item>
+                                  <Button
+                                    type="dashed"
+                                    onClick={() => add()}
+                                    block
+                                    icon={<PlusOutlined />}
+                                  >
+                                    Add Volume Mount
+                                  </Button>
+                                </Form.Item>
+                              </>
+                            )}
+                          </Form.List>
+                        </>
+                      ),
+                    },
                     {
                       key: 'autoscaler',
                       label: (
@@ -464,12 +715,6 @@ const DeployPage = () => {
                   )}
                   <Text strong>Memory:</Text> {selectedSpecData.resources.memory}
                   <br />
-                  {selectedSpecData.resources.disk && (
-                    <>
-                      <Text strong>Disk:</Text> {selectedSpecData.resources.disk}GB
-                      <br />
-                    </>
-                  )}
                   {selectedSpecData.resources.ephemeralStorage && (
                     <>
                       <Text strong>Ephemeral Storage:</Text>{' '}

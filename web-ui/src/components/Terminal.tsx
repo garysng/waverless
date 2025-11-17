@@ -1,6 +1,8 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal as XTerm } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
+import { Button, Space } from 'antd';
+import { ReloadOutlined, FullscreenOutlined, FullscreenExitOutlined } from '@ant-design/icons';
 import 'xterm/css/xterm.css';
 
 interface TerminalProps {
@@ -11,12 +13,58 @@ interface TerminalProps {
 
 const Terminal: React.FC<TerminalProps> = ({ endpoint, workerId, onClose: _onClose }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [reconnectKey, setReconnectKey] = useState(0);
+
+  const handleReconnect = useCallback(() => {
+    // Close existing connection
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+    if (xtermRef.current) {
+      xtermRef.current.dispose();
+    }
+    // Trigger re-initialization
+    setReconnectKey((prev) => prev + 1);
+  }, []);
+
+  const handleFullscreen = useCallback(() => {
+    if (!containerRef.current) return;
+
+    if (!isFullscreen) {
+      if (containerRef.current.requestFullscreen) {
+        containerRef.current.requestFullscreen();
+      }
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      }
+    }
+  }, [isFullscreen]);
 
   useEffect(() => {
-    console.log('Terminal component mounted', { endpoint, workerId });
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+      // Resize terminal when entering/exiting fullscreen
+      setTimeout(() => {
+        if (fitAddonRef.current) {
+          fitAddonRef.current.fit();
+        }
+      }, 100);
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    console.log('Terminal component mounted', { endpoint, workerId, reconnectKey });
     if (!terminalRef.current) return;
 
     // Create terminal
@@ -104,18 +152,60 @@ const Terminal: React.FC<TerminalProps> = ({ endpoint, workerId, onClose: _onClo
         xtermRef.current.dispose();
       }
     };
-  }, [endpoint, workerId]);
+  }, [endpoint, workerId, reconnectKey]);
 
   return (
     <div
-      ref={terminalRef}
+      ref={containerRef}
       style={{
         height: '100%',
         width: '100%',
-        padding: '10px',
+        display: 'flex',
+        flexDirection: 'column',
         backgroundColor: '#1e1e1e',
       }}
-    />
+    >
+      {/* Toolbar */}
+      <div
+        style={{
+          padding: '8px 12px',
+          backgroundColor: '#2d2d2d',
+          borderBottom: '1px solid #404040',
+          display: 'flex',
+          justifyContent: 'flex-end',
+        }}
+      >
+        <Space size="small">
+          <Button
+            size="small"
+            icon={<ReloadOutlined />}
+            onClick={handleReconnect}
+            style={{ color: '#d4d4d4', borderColor: '#404040' }}
+          >
+            Reconnect
+          </Button>
+          <Button
+            size="small"
+            icon={isFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+            onClick={handleFullscreen}
+            style={{ color: '#d4d4d4', borderColor: '#404040' }}
+          >
+            {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+          </Button>
+        </Space>
+      </div>
+
+      {/* Terminal */}
+      <div
+        ref={terminalRef}
+        style={{
+          flex: 1,
+          padding: '10px',
+          backgroundColor: '#1e1e1e',
+          overflow: 'hidden',
+        }}
+      />
+    </div>
   );
 };
 

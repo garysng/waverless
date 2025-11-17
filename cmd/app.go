@@ -39,6 +39,7 @@ type Application struct {
 	workerService     *service.WorkerService
 	statisticsService *service.StatisticsService
 	gpuUsageService   *service.GPUUsageService
+	specService       *service.SpecService
 
 	// Handler layer
 	taskHandler       *handler.TaskHandler
@@ -47,6 +48,7 @@ type Application struct {
 	autoscalerHandler *handler.AutoScalerHandler
 	statisticsHandler *handler.StatisticsHandler
 	gpuUsageHandler   *handler.GPUUsageHandler
+	specHandler       *handler.SpecHandler
 
 	// Auto-scaler
 	autoscalerMgr *autoscaler.Manager

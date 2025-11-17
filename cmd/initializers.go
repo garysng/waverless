@@ -176,6 +176,9 @@ func (app *Application) initServices() error {
 	// Initialize GPU usage service
 	app.gpuUsageService = service.NewGPUUsageService(app.mysqlRepo.GPUUsage)
 
+	// Initialize spec service
+	app.specService = service.NewSpecService(app.mysqlRepo.Spec)
+
 	// Setup Pod watcher for graceful shutdown (when K8s is enabled)
 	if err := app.setupPodWatcher(k8sDeployProvider); err != nil {
 		logger.WarnCtx(app.ctx, "Failed to setup pod watcher: %v (non-critical, continuing)", err)
@@ -353,6 +356,9 @@ func (app *Application) initHandlers() error{
 		}
 	}
 
+	// Initialize Spec Handler
+	app.specHandler = handler.NewSpecHandler(app.specService)
+
 	return nil
 }
 
@@ -372,6 +378,12 @@ func (app *Application) initAutoScaler() error {
 	var specManager *k8s.SpecManager
 	if k8sProvider, ok := app.deploymentProvider.(*k8s.K8sDeploymentProvider); ok {
 		specManager = k8sProvider.GetSpecManager()
+		// Inject spec service into spec manager for database access
+		// SpecService implements SpecRepositoryInterface
+		if app.specService != nil {
+			specManager.SetSpecRepository(app.specService)
+			logger.InfoCtx(app.ctx, "Spec service injected into SpecManager - specs will be read from database first")
+		}
 	} else {
 		logger.WarnCtx(app.ctx, "AutoScaler requires K8s deployment provider, skipping initialization")
 		return nil
@@ -405,7 +417,7 @@ func (app *Application) initAutoScaler() error {
 // initHTTPServer initializes HTTP server
 func (app *Application) initHTTPServer() error{
 	// Initialize router
-	r := router.NewRouter(app.taskHandler, app.workerHandler, app.endpointHandler, app.autoscalerHandler, app.statisticsHandler, app.gpuUsageHandler)
+	r := router.NewRouter(app.taskHandler, app.workerHandler, app.endpointHandler, app.autoscalerHandler, app.statisticsHandler, app.gpuUsageHandler, app.specHandler)
 
 	// Set Gin mode
 	gin.SetMode(app.config.Server.Mode)

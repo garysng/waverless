@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -8,7 +9,6 @@ import {
   Col,
   Descriptions,
   Divider,
-  Dropdown,
   Drawer,
   Empty,
   Form,
@@ -29,7 +29,6 @@ import {
   Typography,
   message,
 } from 'antd';
-import type { MenuProps } from 'antd';
 import {
   ReloadOutlined,
   DeleteOutlined,
@@ -42,7 +41,6 @@ import {
   SettingOutlined,
   RiseOutlined,
   FallOutlined,
-  EllipsisOutlined,
   FileTextOutlined,
   QuestionCircleOutlined,
   UserOutlined,
@@ -53,6 +51,8 @@ import {
   GlobalOutlined,
   BranchesOutlined,
   UnorderedListOutlined,
+  DatabaseOutlined,
+  PlusOutlined,
 } from '@ant-design/icons';
 import { api } from '@/api/client';
 import type {
@@ -138,14 +138,16 @@ const formatTaskTimeout = (value?: number) =>
   value && value > 0 ? `${value}` : `0 (uses global default ${GLOBAL_TASK_TIMEOUT}s)`;
 
 const AppsPage = () => {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [selectedApp, setSelectedApp] = useState<string>('');
   const [updateModalVisible, setUpdateModalVisible] = useState(false);
+  const [selectedUpdateSpec, setSelectedUpdateSpec] = useState<string>(''); // Track selected spec in Update modal
   const [metadataModalVisible, setMetadataModalVisible] = useState(false);
   const [globalConfigModalVisible, setGlobalConfigModalVisible] = useState(false);
   const [detailsDrawerVisible, setDetailsDrawerVisible] = useState(false);
   const [isManualRefreshing, setIsManualRefreshing] = useState(false);
-  const [expandedRowKeys, setExpandedRowKeys] = useState<string[]>([]);
+  const [highlightedRow, setHighlightedRow] = useState<string>('');
   const [updateForm] = Form.useForm();
   const [metadataForm] = Form.useForm();
   const [globalConfigForm] = Form.useForm();
@@ -196,11 +198,43 @@ const AppsPage = () => {
     }
   }, [globalConfig, globalConfigForm]);
 
+  // Restore scroll position and highlighted row when returning from detail page
+  useEffect(() => {
+    const savedScrollPosition = sessionStorage.getItem('appsListScrollPosition');
+    const savedHighlightedRow = sessionStorage.getItem('appsListHighlightedRow');
+
+    if (savedScrollPosition) {
+      // Use setTimeout to ensure the DOM is fully rendered
+      setTimeout(() => {
+        window.scrollTo(0, parseInt(savedScrollPosition, 10));
+      }, 100);
+      sessionStorage.removeItem('appsListScrollPosition');
+    }
+
+    if (savedHighlightedRow) {
+      setHighlightedRow(savedHighlightedRow);
+      // Clear highlight after 3 seconds
+      setTimeout(() => {
+        setHighlightedRow('');
+        sessionStorage.removeItem('appsListHighlightedRow');
+      }, 3000);
+    }
+  }, []);
+
   // Fetch specs for update form
   const { data: specs } = useQuery<SpecInfo[]>({
     queryKey: ['specs'],
     queryFn: async () => {
       const response = await api.specs.list();
+      return response.data;
+    },
+  });
+
+  // Fetch PVCs
+  const { data: pvcs } = useQuery({
+    queryKey: ['pvcs'],
+    queryFn: async () => {
+      const response = await api.k8s.listPVCs();
       return response.data;
     },
   });
@@ -287,23 +321,6 @@ const AppsPage = () => {
     },
   });
 
-  // Delete mutation
-  const deleteMutation = useMutation({
-    mutationFn: async (name: string) => {
-      await api.apps.delete(name);
-    },
-    onSuccess: (_resp, name) => {
-      message.success('Application deleted successfully');
-      queryClient.invalidateQueries({ queryKey: ['apps'] });
-      queryClient.setQueryData<AppInfo[] | undefined>(['apps'], (old) =>
-        old ? old.filter((app) => app.name !== name) : old
-      );
-    },
-    onError: (error: any) => {
-      message.error(error.response?.data?.error || 'Failed to delete application');
-    },
-  });
-
   // Update mutation
   const updateMutation = useMutation({
     mutationFn: async (data: { name: string; request: UpdateDeploymentRequest }) => {
@@ -387,6 +404,31 @@ const AppsPage = () => {
     if (values.replicas !== undefined && values.replicas !== null) {
       request.replicas = values.replicas;
     }
+    if (values.volumeMounts && values.volumeMounts.length > 0) {
+      request.volumeMounts = values.volumeMounts
+        .filter((vm: any) => vm && vm.pvcName && vm.mountPath)
+        .map((vm: any) => ({
+          pvcName: vm.pvcName,
+          mountPath: vm.mountPath,
+        }));
+    }
+    if (values.shmSize !== undefined) {
+      request.shmSize = values.shmSize;
+    }
+    if (values.enablePtrace !== undefined) {
+      request.enablePtrace = values.enablePtrace;
+    }
+    if (values.envVars && values.envVars.length > 0) {
+      const env: Record<string, string> = {};
+      values.envVars
+        .filter((item: any) => item && item.key && item.value)
+        .forEach((item: any) => {
+          env[item.key] = item.value;
+        });
+      if (Object.keys(env).length > 0) {
+        request.env = env;
+      }
+    }
 
     updateMutation.mutate({ name: selectedApp, request });
   };
@@ -454,20 +496,20 @@ const AppsPage = () => {
       width: 200,
       fixed: 'left' as const,
       render: (name: string, record: AppInfo) => (
-        <Space direction="vertical" size={0}>
+        <div>
           <Tooltip title={name}>
-            <Text strong ellipsis style={{ maxWidth: 180 }}>
+            <Text strong ellipsis style={{ maxWidth: 180, display: 'block' }}>
               {name}
             </Text>
           </Tooltip>
           {record.displayName && record.displayName !== name && (
             <Tooltip title={record.displayName}>
-              <Text type="secondary" ellipsis style={{ fontSize: 12, maxWidth: 180 }}>
+              <Text type="secondary" ellipsis style={{ fontSize: 12, maxWidth: 180, display: 'block' }}>
                 {record.displayName}
               </Text>
             </Tooltip>
           )}
-        </Space>
+        </div>
       ),
     },
     {
@@ -538,17 +580,6 @@ const AppsPage = () => {
       ),
     },
     {
-      title: 'Priority',
-      dataIndex: 'priority',
-      key: 'priority',
-      width: 80,
-      render: (priority: number) => (
-        <Tag color={priority >= 70 ? 'red' : priority >= 50 ? 'orange' : 'default'}>
-          {priority ?? '-'}
-        </Tag>
-      ),
-    },
-    {
       title: 'AutoScaler',
       dataIndex: 'autoscalerEnabled',
       key: 'autoscalerEnabled',
@@ -580,126 +611,6 @@ const AppsPage = () => {
           );
         }
         return <Tag>Unknown</Tag>;
-      },
-    },
-    {
-      title: 'Tasks',
-      key: 'tasks',
-      width: 120,
-      render: (_: any, record: AppInfo) => (
-        <Space size="small">
-          {record.pendingTasks !== undefined && record.pendingTasks > 0 && (
-            <Tooltip title="Pending Tasks">
-              <Tag color="orange" icon={<ClockCircleOutlined />}>
-                {record.pendingTasks}
-              </Tag>
-            </Tooltip>
-          )}
-          {record.runningTasks !== undefined && record.runningTasks > 0 && (
-            <Tooltip title="Running Tasks">
-              <Tag color="blue" icon={<SyncOutlined spin />}>
-                {record.runningTasks}
-              </Tag>
-            </Tooltip>
-          )}
-          {(!record.pendingTasks || record.pendingTasks === 0) &&
-            (!record.runningTasks || record.runningTasks === 0) && (
-              <Text type="secondary">-</Text>
-            )}
-        </Space>
-      ),
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      fixed: 'right' as const,
-      width: 150,
-      render: (_: any, record: AppInfo) => {
-        const lastTriggered = triggerAutoscalerMutation.variables as string | undefined;
-        const isTriggering = triggerAutoscalerMutation.isPending && lastTriggered === record.name;
-        const menuItems: MenuProps['items'] = [
-          {
-            key: 'trigger',
-            label: 'Trigger AutoScaler',
-            icon: <ThunderboltOutlined />,
-            onClick: ({ domEvent }) => {
-              domEvent.stopPropagation();
-              triggerAutoscalerMutation.mutate(record.name);
-            },
-          },
-          {
-            type: 'divider',
-          },
-          {
-            key: 'delete',
-            label: 'Delete',
-            danger: true,
-            icon: <DeleteOutlined />,
-            onClick: ({ domEvent }) => {
-              domEvent.stopPropagation();
-              Modal.confirm({
-                title: 'Delete this app?',
-                content: `Are you sure you want to delete "${record.name}"?`,
-                okText: 'Delete',
-                okType: 'danger',
-                onOk: () => deleteMutation.mutate(record.name),
-              });
-            },
-          },
-        ];
-        return (
-          <Space size={4}>
-            <Tooltip title="View Details">
-              <Button
-                size="small"
-                type="text"
-                icon={<FileTextOutlined />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setSelectedApp(record.name);
-                  setDetailsDrawerVisible(true);
-                }}
-              />
-            </Tooltip>
-            <Tooltip title="Update Deployment">
-              <Button
-                size="small"
-                type="text"
-                icon={<EditOutlined />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setSelectedApp(record.name);
-                  updateForm.setFieldsValue({
-                    specName: record.specName || '',
-                    image: record.image || '',
-                    replicas: record.replicas || 1,
-                  });
-                  setUpdateModalVisible(true);
-                }}
-              />
-            </Tooltip>
-            <Tooltip title="Edit & Scale">
-              <Button
-                size="small"
-                type="text"
-                icon={<SettingOutlined />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleEditMetadata(record);
-                }}
-              />
-            </Tooltip>
-            <Dropdown menu={{ items: menuItems }} trigger={['click']}>
-              <Button
-                size="small"
-                type="text"
-                icon={<EllipsisOutlined />}
-                loading={isTriggering}
-                onClick={(e) => e.stopPropagation()}
-              />
-            </Dropdown>
-          </Space>
-        );
       },
     },
   ];
@@ -921,26 +832,28 @@ const AppsPage = () => {
           loading={isManualRefreshing}
           scroll={{ x: 1400 }}
           pagination={{ pageSize: 20 }}
-          expandable={{
-            expandedRowRender: (record: AppInfo) => (
-              <div
-                style={{
-                  padding: '16px 24px',
-                  background: '#fafafa',
-                  border: '1px solid #e8e8e8',
-                  borderRadius: '4px',
-                  margin: '8px 0',
-                }}
-              >
-                <EndpointDetailsTabs key={`details-${record.name}`} endpoint={record.name} />
-              </div>
-            ),
-            expandedRowKeys,
-            expandRowByClick: true,
-            onExpand: (expanded, record) => {
-              setExpandedRowKeys(expanded ? [record.name] : []);
+          onRow={(record: AppInfo) => ({
+            onClick: (event) => {
+              // Don't navigate if clicking on a button or interactive element
+              const target = event.target as HTMLElement;
+              if (
+                target.tagName === 'BUTTON' ||
+                target.closest('button') ||
+                target.closest('.ant-dropdown') ||
+                target.closest('.ant-space')
+              ) {
+                return;
+              }
+              // Save scroll position and selected endpoint before navigation
+              sessionStorage.setItem('appsListScrollPosition', window.scrollY.toString());
+              sessionStorage.setItem('appsListHighlightedRow', record.name);
+              navigate(`/apps/${record.name}`);
             },
-          }}
+            style: { cursor: 'pointer' },
+          })}
+          rowClassName={(record: AppInfo) =>
+            record.name === highlightedRow ? 'highlighted-row' : ''
+          }
         />
       </Card>
 
@@ -1085,6 +998,7 @@ const AppsPage = () => {
         onOk={() => updateForm.submit()}
         onCancel={() => {
           setUpdateModalVisible(false);
+          setSelectedUpdateSpec(''); // Clear selected spec
           updateForm.resetFields();
         }}
         confirmLoading={updateMutation.isPending}
@@ -1095,6 +1009,14 @@ const AppsPage = () => {
               placeholder="Select spec"
               allowClear
               showSearch
+              onChange={(value) => {
+                setSelectedUpdateSpec(value || '');
+                // Auto-fill shmSize from spec if available
+                const spec = specs?.find((s) => s.name === value);
+                if (spec?.resources?.shmSize) {
+                  updateForm.setFieldValue('shmSize', spec.resources.shmSize);
+                }
+              }}
               options={specs?.map((spec) => ({
                 label: `${spec.name} (${spec.category})`,
                 value: spec.name,
@@ -1107,6 +1029,173 @@ const AppsPage = () => {
           <Form.Item label="Replicas" name="replicas">
             <InputNumber min={0} max={100} style={{ width: '100%' }} />
           </Form.Item>
+
+          <Divider orientation="left" style={{ marginTop: 8, marginBottom: 16 }}>
+            <span>
+              <DatabaseOutlined /> Volume Mounts (Optional)
+            </span>
+          </Divider>
+          <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 16 }}>
+            Configure PVC volume mounts. Leave empty to keep existing mounts unchanged.
+          </Paragraph>
+
+          <Form.List name="volumeMounts">
+            {(fields, { add, remove }) => (
+              <>
+                {fields.map(({ key, name, ...restField }) => (
+                  <Card key={key} size="small" style={{ marginBottom: 12 }}>
+                    <Row gutter={12}>
+                      <Col span={11}>
+                        <Form.Item
+                          {...restField}
+                          name={[name, 'pvcName']}
+                          label="PVC Name"
+                          rules={[{ required: true, message: 'Select PVC' }]}
+                        >
+                          <Select
+                            placeholder="Select PVC"
+                            showSearch
+                            optionLabelProp="label"
+                          >
+                            {pvcs?.map((pvc) => (
+                              <Select.Option
+                                key={pvc.name}
+                                value={pvc.name}
+                                label={pvc.name}
+                              >
+                                <div>{pvc.name}</div>
+                                <div style={{ fontSize: 11, color: '#999' }}>
+                                  {pvc.capacity} | {pvc.status}
+                                </div>
+                              </Select.Option>
+                            ))}
+                          </Select>
+                        </Form.Item>
+                      </Col>
+                      <Col span={11}>
+                        <Form.Item
+                          {...restField}
+                          name={[name, 'mountPath']}
+                          label="Mount Path"
+                          rules={[
+                            { required: true, message: 'Enter mount path' },
+                            { pattern: /^\/.*/, message: 'Must start with /' },
+                          ]}
+                        >
+                          <Input placeholder="/data" />
+                        </Form.Item>
+                      </Col>
+                      <Col span={2} style={{ display: 'flex', alignItems: 'center', paddingTop: 30 }}>
+                        <Button danger size="small" icon={<DeleteOutlined />} onClick={() => remove(name)} />
+                      </Col>
+                    </Row>
+                  </Card>
+                ))}
+                <Form.Item>
+                  <Button
+                    type="dashed"
+                    onClick={() => add()}
+                    block
+                    icon={<PlusOutlined />}
+                    size="small"
+                  >
+                    Add Volume Mount
+                  </Button>
+                </Form.Item>
+              </>
+            )}
+          </Form.List>
+
+          <Divider style={{ marginTop: 8, marginBottom: 16 }}>
+            <DatabaseOutlined /> Shared Memory
+          </Divider>
+          <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 16 }}>
+            Configure shared memory size for /dev/shm. Leave empty to keep existing setting.
+          </Paragraph>
+
+          <Form.Item
+            name="shmSize"
+            label="Shared Memory Size"
+            tooltip="Size for /dev/shm (e.g., 1Gi, 512Mi). Empty to keep current, or specify new value. Auto-filled when spec changes."
+          >
+            <Input placeholder="e.g., 1Gi, 512Mi (auto-filled from spec)" />
+          </Form.Item>
+
+          {specs?.find((s) => s.name === selectedUpdateSpec)?.resourceType === 'fixed' && (
+            <>
+              <Divider style={{ marginTop: 8, marginBottom: 16 }}>
+                <DatabaseOutlined /> Debugging (ptrace)
+              </Divider>
+              <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 16 }}>
+                Enable SYS_PTRACE capability for debugging tools (gdb, strace, etc.). Only available for fixed resource pools.
+              </Paragraph>
+
+              <Form.Item
+                name="enablePtrace"
+                label="Enable Debugging (ptrace)"
+                tooltip="Enable SYS_PTRACE capability for debugging. Only works for fixed resource pool specs."
+                valuePropName="checked"
+              >
+                <Switch checkedChildren="Enabled" unCheckedChildren="Disabled" />
+              </Form.Item>
+            </>
+          )}
+
+          <Divider style={{ marginTop: 8, marginBottom: 16 }}>
+            <SettingOutlined /> Environment Variables
+          </Divider>
+          <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 16 }}>
+            Configure custom environment variables for your application. Leave empty to keep existing variables unchanged.
+          </Paragraph>
+
+          <Form.List name="envVars">
+            {(fields, { add, remove }) => (
+              <>
+                {fields.map((field) => (
+                  <Row gutter={16} key={field.key} style={{ marginBottom: 8 }}>
+                    <Col span={10}>
+                      <Form.Item
+                        {...field}
+                        name={[field.name, 'key']}
+                        rules={[{ required: true, message: 'Required' }]}
+                        style={{ marginBottom: 0 }}
+                      >
+                        <Input placeholder="KEY" />
+                      </Form.Item>
+                    </Col>
+                    <Col span={12}>
+                      <Form.Item
+                        {...field}
+                        name={[field.name, 'value']}
+                        rules={[{ required: true, message: 'Required' }]}
+                        style={{ marginBottom: 0 }}
+                      >
+                        <Input placeholder="value" />
+                      </Form.Item>
+                    </Col>
+                    <Col span={2}>
+                      <Button
+                        type="text"
+                        danger
+                        icon={<DeleteOutlined />}
+                        onClick={() => remove(field.name)}
+                      />
+                    </Col>
+                  </Row>
+                ))}
+                <Button
+                  type="dashed"
+                  onClick={() => add()}
+                  block
+                  icon={<PlusOutlined />}
+                  size="small"
+                  style={{ marginTop: 8 }}
+                >
+                  Add Environment Variable
+                </Button>
+              </>
+            )}
+          </Form.List>
         </Form>
       </Modal>
 
@@ -1328,7 +1417,11 @@ interface EndpointDetailsTabsProps {
   endpoint: string;
 }
 
-const EndpointDetailsTabs = ({ endpoint }: EndpointDetailsTabsProps) => {
+// Note: This component is no longer used as we've moved to a dedicated detail page
+// Keeping it here temporarily for reference during migration
+// @ts-expect-error - Unused component, will be removed after migration
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _EndpointDetailsTabs = ({ endpoint }: EndpointDetailsTabsProps) => {
   const [taskDetail, setTaskDetail] = useState<Task | null>(null);
   const [taskDrawerVisible, setTaskDrawerVisible] = useState(false);
   const [workerDrawerVisible, setWorkerDrawerVisible] = useState(false);
@@ -2643,6 +2736,28 @@ const EndpointDetailsTabs = ({ endpoint }: EndpointDetailsTabsProps) => {
           />
         )}
       </Drawer>
+
+      {/* CSS for highlighted row */}
+      <style>{`
+        .highlighted-row {
+          animation: highlight-fade 3s ease-out;
+        }
+
+        @keyframes highlight-fade {
+          0% {
+            background-color: #e6f7ff;
+            box-shadow: 0 0 10px rgba(24, 144, 255, 0.3);
+          }
+          100% {
+            background-color: transparent;
+            box-shadow: none;
+          }
+        }
+
+        .highlighted-row:hover {
+          background-color: #f5f5f5 !important;
+        }
+      `}</style>
     </>
   );
 };

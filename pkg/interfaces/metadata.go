@@ -90,9 +90,10 @@ type EndpointMetadata struct {
 	RunningTasks int64 `json:"runningTasks,omitempty"` // Current running tasks
 
 	// Configuration information
-	Env         map[string]string `json:"env"`         // Environment variables
-	Labels      map[string]string `json:"labels"`      // Labels
-	TaskTimeout int               `json:"taskTimeout"` // Task execution timeout in seconds (0 = use global default)
+	Env          map[string]string `json:"env"`          // Environment variables
+	Labels       map[string]string `json:"labels"`       // Labels
+	TaskTimeout  int               `json:"taskTimeout"`  // Task execution timeout in seconds (0 = use global default)
+	EnablePtrace bool              `json:"enablePtrace"` // Enable SYS_PTRACE capability for debugging (only for fixed resource pools)
 
 	// Status information
 	Status            string `json:"status"`            // Running, Stopped, Failed
@@ -107,6 +108,10 @@ type EndpointMetadata struct {
 	TotalTasks     int64 `json:"totalTasks"`     // Total tasks
 	CompletedTasks int64 `json:"completedTasks"` // Completed tasks
 	FailedTasks    int64 `json:"failedTasks"`    // Failed tasks
+
+	// Storage configuration (backfilled from K8s deployment)
+	ShmSize      string        `json:"shmSize,omitempty"`      // Shared memory size from deployment
+	VolumeMounts []VolumeMount `json:"volumeMounts,omitempty"` // PVC volume mounts from deployment
 
 	// Timestamps
 	CreatedAt time.Time `json:"createdAt"`

@@ -15,6 +15,7 @@ import type {
   TaskEventsResponse,
   TaskTimelineResponse,
   TaskExecutionHistoryResponse,
+  PVCInfo,
 } from '@/types';
 
 const client = axios.create({
@@ -69,10 +70,51 @@ export const api = {
       }),
   },
 
-  // Specs
+  // Specs (CRUD from database)
   specs: {
-    list: () => client.get<SpecInfo[]>('/specs'),
+    list: (category?: string) => client.get<SpecInfo[]>('/specs', { params: { category } }),
     get: (name: string) => client.get<SpecInfo>(`/specs/${name}`),
+    create: (data: {
+      name: string;
+      displayName: string;
+      category: string;
+      resourceType: string; // fixed, serverless
+      resources: {
+        cpu?: string;
+        memory: string;
+        gpu?: string;
+        gpuType?: string;
+        ephemeralStorage: string;
+        shmSize?: string;
+      };
+      platforms?: Record<string, any>;
+    }) => client.post<SpecInfo>('/specs', data),
+    update: (name: string, data: {
+      displayName?: string;
+      category?: string;
+      resourceType?: string; // fixed, serverless
+      resources?: {
+        cpu?: string;
+        memory?: string;
+        gpu?: string;
+        gpuType?: string;
+        ephemeralStorage?: string;
+        shmSize?: string;
+      };
+      platforms?: Record<string, any>;
+      status?: string;
+    }) => client.put<SpecInfo>(`/specs/${name}`, data),
+    delete: (name: string) => client.delete<{ message: string; name: string }>(`/specs/${name}`),
+  },
+
+  // K8s resources
+  k8s: {
+    listPVCs: () => client.get<PVCInfo[]>('/k8s/pvcs'),
+  },
+
+  // Configuration
+  config: {
+    getDefaultEnv: () => client.get<Record<string, string>>('/config/default-env'),
   },
 
   // Tasks - Note: task APIs don't have /api prefix, using absolute path
@@ -157,7 +199,6 @@ export const api = {
       cancelled: number;
       updated_at: string;
     }>(`/statistics/endpoints/${endpoint}`),
-    refresh: () => client.post<{ message: string }>('/statistics/refresh'),
   },
 
   // GPU Usage

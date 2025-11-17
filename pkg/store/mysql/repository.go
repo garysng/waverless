@@ -11,6 +11,7 @@ type Repository struct {
 	ScalingEvent     *ScalingEventRepository
 	AutoscalerConfig *AutoscalerConfigRepository
 	GPUUsage         *GPUUsageRepository
+	Spec             *SpecRepository
 }
 
 // NewRepository creates a new MySQL repository with all sub-repositories
@@ -29,6 +30,7 @@ func NewRepository(dsn string) (*Repository, error) {
 		ScalingEvent:     NewScalingEventRepository(ds),
 		AutoscalerConfig: NewAutoscalerConfigRepository(ds),
 		GPUUsage:         NewGPUUsageRepository(ds),
+		Spec:             NewSpecRepository(ds),
 	}, nil
 }
 

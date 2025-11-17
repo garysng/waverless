@@ -6,6 +6,7 @@ import Header from './components/Layout/Header';
 import DashboardPage from './pages/Dashboard';
 import DeployPage from './pages/Deploy';
 import AppsPage from './pages/Apps';
+import AppDetailPage from './pages/AppDetail';
 import SpecsPage from './pages/Specs';
 import TasksPage from './pages/Tasks';
 import GPUUsagePage from './pages/GPUUsage';
@@ -56,6 +57,7 @@ function App() {
             <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
             <Route path="/deploy" element={<ProtectedRoute><DeployPage /></ProtectedRoute>} />
             <Route path="/apps" element={<ProtectedRoute><AppsPage /></ProtectedRoute>} />
+            <Route path="/apps/:endpoint" element={<ProtectedRoute><AppDetailPage /></ProtectedRoute>} />
             <Route path="/specs" element={<ProtectedRoute><SpecsPage /></ProtectedRoute>} />
             <Route path="/tasks" element={<ProtectedRoute><TasksPage /></ProtectedRoute>} />
             <Route path="/gpu-usage" element={<ProtectedRoute><GPUUsagePage /></ProtectedRoute>} />

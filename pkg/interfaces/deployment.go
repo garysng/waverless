@@ -53,6 +53,12 @@ type DeploymentProvider interface {
 
 	// DescribePod retrieves detailed Pod information (similar to kubectl describe)
 	DescribePod(ctx context.Context, endpoint string, podName string) (*PodDetail, error)
+
+	// ListPVCs lists all PersistentVolumeClaims in the namespace
+	ListPVCs(ctx context.Context) ([]*PVCInfo, error)
+
+	// GetDefaultEnv retrieves default environment variables from wavespeed-config ConfigMap
+	GetDefaultEnv(ctx context.Context) (map[string]string, error)
 }
 
 // ReplicaEvent represents Deployment replica change event
@@ -74,15 +80,24 @@ type ReplicaCondition struct {
 // ReplicaCallback replica change callback
 type ReplicaCallback func(event ReplicaEvent)
 
+// VolumeMount volume mount configuration
+type VolumeMount struct {
+	PVCName   string `json:"pvcName"`   // PVC name
+	MountPath string `json:"mountPath"` // Mount path in container
+}
+
 // DeployRequest deployment request
 type DeployRequest struct {
-	Endpoint    string            `json:"endpoint"`    // Application name/endpoint
-	SpecName    string            `json:"specName"`    // Spec name
-	Image       string            `json:"image"`       // Docker image
-	Replicas    int               `json:"replicas"`    // Replica count
-	TaskTimeout int               `json:"taskTimeout"` // Task execution timeout in seconds (0 = use global default)
-	Env         map[string]string `json:"env"`         // Environment variables
-	Labels      map[string]string `json:"labels"`      // Labels
+	Endpoint     string            `json:"endpoint"`              // Application name/endpoint
+	SpecName     string            `json:"specName"`              // Spec name
+	Image        string            `json:"image"`                 // Docker image
+	Replicas     int               `json:"replicas"`              // Replica count
+	TaskTimeout  int               `json:"taskTimeout"`           // Task execution timeout in seconds (0 = use global default)
+	Env          map[string]string `json:"env"`                   // Environment variables
+	Labels       map[string]string `json:"labels"`                // Labels
+	VolumeMounts []VolumeMount     `json:"volumeMounts,omitempty"` // PVC volume mounts
+	ShmSize      string            `json:"shmSize,omitempty"`     // Shared memory size (e.g., "1Gi", "512Mi")
+	EnablePtrace bool              `json:"enablePtrace,omitempty"` // Enable SYS_PTRACE capability for debugging (only for fixed resource pools)
 }
 
 // DeployResponse deployment response
@@ -94,11 +109,15 @@ type DeployResponse struct {
 
 // UpdateDeploymentRequest update deployment request (image, specification, replica count)
 type UpdateDeploymentRequest struct {
-	Endpoint    string `json:"endpoint"`              // Application name (required)
-	SpecName    string `json:"specName,omitempty"`    // New spec name (optional)
-	Image       string `json:"image,omitempty"`       // New docker image (optional)
-	Replicas    *int   `json:"replicas,omitempty"`    // New replica count (optional, use pointer to distinguish 0 from unset)
-	TaskTimeout *int   `json:"taskTimeout,omitempty"` // New task timeout (optional)
+	Endpoint     string         `json:"endpoint"`                    // Application name (required)
+	SpecName     string         `json:"specName,omitempty"`          // New spec name (optional)
+	Image        string         `json:"image,omitempty"`             // New docker image (optional)
+	Replicas     *int           `json:"replicas,omitempty"`          // New replica count (optional, use pointer to distinguish 0 from unset)
+	VolumeMounts *[]VolumeMount    `json:"volumeMounts,omitempty"`      // New volume mounts (optional, use pointer to distinguish empty from unset)
+	ShmSize      *string           `json:"shmSize,omitempty"`           // New shared memory size (optional, use pointer to distinguish empty from unset)
+	EnablePtrace *bool             `json:"enablePtrace,omitempty"`      // Enable SYS_PTRACE capability (optional, use pointer to distinguish false from unset)
+	Env          *map[string]string `json:"env,omitempty"`              // New environment variables (optional, use pointer to distinguish empty from unset)
+	TaskTimeout  *int              `json:"taskTimeout,omitempty"`       // New task timeout (optional)
 }
 
 // UpdateEndpointConfigRequest update Endpoint configuration request (metadata + autoscaling configuration)
@@ -135,6 +154,8 @@ type AppInfo struct {
 	Image             string            `json:"image"`
 	Labels            map[string]string `json:"labels"`
 	CreatedAt         string            `json:"createdAt"`
+	ShmSize           string            `json:"shmSize,omitempty"`      // Shared memory size from deployment volumes
+	VolumeMounts      []VolumeMount     `json:"volumeMounts,omitempty"` // PVC volume mounts from deployment
 }
 
 // AppStatus application status
@@ -149,11 +170,12 @@ type AppStatus struct {
 
 // SpecInfo specification information
 type SpecInfo struct {
-	Name        string                 `json:"name"`
-	DisplayName string                 `json:"displayName"`
-	Category    string                 `json:"category"`
-	Resources   ResourceRequirements   `json:"resources"`
-	Platforms   map[string]interface{} `json:"platforms"`
+	Name         string                 `json:"name"`
+	DisplayName  string                 `json:"displayName"`
+	Category     string                 `json:"category"`
+	ResourceType string                 `json:"resourceType"`       // fixed, serverless
+	Resources    ResourceRequirements   `json:"resources"`
+	Platforms    map[string]interface{} `json:"platforms"`
 }
 
 // ResourceRequirements resource requirements
@@ -162,8 +184,28 @@ type ResourceRequirements struct {
 	GPUType          string `json:"gpuType"`
 	CPU              string `json:"cpu"`
 	Memory           string `json:"memory"`
-	Disk             string `json:"disk,omitempty"`
 	EphemeralStorage string `json:"ephemeralStorage,omitempty"`
+	ShmSize          string `json:"shmSize,omitempty"` // Shared memory size (e.g., "1Gi", "512Mi")
+}
+
+// CreateSpecRequest create spec request
+type CreateSpecRequest struct {
+	Name         string                 `json:"name" binding:"required"`
+	DisplayName  string                 `json:"displayName" binding:"required"`
+	Category     string                 `json:"category" binding:"required"` // cpu, gpu
+	ResourceType string                 `json:"resourceType" binding:"required"` // fixed, serverless
+	Resources    ResourceRequirements   `json:"resources" binding:"required"`
+	Platforms    map[string]interface{} `json:"platforms,omitempty"`
+}
+
+// UpdateSpecRequest update spec request
+type UpdateSpecRequest struct {
+	DisplayName  *string                `json:"displayName,omitempty"`
+	Category     *string                `json:"category,omitempty"`
+	ResourceType *string                `json:"resourceType,omitempty"` // fixed, serverless
+	Resources    *ResourceRequirements  `json:"resources,omitempty"`
+	Platforms    map[string]interface{} `json:"platforms,omitempty"`
+	Status       *string                `json:"status,omitempty"` // active, inactive, deprecated
 }
 
 // PodInfo Pod basic information
@@ -227,6 +269,18 @@ type ContainerPort struct {
 type EnvVar struct {
 	Name  string `json:"name"`
 	Value string `json:"value,omitempty"`
+}
+
+// PVCInfo PersistentVolumeClaim information
+type PVCInfo struct {
+	Name         string `json:"name"`
+	Namespace    string `json:"namespace"`
+	Status       string `json:"status"`       // Bound, Pending, Lost
+	Volume       string `json:"volume"`       // Bound volume name
+	Capacity     string `json:"capacity"`     // Storage capacity (e.g., "100Gi")
+	AccessModes  string `json:"accessModes"`  // e.g., "ReadWriteOnce"
+	StorageClass string `json:"storageClass"` // Storage class name
+	CreatedAt    string `json:"createdAt"`
 }
 
 // PodCondition Pod condition

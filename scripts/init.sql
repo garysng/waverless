@@ -47,6 +47,8 @@ CREATE TABLE `endpoints` (
   KEY `idx_created_at` (`created_at`)
 ) ENGINE=InnoDB AUTO_INCREMENT=14 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Endpoint metadata and deployment configuration';
 
+ALTER TABLE `endpoints` ADD COLUMN `enable_ptrace` tinyint(1) NOT NULL DEFAULT '0' COMMENT 'Enable SYS_PTRACE capability for debugging (only for fixed resource pools)';
+
 CREATE TABLE `gpu_usage_records` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `task_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Task ID',
@@ -226,4 +228,27 @@ CREATE TABLE `tasks` (
   KEY `idx_created_at` (`created_at`),
   KEY `idx_completed_at` (`completed_at`)
 ) ENGINE=InnoDB AUTO_INCREMENT=26304 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Task records with all statuses';
+
+CREATE TABLE `resource_specs` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Spec name (unique identifier)',
+  `display_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Display name',
+  `category` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Category: cpu, gpu',
+  `cpu` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT 'CPU cores (e.g., "2", "4")',
+  `memory` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Memory (e.g., "4Gi", "8Gi")',
+  `gpu` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT 'GPU count (e.g., "1", "2")',
+  `gpu_type` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT 'GPU type (e.g., "NVIDIA-H200", "NVIDIA-A100")',
+  `ephemeral_storage` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Ephemeral storage (e.g., "30", "300")',
+  `shm_size` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT 'Shared memory size (e.g., "1Gi", "512Mi")',
+  `resource_type` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT 'serverless' COMMENT 'Resource type: fixed, serverless',
+  `platforms` json DEFAULT NULL COMMENT 'Platform-specific configurations as JSON',
+  `status` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT 'active' COMMENT 'Spec status: active, inactive, deprecated',
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `idx_spec_name_unique` (`name`),
+  KEY `idx_category` (`category`),
+  KEY `idx_status` (`status`),
+  KEY `idx_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Resource specifications for deployments';
 

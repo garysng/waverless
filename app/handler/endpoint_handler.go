@@ -57,11 +57,15 @@ func (h *EndpointHandler) CreateEndpoint(c *gin.Context) {
 		req.Endpoint, req.SpecName, req.Image, req.Replicas, req.TaskTimeout)
 
 	providerReq := &interfaces.DeployRequest{
-		Endpoint:    req.Endpoint,
-		SpecName:    req.SpecName,
-		Image:       req.Image,
-		Replicas:    req.Replicas,
-		TaskTimeout: req.TaskTimeout,
+		Endpoint:     req.Endpoint,
+		SpecName:     req.SpecName,
+		Image:        req.Image,
+		Replicas:     req.Replicas,
+		TaskTimeout:  req.TaskTimeout,
+		Env:          req.Env,
+		VolumeMounts: req.VolumeMounts,
+		ShmSize:      req.ShmSize,
+		EnablePtrace: req.EnablePtrace,
 	}
 
 	metadata := h.buildMetadataFromRequest(c, req)
@@ -117,10 +121,15 @@ func (h *EndpointHandler) PreviewDeploymentYAML(c *gin.Context) {
 	}
 
 	providerReq := &interfaces.DeployRequest{
-		Endpoint: req.Endpoint,
-		SpecName: req.SpecName,
-		Image:    req.Image,
-		Replicas: req.Replicas,
+		Endpoint:     req.Endpoint,
+		SpecName:     req.SpecName,
+		Image:        req.Image,
+		Replicas:     req.Replicas,
+		TaskTimeout:  req.TaskTimeout,
+		Env:          req.Env,
+		VolumeMounts: req.VolumeMounts,
+		ShmSize:      req.ShmSize,
+		EnablePtrace: req.EnablePtrace,
 	}
 
 	yaml, err := h.deploymentProvider.PreviewDeploymentYAML(c.Request.Context(), providerReq)
@@ -171,8 +180,24 @@ func (h *EndpointHandler) GetEndpoint(c *gin.Context) {
 			if metadata.Replicas == 0 {
 				metadata.Replicas = int(app.Replicas)
 			}
+			// Backfill shmSize and volumeMounts from K8s deployment
+			metadata.ShmSize = app.ShmSize
+			metadata.VolumeMounts = app.VolumeMounts
 		} else if err != nil {
 			logger.WarnCtx(c.Request.Context(), "failed to fetch runtime status for endpoint %s: %v", name, err)
+		}
+	}
+
+	// Enrich with task statistics
+	if h.endpointService != nil {
+		if stats, err := h.endpointService.GetEndpointStats(c.Request.Context(), name); err == nil {
+			metadata.PendingTasks = int64(stats.PendingTasks)
+			metadata.RunningTasks = int64(stats.RunningTasks)
+			metadata.TotalTasks = int64(stats.PendingTasks + stats.RunningTasks + stats.CompletedTasks + stats.FailedTasks)
+			metadata.CompletedTasks = int64(stats.CompletedTasks)
+			metadata.FailedTasks = int64(stats.FailedTasks)
+		} else {
+			logger.WarnCtx(c.Request.Context(), "failed to get endpoint stats for %s: %v", name, err)
 		}
 	}
 
@@ -223,6 +248,9 @@ func (h *EndpointHandler) ListEndpoints(c *gin.Context) {
 			if endpoint.Replicas == 0 {
 				endpoint.Replicas = int(app.Replicas)
 			}
+			// Backfill shmSize and volumeMounts from K8s deployment
+			endpoint.ShmSize = app.ShmSize
+			endpoint.VolumeMounts = app.VolumeMounts
 		}
 	}
 
@@ -507,6 +535,8 @@ func (h *EndpointHandler) getEndpointFromRuntimeOnly(c *gin.Context, name string
 		Status:            app.Status,
 		ReadyReplicas:     int(app.ReadyReplicas),
 		AvailableReplicas: int(app.AvailableReplicas),
+		ShmSize:           app.ShmSize,
+		VolumeMounts:      app.VolumeMounts,
 	}
 
 	c.JSON(http.StatusOK, result)
@@ -536,6 +566,8 @@ func (h *EndpointHandler) listEndpointsFromRuntimeOnly(c *gin.Context) {
 			Status:            app.Status,
 			ReadyReplicas:     int(app.ReadyReplicas),
 			AvailableReplicas: int(app.AvailableReplicas),
+			ShmSize:           app.ShmSize,
+			VolumeMounts:      app.VolumeMounts,
 		}
 	}
 
@@ -566,6 +598,8 @@ func (h *EndpointHandler) buildMetadataFromRequest(c *gin.Context, req k8s.Deplo
 			Image:             req.Image,
 			Replicas:          req.Replicas,
 			TaskTimeout:       req.TaskTimeout,
+			Env:               req.Env,
+			EnablePtrace:      req.EnablePtrace,
 			Status:            "Deploying",
 			MinReplicas:       req.MinReplicas,
 			MaxReplicas:       maxReplicas,
@@ -585,6 +619,8 @@ func (h *EndpointHandler) buildMetadataFromRequest(c *gin.Context, req k8s.Deplo
 	metadata.Image = req.Image
 	metadata.Replicas = req.Replicas
 	metadata.TaskTimeout = req.TaskTimeout
+	metadata.Env = req.Env
+	metadata.EnablePtrace = req.EnablePtrace
 	metadata.Status = "Deploying"
 
 	if req.MaxReplicas > 0 {
@@ -844,4 +880,47 @@ func (t *terminalHandler) Write(p []byte) (int, error) {
 func (t *terminalHandler) Next() *remotecommand.TerminalSize {
 	size := <-t.resizeCh
 	return &size
+}
+
+// ListPVCs lists all PersistentVolumeClaims in the namespace
+// @Summary List PVCs
+// @Description Get all PersistentVolumeClaims available in the namespace
+// @Tags K8s
+// @Accept json
+// @Produce json
+// @Success 200 {array} interfaces.PVCInfo
+// @Router /api/v1/k8s/pvcs [get]
+func (h *EndpointHandler) ListPVCs(c *gin.Context) {
+	pvcs, err := h.deploymentProvider.ListPVCs(c.Request.Context())
+	if err != nil {
+		logger.ErrorCtx(c.Request.Context(), "[ERROR] Failed to list PVCs: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, pvcs)
+}
+
+// GetDefaultEnv returns default environment variables from wavespeed-config ConfigMap
+// @Summary Get default environment variables
+// @Description Get default environment variables from wavespeed-config ConfigMap
+// @Tags Config
+// @Accept json
+// @Produce json
+// @Success 200 {object} map[string]string
+// @Router /api/v1/config/default-env [get]
+func (h *EndpointHandler) GetDefaultEnv(c *gin.Context) {
+	if h.deploymentProvider == nil {
+		c.JSON(http.StatusOK, gin.H{})
+		return
+	}
+
+	env, err := h.deploymentProvider.GetDefaultEnv(c.Request.Context())
+	if err != nil {
+		logger.ErrorCtx(c.Request.Context(), "[ERROR] Failed to get default env: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, env)
 }

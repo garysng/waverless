@@ -85,7 +85,7 @@ func (r *TaskRepository) ListByEndpoint(ctx context.Context, endpoint string, li
 	var tasks []*Task
 	err := r.ds.DB(ctx).
 		Where("endpoint = ?", endpoint).
-		Order("created_at DESC").
+		Order("id DESC").
 		Limit(limit).
 		Find(&tasks).Error
 	if err != nil {
@@ -103,7 +103,7 @@ func (r *TaskRepository) ListByStatus(ctx context.Context, status string, limit 
 	var tasks []*Task
 	err := r.ds.DB(ctx).
 		Where("status = ?", status).
-		Order("created_at DESC").
+		Order("id DESC").
 		Limit(limit).
 		Find(&tasks).Error
 	if err != nil {
@@ -121,7 +121,7 @@ func (r *TaskRepository) ListByEndpointAndStatus(ctx context.Context, endpoint, 
 	var tasks []*Task
 	err := r.ds.DB(ctx).
 		Where("endpoint = ? AND status = ?", endpoint, status).
-		Order("created_at DESC").
+		Order("id DESC").
 		Limit(limit).
 		Find(&tasks).Error
 	if err != nil {
@@ -184,20 +184,6 @@ func (r *TaskRepository) CountInProgressByEndpoint(ctx context.Context, endpoint
 	return r.CountByEndpointAndStatus(ctx, endpoint, "IN_PROGRESS")
 }
 
-// GetOldestInProgressTasks retrieves the oldest N in-progress tasks for timeout detection
-func (r *TaskRepository) GetOldestInProgressTasks(ctx context.Context, limit int) ([]*Task, error) {
-	var tasks []*Task
-	err := r.ds.DB(ctx).
-		Where("status = ?", "IN_PROGRESS").
-		Order("started_at ASC").
-		Limit(limit).
-		Find(&tasks).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to get oldest in-progress tasks: %w", err)
-	}
-	return tasks, nil
-}
-
 // BatchUpdateStatus updates status for multiple tasks in a transaction
 func (r *TaskRepository) BatchUpdateStatus(ctx context.Context, taskIDs []string, status string) error {
 	if len(taskIDs) == 0 {
@@ -209,31 +195,6 @@ func (r *TaskRepository) BatchUpdateStatus(ctx context.Context, taskIDs []string
 			Where("task_id IN ?", taskIDs).
 			Update("status", status).Error
 	})
-}
-
-// List retrieves tasks with optional filters
-func (r *TaskRepository) List(ctx context.Context, filters map[string]interface{}, limit, offset int) ([]*Task, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-
-	query := r.ds.DB(ctx).Model(&Task{})
-
-	// Apply filters
-	for key, value := range filters {
-		query = query.Where(key+" = ?", value)
-	}
-
-	var tasks []*Task
-	err := query.
-		Order("created_at DESC").
-		Limit(limit).
-		Offset(offset).
-		Find(&tasks).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to list tasks: %w", err)
-	}
-	return tasks, nil
 }
 
 // ListWithTaskID retrieves tasks with optional filters and task_id exact match
@@ -256,7 +217,7 @@ func (r *TaskRepository) ListWithTaskID(ctx context.Context, filters map[string]
 
 	var tasks []*Task
 	err := query.
-		Order("created_at DESC").
+		Order("id DESC").
 		Limit(limit).
 		Offset(offset).
 		Find(&tasks).Error
@@ -264,23 +225,6 @@ func (r *TaskRepository) ListWithTaskID(ctx context.Context, filters map[string]
 		return nil, fmt.Errorf("failed to list tasks: %w", err)
 	}
 	return tasks, nil
-}
-
-// Count counts tasks with optional filters
-func (r *TaskRepository) Count(ctx context.Context, filters map[string]interface{}) (int64, error) {
-	query := r.ds.DB(ctx).Model(&Task{})
-
-	// Apply filters
-	for key, value := range filters {
-		query = query.Where(key+" = ?", value)
-	}
-
-	var count int64
-	err := query.Count(&count).Error
-	if err != nil {
-		return 0, fmt.Errorf("failed to count tasks: %w", err)
-	}
-	return count, nil
 }
 
 // CountWithTaskID counts tasks with optional filters and task_id exact match
@@ -323,34 +267,6 @@ func (r *TaskRepository) GetPendingTasksByEndpoint(ctx context.Context, endpoint
 	return tasks, nil
 }
 
-// GetRunningTasksCount retrieves count of running tasks
-func (r *TaskRepository) GetRunningTasksCount(ctx context.Context, endpoint string) (int64, error) {
-	var count int64
-	err := r.ds.DB(ctx).Model(&Task{}).
-		Where("endpoint = ? AND status = ?", endpoint, "IN_PROGRESS").
-		Count(&count).Error
-	if err != nil {
-		return 0, fmt.Errorf("failed to count running tasks: %w", err)
-	}
-	return count, nil
-}
-
-// GetOldestPendingTask retrieves the oldest pending task (for starvation detection)
-func (r *TaskRepository) GetOldestPendingTask(ctx context.Context, endpoint string) (*Task, error) {
-	var task Task
-	err := r.ds.DB(ctx).
-		Where("endpoint = ? AND status = ?", endpoint, "PENDING").
-		Order("created_at ASC").
-		First(&task).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get oldest pending task: %w", err)
-	}
-	return &task, nil
-}
-
 // SelectPendingTasksForUpdate queries and locks PENDING tasks (without updating status)
 // Uses SELECT FOR UPDATE row lock to ensure same task won't be pulled by multiple workers simultaneously
 // This function only handles query and locking, not status update, to avoid rollback needs
@@ -362,7 +278,7 @@ func (r *TaskRepository) SelectPendingTasksForUpdate(ctx context.Context, endpoi
 		// Query PENDING tasks and add row lock (SELECT FOR UPDATE)
 		err := r.ds.DB(txCtx).
 			Where("endpoint = ? AND status = ?", endpoint, "PENDING").
-			Order("created_at ASC"). // Earlier creation time has priority (FIFO)
+			Order("id ASC"). // Earlier creation time has priority (FIFO)
 			Limit(limit).
 			Clauses(clause.Locking{Strength: "UPDATE"}). // SELECT FOR UPDATE
 			Find(&tasks).Error

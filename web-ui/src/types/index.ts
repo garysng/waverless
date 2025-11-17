@@ -36,12 +36,16 @@ export interface AppInfo {
   lastScaleTime?: string;
   lastTaskTime?: string;
   firstPendingTime?: string;
+  shmSize?: string; // Shared memory size from deployment
+  volumeMounts?: VolumeMount[]; // PVC volume mounts from deployment
+  enablePtrace?: boolean; // Enable SYS_PTRACE capability for debugging
 }
 
 export interface SpecInfo {
   name: string;
   displayName: string;
   category: string;
+  resourceType?: string; // fixed, serverless
   resources: ResourceRequirements;
   platforms: Record<string, PlatformConfig>;
 }
@@ -51,8 +55,8 @@ export interface ResourceRequirements {
   gpuType?: string;
   cpu: string;
   memory: string;
-  disk?: string;
   ephemeralStorage?: string;
+  shmSize?: string; // Shared memory size (e.g., "1Gi", "512Mi")
 }
 
 export interface PlatformConfig {
@@ -69,12 +73,32 @@ export interface Toleration {
   effect: string;
 }
 
+export interface VolumeMount {
+  pvcName: string;
+  mountPath: string;
+}
+
+export interface PVCInfo {
+  name: string;
+  namespace: string;
+  status: string;
+  volume: string;
+  capacity: string;
+  accessModes: string;
+  storageClass: string;
+  createdAt: string;
+}
+
 export interface DeployRequest {
   endpoint: string;
   specName: string;
   image: string;
   replicas: number;
   taskTimeout?: number;
+  env?: Record<string, string>; // Custom environment variables
+  volumeMounts?: VolumeMount[];
+  shmSize?: string; // Shared memory size (e.g., "1Gi", "512Mi")
+  enablePtrace?: boolean; // Enable SYS_PTRACE capability (only for fixed resource pools)
   // Auto-scaling configuration (optional)
   minReplicas?: number;
   maxReplicas?: number;
@@ -94,6 +118,10 @@ export interface UpdateDeploymentRequest {
   image?: string;
   replicas?: number;
   taskTimeout?: number;
+  env?: Record<string, string>; // Custom environment variables
+  volumeMounts?: VolumeMount[];
+  shmSize?: string; // Shared memory size (e.g., "1Gi", "512Mi")
+  enablePtrace?: boolean; // Enable SYS_PTRACE capability (only for fixed resource pools)
 }
 
 export interface UpdateEndpointConfigRequest {
