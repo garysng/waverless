@@ -62,7 +62,7 @@ const DeployPage = () => {
   const [selectedSpec, setSelectedSpec] = useState<string>('');
   const [yamlPreview, setYamlPreview] = useState<string>('');
   const [previewVisible, setPreviewVisible] = useState(false);
-  const [defaultEnv, setDefaultEnv] = useState<Record<string, string>>({});
+  const [_defaultEnv, setDefaultEnv] = useState<Record<string, string>>({});
 
   // Fetch specs
   const { data: specs, isLoading: specsLoading } = useQuery({
@@ -460,6 +460,92 @@ const DeployPage = () => {
                       ),
                     },
                     {
+                      key: 'mount',
+                      label: (
+                        <span>
+                          <DatabaseOutlined /> Volume Mounts (Optional)
+                        </span>
+                      ),
+                      children: (
+                        <>
+                          <Paragraph type="secondary">
+                            Mount PersistentVolumeClaims to your application containers for persistent storage.
+                          </Paragraph>
+
+                          <Form.List name="volumeMounts">
+                            {(fields, { add, remove }) => (
+                              <>
+                                {fields.map(({ key, name, ...restField }) => (
+                                  <Card key={key} size="small" style={{ marginBottom: 16 }}>
+                                    <Row gutter={16}>
+                                      <Col span={11}>
+                                        <Form.Item
+                                          {...restField}
+                                          name={[name, 'pvcName']}
+                                          label="PVC Name"
+                                          rules={[{ required: true, message: 'Please select a PVC' }]}
+                                        >
+                                          <Select
+                                            placeholder="Select PVC"
+                                            loading={pvcsLoading}
+                                            showSearch
+                                            optionLabelProp="label"
+                                          >
+                                            {pvcs?.map((pvc) => (
+                                              <Select.Option
+                                                key={pvc.name}
+                                                value={pvc.name}
+                                                label={pvc.name}
+                                              >
+                                                <div>{pvc.name}</div>
+                                                <div style={{ fontSize: 11, color: '#999' }}>
+                                                  {pvc.capacity} | {pvc.status} | {pvc.storageClass}
+                                                </div>
+                                              </Select.Option>
+                                            ))}
+                                          </Select>
+                                        </Form.Item>
+                                      </Col>
+                                      <Col span={11}>
+                                        <Form.Item
+                                          {...restField}
+                                          name={[name, 'mountPath']}
+                                          label="Mount Path"
+                                          rules={[
+                                            { required: true, message: 'Please enter mount path' },
+                                            { pattern: /^\/.*/, message: 'Mount path must start with /' },
+                                          ]}
+                                        >
+                                          <Input placeholder="/data" />
+                                        </Form.Item>
+                                      </Col>
+                                      <Col span={2} style={{ display: 'flex', alignItems: 'center', paddingTop: 30 }}>
+                                        <Button
+                                          danger
+                                          icon={<DeleteOutlined />}
+                                          onClick={() => remove(name)}
+                                        />
+                                      </Col>
+                                    </Row>
+                                  </Card>
+                                ))}
+                                <Form.Item>
+                                  <Button
+                                    type="dashed"
+                                    onClick={() => add()}
+                                    block
+                                    icon={<PlusOutlined />}
+                                  >
+                                    Add Volume Mount
+                                  </Button>
+                                </Form.Item>
+                              </>
+                            )}
+                          </Form.List>
+                        </>
+                      ),
+                    },
+                    {
                       key: 'autoscaler',
                       label: (
                         <span>
@@ -568,96 +654,6 @@ const DeployPage = () => {
                               </Form.Item>
                             </Col>
                           </Row>
-                        </>
-                      ),
-                    },
-                  ]}
-                  style={{ marginBottom: 16 }}
-                />
-
-                <Collapse
-                  items={[
-                    {
-                      key: 'mount',
-                      label: (
-                        <span>
-                          <DatabaseOutlined /> Volume Mounts (Optional)
-                        </span>
-                      ),
-                      children: (
-                        <>
-                          <Paragraph type="secondary">
-                            Mount PersistentVolumeClaims to your application containers for persistent storage.
-                          </Paragraph>
-
-                          <Form.List name="volumeMounts">
-                            {(fields, { add, remove }) => (
-                              <>
-                                {fields.map(({ key, name, ...restField }) => (
-                                  <Card key={key} size="small" style={{ marginBottom: 16 }}>
-                                    <Row gutter={16}>
-                                      <Col span={11}>
-                                        <Form.Item
-                                          {...restField}
-                                          name={[name, 'pvcName']}
-                                          label="PVC Name"
-                                          rules={[{ required: true, message: 'Please select a PVC' }]}
-                                        >
-                                          <Select
-                                            placeholder="Select PVC"
-                                            loading={pvcsLoading}
-                                            showSearch
-                                            optionFilterProp="children"
-                                          >
-                                            {pvcs?.map((pvc) => (
-                                              <Select.Option key={pvc.name} value={pvc.name}>
-                                                <div>
-                                                  <div>{pvc.name}</div>
-                                                  <Text type="secondary" style={{ fontSize: 12 }}>
-                                                    {pvc.capacity} | {pvc.status} | {pvc.storageClass}
-                                                  </Text>
-                                                </div>
-                                              </Select.Option>
-                                            ))}
-                                          </Select>
-                                        </Form.Item>
-                                      </Col>
-                                      <Col span={11}>
-                                        <Form.Item
-                                          {...restField}
-                                          name={[name, 'mountPath']}
-                                          label="Mount Path"
-                                          rules={[
-                                            { required: true, message: 'Please enter mount path' },
-                                            { pattern: /^\/.*/, message: 'Mount path must start with /' },
-                                          ]}
-                                        >
-                                          <Input placeholder="/data" />
-                                        </Form.Item>
-                                      </Col>
-                                      <Col span={2} style={{ display: 'flex', alignItems: 'center', paddingTop: 30 }}>
-                                        <Button
-                                          danger
-                                          icon={<DeleteOutlined />}
-                                          onClick={() => remove(name)}
-                                        />
-                                      </Col>
-                                    </Row>
-                                  </Card>
-                                ))}
-                                <Form.Item>
-                                  <Button
-                                    type="dashed"
-                                    onClick={() => add()}
-                                    block
-                                    icon={<PlusOutlined />}
-                                  >
-                                    Add Volume Mount
-                                  </Button>
-                                </Form.Item>
-                              </>
-                            )}
-                          </Form.List>
                         </>
                       ),
                     },

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -8,7 +9,6 @@ import {
   Col,
   Descriptions,
   Divider,
-  Dropdown,
   Drawer,
   Empty,
   Form,
@@ -29,7 +29,6 @@ import {
   Typography,
   message,
 } from 'antd';
-import type { MenuProps } from 'antd';
 import {
   ReloadOutlined,
   DeleteOutlined,
@@ -42,7 +41,6 @@ import {
   SettingOutlined,
   RiseOutlined,
   FallOutlined,
-  EllipsisOutlined,
   FileTextOutlined,
   QuestionCircleOutlined,
   UserOutlined,
@@ -140,6 +138,7 @@ const formatTaskTimeout = (value?: number) =>
   value && value > 0 ? `${value}` : `0 (uses global default ${GLOBAL_TASK_TIMEOUT}s)`;
 
 const AppsPage = () => {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [selectedApp, setSelectedApp] = useState<string>('');
   const [updateModalVisible, setUpdateModalVisible] = useState(false);
@@ -148,7 +147,7 @@ const AppsPage = () => {
   const [globalConfigModalVisible, setGlobalConfigModalVisible] = useState(false);
   const [detailsDrawerVisible, setDetailsDrawerVisible] = useState(false);
   const [isManualRefreshing, setIsManualRefreshing] = useState(false);
-  const [expandedRowKeys, setExpandedRowKeys] = useState<string[]>([]);
+  const [highlightedRow, setHighlightedRow] = useState<string>('');
   const [updateForm] = Form.useForm();
   const [metadataForm] = Form.useForm();
   const [globalConfigForm] = Form.useForm();
@@ -198,6 +197,29 @@ const AppsPage = () => {
       globalConfigForm.setFieldsValue(globalConfig);
     }
   }, [globalConfig, globalConfigForm]);
+
+  // Restore scroll position and highlighted row when returning from detail page
+  useEffect(() => {
+    const savedScrollPosition = sessionStorage.getItem('appsListScrollPosition');
+    const savedHighlightedRow = sessionStorage.getItem('appsListHighlightedRow');
+
+    if (savedScrollPosition) {
+      // Use setTimeout to ensure the DOM is fully rendered
+      setTimeout(() => {
+        window.scrollTo(0, parseInt(savedScrollPosition, 10));
+      }, 100);
+      sessionStorage.removeItem('appsListScrollPosition');
+    }
+
+    if (savedHighlightedRow) {
+      setHighlightedRow(savedHighlightedRow);
+      // Clear highlight after 3 seconds
+      setTimeout(() => {
+        setHighlightedRow('');
+        sessionStorage.removeItem('appsListHighlightedRow');
+      }, 3000);
+    }
+  }, []);
 
   // Fetch specs for update form
   const { data: specs } = useQuery<SpecInfo[]>({
@@ -296,23 +318,6 @@ const AppsPage = () => {
     },
     onError: (error: any) => {
       message.error(error.response?.data?.error || 'Failed to update global configuration');
-    },
-  });
-
-  // Delete mutation
-  const deleteMutation = useMutation({
-    mutationFn: async (name: string) => {
-      await api.apps.delete(name);
-    },
-    onSuccess: (_resp, name) => {
-      message.success('Application deleted successfully');
-      queryClient.invalidateQueries({ queryKey: ['apps'] });
-      queryClient.setQueryData<AppInfo[] | undefined>(['apps'], (old) =>
-        old ? old.filter((app) => app.name !== name) : old
-      );
-    },
-    onError: (error: any) => {
-      message.error(error.response?.data?.error || 'Failed to delete application');
     },
   });
 
@@ -491,20 +496,20 @@ const AppsPage = () => {
       width: 200,
       fixed: 'left' as const,
       render: (name: string, record: AppInfo) => (
-        <Space direction="vertical" size={0}>
+        <div>
           <Tooltip title={name}>
-            <Text strong ellipsis style={{ maxWidth: 180 }}>
+            <Text strong ellipsis style={{ maxWidth: 180, display: 'block' }}>
               {name}
             </Text>
           </Tooltip>
           {record.displayName && record.displayName !== name && (
             <Tooltip title={record.displayName}>
-              <Text type="secondary" ellipsis style={{ fontSize: 12, maxWidth: 180 }}>
+              <Text type="secondary" ellipsis style={{ fontSize: 12, maxWidth: 180, display: 'block' }}>
                 {record.displayName}
               </Text>
             </Tooltip>
           )}
-        </Space>
+        </div>
       ),
     },
     {
@@ -575,17 +580,6 @@ const AppsPage = () => {
       ),
     },
     {
-      title: 'Priority',
-      dataIndex: 'priority',
-      key: 'priority',
-      width: 80,
-      render: (priority: number) => (
-        <Tag color={priority >= 70 ? 'red' : priority >= 50 ? 'orange' : 'default'}>
-          {priority ?? '-'}
-        </Tag>
-      ),
-    },
-    {
       title: 'AutoScaler',
       dataIndex: 'autoscalerEnabled',
       key: 'autoscalerEnabled',
@@ -617,151 +611,6 @@ const AppsPage = () => {
           );
         }
         return <Tag>Unknown</Tag>;
-      },
-    },
-    {
-      title: 'Tasks',
-      key: 'tasks',
-      width: 120,
-      render: (_: any, record: AppInfo) => (
-        <Space size="small">
-          {record.pendingTasks !== undefined && record.pendingTasks > 0 && (
-            <Tooltip title="Pending Tasks">
-              <Tag color="orange" icon={<ClockCircleOutlined />}>
-                {record.pendingTasks}
-              </Tag>
-            </Tooltip>
-          )}
-          {record.runningTasks !== undefined && record.runningTasks > 0 && (
-            <Tooltip title="Running Tasks">
-              <Tag color="blue" icon={<SyncOutlined spin />}>
-                {record.runningTasks}
-              </Tag>
-            </Tooltip>
-          )}
-          {(!record.pendingTasks || record.pendingTasks === 0) &&
-            (!record.runningTasks || record.runningTasks === 0) && (
-              <Text type="secondary">-</Text>
-            )}
-        </Space>
-      ),
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      fixed: 'right' as const,
-      width: 150,
-      render: (_: any, record: AppInfo) => {
-        const lastTriggered = triggerAutoscalerMutation.variables as string | undefined;
-        const isTriggering = triggerAutoscalerMutation.isPending && lastTriggered === record.name;
-        const menuItems: MenuProps['items'] = [
-          {
-            key: 'trigger',
-            label: 'Trigger AutoScaler',
-            icon: <ThunderboltOutlined />,
-            onClick: ({ domEvent }) => {
-              domEvent.stopPropagation();
-              triggerAutoscalerMutation.mutate(record.name);
-            },
-          },
-          {
-            type: 'divider',
-          },
-          {
-            key: 'delete',
-            label: 'Delete',
-            danger: true,
-            icon: <DeleteOutlined />,
-            onClick: ({ domEvent }) => {
-              domEvent.stopPropagation();
-              Modal.confirm({
-                title: 'Delete this app?',
-                content: `Are you sure you want to delete "${record.name}"?`,
-                okText: 'Delete',
-                okType: 'danger',
-                onOk: () => deleteMutation.mutate(record.name),
-              });
-            },
-          },
-        ];
-        return (
-          <Space size={4}>
-            <Tooltip title="View Details">
-              <Button
-                size="small"
-                type="text"
-                icon={<FileTextOutlined />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setSelectedApp(record.name);
-                  setDetailsDrawerVisible(true);
-                }}
-              />
-            </Tooltip>
-            <Tooltip title="Update Deployment">
-              <Button
-                size="small"
-                type="text"
-                icon={<EditOutlined />}
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  setSelectedApp(record.name);
-                  setSelectedUpdateSpec(record.specName || ''); // Set initial selected spec
-
-                  // Convert env object to array format for Form.List
-                  let envVars: Array<{ key: string; value: string }> = [];
-
-                  if (record.env && Object.keys(record.env).length > 0) {
-                    // Priority 1: Use env from endpoint table
-                    envVars = Object.entries(record.env).map(([key, value]) => ({ key, value }));
-                  } else {
-                    // Priority 2: Fetch default env from wavespeed-config ConfigMap
-                    try {
-                      const response = await api.config.getDefaultEnv();
-                      if (response.data && Object.keys(response.data).length > 0) {
-                        envVars = Object.entries(response.data).map(([key, value]) => ({ key, value }));
-                      }
-                    } catch (error) {
-                      console.error('Failed to fetch default env:', error);
-                      // Keep envVars as empty array if fetch fails
-                    }
-                  }
-
-                  updateForm.setFieldsValue({
-                    specName: record.specName || '',
-                    image: record.image || '',
-                    replicas: record.replicas || 1,
-                    shmSize: record.shmSize || '',
-                    volumeMounts: record.volumeMounts || [],
-                    enablePtrace: record.enablePtrace || false, // Read from backend
-                    envVars: envVars,
-                  });
-                  setUpdateModalVisible(true);
-                }}
-              />
-            </Tooltip>
-            <Tooltip title="Edit & Scale">
-              <Button
-                size="small"
-                type="text"
-                icon={<SettingOutlined />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleEditMetadata(record);
-                }}
-              />
-            </Tooltip>
-            <Dropdown menu={{ items: menuItems }} trigger={['click']}>
-              <Button
-                size="small"
-                type="text"
-                icon={<EllipsisOutlined />}
-                loading={isTriggering}
-                onClick={(e) => e.stopPropagation()}
-              />
-            </Dropdown>
-          </Space>
-        );
       },
     },
   ];
@@ -983,26 +832,28 @@ const AppsPage = () => {
           loading={isManualRefreshing}
           scroll={{ x: 1400 }}
           pagination={{ pageSize: 20 }}
-          expandable={{
-            expandedRowRender: (record: AppInfo) => (
-              <div
-                style={{
-                  padding: '16px 24px',
-                  background: '#fafafa',
-                  border: '1px solid #e8e8e8',
-                  borderRadius: '4px',
-                  margin: '8px 0',
-                }}
-              >
-                <EndpointDetailsTabs key={`details-${record.name}`} endpoint={record.name} />
-              </div>
-            ),
-            expandedRowKeys,
-            expandRowByClick: true,
-            onExpand: (expanded, record) => {
-              setExpandedRowKeys(expanded ? [record.name] : []);
+          onRow={(record: AppInfo) => ({
+            onClick: (event) => {
+              // Don't navigate if clicking on a button or interactive element
+              const target = event.target as HTMLElement;
+              if (
+                target.tagName === 'BUTTON' ||
+                target.closest('button') ||
+                target.closest('.ant-dropdown') ||
+                target.closest('.ant-space')
+              ) {
+                return;
+              }
+              // Save scroll position and selected endpoint before navigation
+              sessionStorage.setItem('appsListScrollPosition', window.scrollY.toString());
+              sessionStorage.setItem('appsListHighlightedRow', record.name);
+              navigate(`/apps/${record.name}`);
             },
-          }}
+            style: { cursor: 'pointer' },
+          })}
+          rowClassName={(record: AppInfo) =>
+            record.name === highlightedRow ? 'highlighted-row' : ''
+          }
         />
       </Card>
 
@@ -1179,7 +1030,7 @@ const AppsPage = () => {
             <InputNumber min={0} max={100} style={{ width: '100%' }} />
           </Form.Item>
 
-          <Divider orientation="left">
+          <Divider orientation="left" style={{ marginTop: 8, marginBottom: 16 }}>
             <span>
               <DatabaseOutlined /> Volume Mounts (Optional)
             </span>
@@ -1201,14 +1052,20 @@ const AppsPage = () => {
                           label="PVC Name"
                           rules={[{ required: true, message: 'Select PVC' }]}
                         >
-                          <Select placeholder="Select PVC" showSearch>
+                          <Select
+                            placeholder="Select PVC"
+                            showSearch
+                            optionLabelProp="label"
+                          >
                             {pvcs?.map((pvc) => (
-                              <Select.Option key={pvc.name} value={pvc.name}>
-                                <div>
-                                  <div>{pvc.name}</div>
-                                  <Text type="secondary" style={{ fontSize: 11 }}>
-                                    {pvc.capacity} | {pvc.status}
-                                  </Text>
+                              <Select.Option
+                                key={pvc.name}
+                                value={pvc.name}
+                                label={pvc.name}
+                              >
+                                <div>{pvc.name}</div>
+                                <div style={{ fontSize: 11, color: '#999' }}>
+                                  {pvc.capacity} | {pvc.status}
                                 </div>
                               </Select.Option>
                             ))}
@@ -1249,7 +1106,7 @@ const AppsPage = () => {
             )}
           </Form.List>
 
-          <Divider>
+          <Divider style={{ marginTop: 8, marginBottom: 16 }}>
             <DatabaseOutlined /> Shared Memory
           </Divider>
           <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 16 }}>
@@ -1266,7 +1123,7 @@ const AppsPage = () => {
 
           {specs?.find((s) => s.name === selectedUpdateSpec)?.resourceType === 'fixed' && (
             <>
-              <Divider>
+              <Divider style={{ marginTop: 8, marginBottom: 16 }}>
                 <DatabaseOutlined /> Debugging (ptrace)
               </Divider>
               <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 16 }}>
@@ -1284,7 +1141,7 @@ const AppsPage = () => {
             </>
           )}
 
-          <Divider>
+          <Divider style={{ marginTop: 8, marginBottom: 16 }}>
             <SettingOutlined /> Environment Variables
           </Divider>
           <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 16 }}>
@@ -1560,7 +1417,11 @@ interface EndpointDetailsTabsProps {
   endpoint: string;
 }
 
-const EndpointDetailsTabs = ({ endpoint }: EndpointDetailsTabsProps) => {
+// Note: This component is no longer used as we've moved to a dedicated detail page
+// Keeping it here temporarily for reference during migration
+// @ts-expect-error - Unused component, will be removed after migration
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _EndpointDetailsTabs = ({ endpoint }: EndpointDetailsTabsProps) => {
   const [taskDetail, setTaskDetail] = useState<Task | null>(null);
   const [taskDrawerVisible, setTaskDrawerVisible] = useState(false);
   const [workerDrawerVisible, setWorkerDrawerVisible] = useState(false);
@@ -2875,6 +2736,28 @@ const EndpointDetailsTabs = ({ endpoint }: EndpointDetailsTabsProps) => {
           />
         )}
       </Drawer>
+
+      {/* CSS for highlighted row */}
+      <style>{`
+        .highlighted-row {
+          animation: highlight-fade 3s ease-out;
+        }
+
+        @keyframes highlight-fade {
+          0% {
+            background-color: #e6f7ff;
+            box-shadow: 0 0 10px rgba(24, 144, 255, 0.3);
+          }
+          100% {
+            background-color: transparent;
+            box-shadow: none;
+          }
+        }
+
+        .highlighted-row:hover {
+          background-color: #f5f5f5 !important;
+        }
+      `}</style>
     </>
   );
 };
