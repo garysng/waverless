@@ -3,14 +3,12 @@ package main
 import (
 	"fmt"
 	"net/http"
-	"time"
 
 	"waverless/app/handler"
 	"waverless/app/router"
 	"waverless/internal/model"
 	"waverless/internal/service"
 	endpointsvc "waverless/internal/service/endpoint"
-	"waverless/internal/worker"
 	"waverless/pkg/autoscaler"
 	"waverless/pkg/config"
 	"waverless/pkg/deploy/k8s"
@@ -434,24 +432,6 @@ func (app *Application) initHTTPServer() error{
 		Addr:    fmt.Sprintf(":%d", app.config.Server.Port),
 		Handler: app.ginEngine,
 	}
-
-	// Start legacy scaler (if needed)
-	// NOTE: This is the legacy scaler, may need to be removed or integrated in future refactoring
-	scalerConfig := worker.ScalerConfig{
-		MinWorkers:         1,
-		MaxWorkers:         10,
-		ScaleUpThreshold:   5.0,
-		ScaleDownThreshold: 1.0,
-		CheckInterval:      30 * time.Second,
-		CooldownPeriod:     5 * time.Minute,
-	}
-
-	scaler := worker.NewScaler(scalerConfig, app.taskService, app.workerService)
-	app.wg.Add(1)
-	go func() {
-		defer app.wg.Done()
-		scaler.Start(app.ctx)
-	}()
 
 	return nil
 }
