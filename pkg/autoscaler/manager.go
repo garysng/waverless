@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-redis/redis/v8"
 
+	"waverless/internal/model"
 	endpointsvc "waverless/internal/service/endpoint"
 	"waverless/pkg/deploy/k8s"
 	"waverless/pkg/interfaces"
@@ -347,6 +348,12 @@ func (m *Manager) runOnce(ctx context.Context) error {
 	// Step 4: 执行决策
 	if err := m.executor.ExecuteDecisions(ctx, decisions); err != nil {
 		return fmt.Errorf("failed to execute decisions: %w", err)
+	}
+
+	// Step 4.5: 检查长时间空闲的 worker，触发主动缩容
+	if err := m.checkAndScaleDownIdleWorkers(ctx, endpoints); err != nil {
+		logger.WarnCtx(ctx, "failed to check idle workers: %v", err)
+		// Don't fail the entire autoscaling process if idle worker check fails
 	}
 
 	// Step 5: 清理过期事件（超过7天）
@@ -723,4 +730,93 @@ func (m *Manager) persistConfig(ctx context.Context) {
 	if err := m.redisClient.Set(ctx, m.configKey, data, 0).Err(); err != nil {
 		logger.WarnCtx(ctx, "failed to persist autoscaler config: %v", err)
 	}
+}
+
+// checkAndScaleDownIdleWorkers 检查长时间空闲的 worker，触发主动缩容
+// 即使 Endpoint 整体未达到空闲阈值，如果有个别 worker 空闲时间过长，也可以缩容
+func (m *Manager) checkAndScaleDownIdleWorkers(ctx context.Context, endpoints []*EndpointConfig) error {
+	// Get all workers
+	allWorkers, err := m.executor.workerRepo.GetAll(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get workers: %w", err)
+	}
+
+	if len(allWorkers) == 0 {
+		return nil
+	}
+
+	// Group workers by endpoint
+	workersByEndpoint := make(map[string][]*model.Worker)
+	for _, w := range allWorkers {
+		workersByEndpoint[w.Endpoint] = append(workersByEndpoint[w.Endpoint], w)
+	}
+
+	// Check each endpoint for long-idle workers
+	for _, ep := range endpoints {
+		workers := workersByEndpoint[ep.Name]
+		if len(workers) == 0 {
+			continue
+		}
+
+		// Only check if not already at minimum replicas
+		if ep.Replicas <= ep.MinReplicas {
+			continue
+		}
+
+		// Find workers idle longer than ScaleDownIdleTime
+		scaleDownThreshold := time.Duration(ep.ScaleDownIdleTime) * time.Second
+		now := time.Now()
+
+		for _, w := range workers {
+			// Skip workers with current jobs
+			if w.CurrentJobs > 0 {
+				continue
+			}
+
+			// Skip workers that are draining
+			if w.Status == model.WorkerStatusDraining {
+				continue
+			}
+
+			// Check idle time
+			var idleTime time.Duration
+			if w.LastTaskTime.IsZero() {
+				// Worker never processed tasks, check registration time
+				idleTime = now.Sub(w.RegisteredAt)
+			} else {
+				// Worker processed tasks, check time since last task
+				idleTime = now.Sub(w.LastTaskTime)
+			}
+
+			if idleTime < scaleDownThreshold {
+				continue
+			}
+
+			// Found a long-idle worker, trigger scale-down
+			logger.InfoCtx(ctx, "found long-idle worker %s for endpoint %s (idle %.0fs >= %ds), triggering proactive scale-down",
+				w.ID, ep.Name, idleTime.Seconds(), ep.ScaleDownIdleTime)
+
+			// Create a scale-down decision for this endpoint
+			decision := &ScaleDecision{
+				Endpoint:        ep.Name,
+				CurrentReplicas: ep.Replicas,
+				DesiredReplicas: ep.Replicas - 1, // Scale down by 1
+				ScaleAmount:     -1,
+				Priority:        ep.Priority,
+				QueueLength:     ep.PendingTasks,
+				Reason:          fmt.Sprintf("Worker-based idle scale-down (worker %s idle %.0fs)", w.ID, idleTime.Seconds()),
+				Approved:        true,
+			}
+
+			// Execute the scale-down decision immediately
+			if err := m.executor.ExecuteDecisions(ctx, []*ScaleDecision{decision}); err != nil {
+				logger.WarnCtx(ctx, "failed to execute worker-based scale-down for %s: %v", ep.Name, err)
+			}
+
+			// Only scale down one worker per endpoint per cycle
+			break
+		}
+	}
+
+	return nil
 }

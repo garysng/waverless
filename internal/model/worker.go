@@ -23,6 +23,7 @@ type Worker struct {
 	CurrentJobs     int          `json:"current_jobs"`     // Current number of jobs
 	JobsInProgress  []string     `json:"jobs_in_progress"` // List of in-progress task IDs
 	LastHeartbeat   time.Time    `json:"last_heartbeat"`
+	LastTaskTime    time.Time    `json:"last_task_time"`  // Last time a task was completed (for idle tracking)
 	Version         string       `json:"version,omitempty"`
 	RegisteredAt    time.Time    `json:"registered_at"`
 	PodName         string       `json:"pod_name,omitempty"` // K8s pod name (from RUNPOD_POD_ID env)

@@ -90,10 +90,11 @@ type EndpointMetadata struct {
 	RunningTasks int64 `json:"runningTasks,omitempty"` // Current running tasks
 
 	// Configuration information
-	Env          map[string]string `json:"env"`          // Environment variables
-	Labels       map[string]string `json:"labels"`       // Labels
-	TaskTimeout  int               `json:"taskTimeout"`  // Task execution timeout in seconds (0 = use global default)
-	EnablePtrace bool              `json:"enablePtrace"` // Enable SYS_PTRACE capability for debugging (only for fixed resource pools)
+	Env             map[string]string `json:"env"`             // Environment variables
+	Labels          map[string]string `json:"labels"`          // Labels
+	TaskTimeout     int               `json:"taskTimeout"`     // Task execution timeout in seconds (0 = use global default)
+	EnablePtrace    bool              `json:"enablePtrace"`    // Enable SYS_PTRACE capability for debugging (only for fixed resource pools)
+	MaxPendingTasks int               `json:"maxPendingTasks"` // Maximum allowed pending tasks before warning clients (default 1)
 
 	// Status information
 	Status            string `json:"status"`            // Running, Stopped, Failed

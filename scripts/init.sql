@@ -49,6 +49,8 @@ CREATE TABLE `endpoints` (
 
 ALTER TABLE `endpoints` ADD COLUMN `enable_ptrace` tinyint(1) NOT NULL DEFAULT '0' COMMENT 'Enable SYS_PTRACE capability for debugging (only for fixed resource pools)';
 
+ALTER TABLE `endpoints` ADD COLUMN `max_pending_tasks` int NOT NULL DEFAULT '1' COMMENT 'Maximum allowed pending tasks before warning clients';
+
 CREATE TABLE `gpu_usage_records` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `task_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Task ID',
@@ -229,6 +231,11 @@ CREATE TABLE `tasks` (
   KEY `idx_completed_at` (`completed_at`)
 ) ENGINE=InnoDB AUTO_INCREMENT=26304 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Task records with all statuses';
 
+ALTER TABLE `tasks`
+  ADD INDEX `idx_endpoint_id` (`endpoint`, `id`),
+  ADD INDEX `idx_endpoint_status_id` (`endpoint`, `status`, `id`),
+  ADD INDEX `idx_status_id` (`status`, `id`);
+  
 CREATE TABLE `resource_specs` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Spec name (unique identifier)',

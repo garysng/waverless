@@ -220,6 +220,7 @@ const AppDetailPage = () => {
       maxReplicas: appInfo.maxReplicas ?? 1,
       priority: appInfo.priority ?? 50,
       taskTimeout: appInfo.taskTimeout ?? 0,
+      maxPendingTasks: appInfo.maxPendingTasks ?? 1,
       autoscalerEnabled: appInfo.autoscalerEnabled || '',
       scaleUpThreshold: appInfo.scaleUpThreshold ?? 1,
       scaleDownIdleTime: appInfo.scaleDownIdleTime ?? 300,
@@ -240,6 +241,7 @@ const AppDetailPage = () => {
         displayName: values.displayName,
         description: values.description,
         taskTimeout: values.taskTimeout,
+        maxPendingTasks: values.maxPendingTasks,
         minReplicas: values.minReplicas,
         maxReplicas: values.maxReplicas,
         priority: values.priority,
@@ -756,6 +758,14 @@ const AppDetailPage = () => {
             help={`0 = use global default (${GLOBAL_TASK_TIMEOUT}s)`}
           >
             <InputNumber min={0} placeholder={`0 = use global default`} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            label="Max Pending Tasks"
+            name="maxPendingTasks"
+            help="Maximum allowed pending tasks before warning clients to not submit new tasks"
+            tooltip="When pending tasks reach this threshold, the /check endpoint will return can_submit=false"
+          >
+            <InputNumber min={1} max={1000} placeholder="1" style={{ width: '100%' }} />
           </Form.Item>
 
           <Divider>AutoScaler Configuration</Divider>

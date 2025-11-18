@@ -223,6 +223,45 @@ const WorkersTab = ({ endpoint, jumpToWorker, onClearJumpToWorker }: WorkersTabP
       },
     },
     {
+      title: 'Idle Time',
+      dataIndex: 'last_task_time',
+      key: 'last_task_time',
+      width: 120,
+      render: (lastTaskTime: string, record: Worker) => {
+        // If worker has current jobs, it's not idle
+        if (record.current_jobs > 0) {
+          return <Tag color="blue">Active</Tag>;
+        }
+
+        if (!lastTaskTime) {
+          // Worker never processed tasks, show time since registration
+          const registered = new Date(record.registered_at);
+          const now = new Date();
+          const diff = now.getTime() - registered.getTime();
+          const minutes = Math.floor(diff / 60000);
+          if (minutes < 1) return <Tag color="green">Just started</Tag>;
+          if (minutes < 60) return <Tag color="orange">{minutes}m (new)</Tag>;
+          const hours = Math.floor(minutes / 60);
+          if (hours < 24) return <Tag color="volcano">{hours}h (new)</Tag>;
+          return <Tag color="red">{Math.floor(hours / 24)}d (new)</Tag>;
+        }
+
+        // Calculate idle time since last task
+        const lastTask = new Date(lastTaskTime);
+        const now = new Date();
+        const idleMs = now.getTime() - lastTask.getTime();
+        const idleSeconds = Math.floor(idleMs / 1000);
+
+        if (idleSeconds < 60) return <Tag color="green">{idleSeconds}s</Tag>;
+        const idleMinutes = Math.floor(idleSeconds / 60);
+        if (idleMinutes < 60) return <Tag color="orange">{idleMinutes}m</Tag>;
+        const idleHours = Math.floor(idleMinutes / 60);
+        if (idleHours < 24) return <Tag color="volcano">{idleHours}h</Tag>;
+        const idleDays = Math.floor(idleHours / 24);
+        return <Tag color="red">{idleDays}d</Tag>;
+      },
+    },
+    {
       title: 'Version',
       dataIndex: 'version',
       key: 'version',

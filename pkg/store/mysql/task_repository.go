@@ -76,60 +76,6 @@ func (r *TaskRepository) Delete(ctx context.Context, taskID string) error {
 	return r.ds.DB(ctx).Where("task_id = ?", taskID).Delete(&Task{}).Error
 }
 
-// ListByEndpoint retrieves tasks by endpoint
-func (r *TaskRepository) ListByEndpoint(ctx context.Context, endpoint string, limit int) ([]*Task, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-
-	var tasks []*Task
-	err := r.ds.DB(ctx).
-		Where("endpoint = ?", endpoint).
-		Order("id DESC").
-		Limit(limit).
-		Find(&tasks).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to list tasks by endpoint: %w", err)
-	}
-	return tasks, nil
-}
-
-// ListByStatus retrieves tasks by status
-func (r *TaskRepository) ListByStatus(ctx context.Context, status string, limit int) ([]*Task, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-
-	var tasks []*Task
-	err := r.ds.DB(ctx).
-		Where("status = ?", status).
-		Order("id DESC").
-		Limit(limit).
-		Find(&tasks).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to list tasks by status: %w", err)
-	}
-	return tasks, nil
-}
-
-// ListByEndpointAndStatus retrieves tasks by endpoint and status
-func (r *TaskRepository) ListByEndpointAndStatus(ctx context.Context, endpoint, status string, limit int) ([]*Task, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-
-	var tasks []*Task
-	err := r.ds.DB(ctx).
-		Where("endpoint = ? AND status = ?", endpoint, status).
-		Order("id DESC").
-		Limit(limit).
-		Find(&tasks).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to list tasks by endpoint and status: %w", err)
-	}
-	return tasks, nil
-}
-
 // GetInProgressTasks retrieves all in-progress task IDs
 // This is used for orphaned task detection
 func (r *TaskRepository) GetInProgressTasks(ctx context.Context) ([]string, error) {
@@ -227,6 +173,38 @@ func (r *TaskRepository) ListWithTaskID(ctx context.Context, filters map[string]
 	return tasks, nil
 }
 
+// ListWithTaskIDExcludeInput retrieves tasks excluding the input field (performance optimization)
+// This avoids fetching potentially large input data when not needed (e.g., in list views)
+func (r *TaskRepository) ListWithTaskIDExcludeInput(ctx context.Context, filters map[string]interface{}, taskID string, limit, offset int) ([]*Task, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	query := r.ds.DB(ctx).Model(&Task{}).
+		Select("id", "task_id", "endpoint", "status", "output", "error", "worker_id", "webhook_url", "created_at", "updated_at", "started_at", "completed_at", "extend")
+
+	// Apply filters
+	for key, value := range filters {
+		query = query.Where(key+" = ?", value)
+	}
+
+	// Apply task_id exact match if provided (uses index)
+	if taskID != "" {
+		query = query.Where("task_id = ?", taskID)
+	}
+
+	var tasks []*Task
+	err := query.
+		Order("id DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&tasks).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tasks: %w", err)
+	}
+	return tasks, nil
+}
+
 // CountWithTaskID counts tasks with optional filters and task_id exact match
 func (r *TaskRepository) CountWithTaskID(ctx context.Context, filters map[string]interface{}, taskID string) (int64, error) {
 	query := r.ds.DB(ctx).Model(&Task{})
@@ -270,18 +248,21 @@ func (r *TaskRepository) GetPendingTasksByEndpoint(ctx context.Context, endpoint
 // SelectPendingTasksForUpdate queries and locks PENDING tasks (without updating status)
 // Uses SELECT FOR UPDATE row lock to ensure same task won't be pulled by multiple workers simultaneously
 // This function only handles query and locking, not status update, to avoid rollback needs
-func (r *TaskRepository) SelectPendingTasksForUpdate(ctx context.Context, endpoint string, limit int) ([]*Task, error) {
-	var tasks []*Task
+// OPTIMIZATION: Only returns task IDs to avoid fetching large input field
+func (r *TaskRepository) SelectPendingTasksForUpdate(ctx context.Context, endpoint string, limit int) ([]string, error) {
+	var taskIDs []string
 
 	// Use transaction + SELECT FOR UPDATE to query and lock tasks
 	err := r.ds.ExecTx(ctx, func(txCtx context.Context) error {
 		// Query PENDING tasks and add row lock (SELECT FOR UPDATE)
-		err := r.ds.DB(txCtx).
+		// Only select task_id to avoid fetching large input field
+		err := r.ds.DB(txCtx).Model(&Task{}).
+			Select("task_id").
 			Where("endpoint = ? AND status = ?", endpoint, "PENDING").
 			Order("id ASC"). // Earlier creation time has priority (FIFO)
 			Limit(limit).
 			Clauses(clause.Locking{Strength: "UPDATE"}). // SELECT FOR UPDATE
-			Find(&tasks).Error
+			Pluck("task_id", &taskIDs).Error
 		if err != nil {
 			return fmt.Errorf("failed to select pending tasks: %w", err)
 		}
@@ -293,7 +274,7 @@ func (r *TaskRepository) SelectPendingTasksForUpdate(ctx context.Context, endpoi
 		return nil, err
 	}
 
-	return tasks, nil
+	return taskIDs, nil
 }
 
 // AssignTasksToWorker atomically assigns tasks to worker (CAS update)

@@ -8,7 +8,7 @@ import (
 )
 
 // Router Router
-type Router struct{
+type Router struct {
 	taskHandler       *handler.TaskHandler
 	workerHandler     *handler.WorkerHandler
 	endpointHandler   *handler.EndpointHandler
@@ -54,6 +54,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 			endpoint.GET("/status/:task_id", r.taskHandler.Status)  // Reuse existing
 			endpoint.POST("/cancel/:task_id", r.taskHandler.Cancel) // Reuse existing
 			endpoint.GET("/stats", r.taskHandler.GetEndpointStats)  // endpoint statistics
+			endpoint.GET("/check", r.taskHandler.CheckSubmitEligibility) // check if task submission is recommended
 		}
 	}
 
@@ -80,17 +81,17 @@ func (r *Router) Setup(engine *gin.Engine) {
 			// Endpoint lifecycle management
 			endpoints := api.Group("/endpoints")
 			{
-				endpoints.POST("", r.endpointHandler.CreateEndpoint)                             // Create endpoint (metadata + deployment)
-				endpoints.POST("/preview", r.endpointHandler.PreviewDeploymentYAML)              // Preview YAML
-				endpoints.GET("", r.endpointHandler.ListEndpoints)                               // List endpoints
-				endpoints.GET("/:name", r.endpointHandler.GetEndpoint)                           // Get endpoint detail
-				endpoints.PUT("/:name", r.endpointHandler.UpdateEndpoint)                        // Update metadata
-				endpoints.PATCH("/:name/deployment", r.endpointHandler.UpdateEndpointDeployment) // Update deployment
-				endpoints.DELETE("/:name", r.endpointHandler.DeleteEndpoint)                     // Delete endpoint
-				endpoints.GET("/:name/logs", r.endpointHandler.GetEndpointLogs)                         // Logs
-				endpoints.GET("/:name/workers", r.endpointHandler.GetEndpointWorkers)                   // Workers
-				endpoints.GET("/:name/workers/:pod_name/describe", r.workerHandler.DescribeWorker)      // Describe Worker (Pod detail)
-				endpoints.GET("/:name/workers/exec", r.endpointHandler.ExecWorker)                      // Worker Exec (WebSocket)
+				endpoints.POST("", r.endpointHandler.CreateEndpoint)                               // Create endpoint (metadata + deployment)
+				endpoints.POST("/preview", r.endpointHandler.PreviewDeploymentYAML)                // Preview YAML
+				endpoints.GET("", r.endpointHandler.ListEndpoints)                                 // List endpoints
+				endpoints.GET("/:name", r.endpointHandler.GetEndpoint)                             // Get endpoint detail
+				endpoints.PUT("/:name", r.endpointHandler.UpdateEndpoint)                          // Update metadata
+				endpoints.PATCH("/:name/deployment", r.endpointHandler.UpdateEndpointDeployment)   // Update deployment
+				endpoints.DELETE("/:name", r.endpointHandler.DeleteEndpoint)                       // Delete endpoint
+				endpoints.GET("/:name/logs", r.endpointHandler.GetEndpointLogs)                    // Logs
+				endpoints.GET("/:name/workers", r.endpointHandler.GetEndpointWorkers)              // Workers
+				endpoints.GET("/:name/workers/:pod_name/describe", r.workerHandler.DescribeWorker) // Describe Worker (Pod detail)
+				endpoints.GET("/:name/workers/exec", r.endpointHandler.ExecWorker)                 // Worker Exec (WebSocket)
 			}
 
 			// Task history APIs
@@ -101,15 +102,14 @@ func (r *Router) Setup(engine *gin.Engine) {
 				tasks.GET("/:task_id/timeline", r.taskHandler.GetTaskTimeline)                  // Get timeline
 			}
 
-
 			// Spec management APIs (CRUD, from database)
 			if r.specHandler != nil {
 				specs := api.Group("/specs")
 				{
-					specs.POST("", r.specHandler.CreateSpec)       // Create spec
-					specs.GET("", r.specHandler.ListSpecs)         // List specs
-					specs.GET("/:name", r.specHandler.GetSpec)     // Get spec
-					specs.PUT("/:name", r.specHandler.UpdateSpec)  // Update spec
+					specs.POST("", r.specHandler.CreateSpec)         // Create spec
+					specs.GET("", r.specHandler.ListSpecs)           // List specs
+					specs.GET("/:name", r.specHandler.GetSpec)       // Get spec
+					specs.PUT("/:name", r.specHandler.UpdateSpec)    // Update spec
 					specs.DELETE("/:name", r.specHandler.DeleteSpec) // Delete spec
 				}
 			}
@@ -159,8 +159,8 @@ func (r *Router) Setup(engine *gin.Engine) {
 			if r.statisticsHandler != nil {
 				statistics := api.Group("/statistics")
 				{
-					statistics.GET("/overview", r.statisticsHandler.GetOverview)                  // Global statistics
-					statistics.GET("/endpoints", r.statisticsHandler.GetTopEndpoints)             // Top endpoints by task volume
+					statistics.GET("/overview", r.statisticsHandler.GetOverview)                      // Global statistics
+					statistics.GET("/endpoints", r.statisticsHandler.GetTopEndpoints)                 // Top endpoints by task volume
 					statistics.GET("/endpoints/:endpoint", r.statisticsHandler.GetEndpointStatistics) // Specific endpoint statistics
 				}
 			}
@@ -169,10 +169,10 @@ func (r *Router) Setup(engine *gin.Engine) {
 			if r.gpuUsageHandler != nil {
 				gpuUsage := api.Group("/gpu-usage")
 				{
-					gpuUsage.GET("/minute", r.gpuUsageHandler.GetMinuteStatistics)     // Minute-level statistics
-					gpuUsage.GET("/hourly", r.gpuUsageHandler.GetHourlyStatistics)     // Hourly statistics
-					gpuUsage.GET("/daily", r.gpuUsageHandler.GetDailyStatistics)       // Daily statistics
-					gpuUsage.POST("/aggregate", r.gpuUsageHandler.TriggerAggregation)  // Manual aggregation trigger
+					gpuUsage.GET("/minute", r.gpuUsageHandler.GetMinuteStatistics)       // Minute-level statistics
+					gpuUsage.GET("/hourly", r.gpuUsageHandler.GetHourlyStatistics)       // Hourly statistics
+					gpuUsage.GET("/daily", r.gpuUsageHandler.GetDailyStatistics)         // Daily statistics
+					gpuUsage.POST("/aggregate", r.gpuUsageHandler.TriggerAggregation)    // Manual aggregation trigger
 					gpuUsage.POST("/backfill", r.gpuUsageHandler.BackfillHistoricalData) // Backfill historical data
 				}
 			}

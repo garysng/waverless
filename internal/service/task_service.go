@@ -367,7 +367,41 @@ func (s *TaskService) GetPendingTaskCount(ctx context.Context, endpoint string) 
 	return s.taskRepo.CountByEndpointAndStatus(ctx, endpoint, string(model.TaskStatusPending))
 }
 
+// CheckSubmitEligibility checks if task submission is recommended based on pending queue depth
+func (s *TaskService) CheckSubmitEligibility(ctx context.Context, endpoint string) (bool, int64, int, error) {
+	if endpoint == "" {
+		endpoint = "default"
+	}
+
+	// Get endpoint configuration
+	endpointMeta, err := s.endpointService.GetEndpoint(ctx, endpoint)
+	if err != nil {
+		return false, 0, 0, fmt.Errorf("failed to get endpoint: %w", err)
+	}
+	if endpointMeta == nil {
+		return false, 0, 0, fmt.Errorf("endpoint not found: %s", endpoint)
+	}
+
+	// Get current pending task count
+	pendingCount, err := s.GetPendingTaskCount(ctx, endpoint)
+	if err != nil {
+		return false, 0, 0, fmt.Errorf("failed to get pending task count: %w", err)
+	}
+
+	// Get max pending tasks threshold (default to 1 if not set)
+	maxPendingTasks := endpointMeta.MaxPendingTasks
+	if maxPendingTasks <= 0 {
+		maxPendingTasks = 1
+	}
+
+	// Check if submission is recommended
+	shouldSubmit := pendingCount < int64(maxPendingTasks)
+
+	return shouldSubmit, pendingCount, maxPendingTasks, nil
+}
+
 // ListTasks retrieves a list of tasks with optional filtering
+// OPTIMIZATION: Excludes input field to avoid fetching potentially large data (e.g., base64 images)
 func (s *TaskService) ListTasks(ctx context.Context, status string, endpoint string, taskID string, limit int, offset int) ([]*model.TaskResponse, int64, error) {
 	// Build filters
 	filters := make(map[string]interface{})
@@ -384,13 +418,13 @@ func (s *TaskService) ListTasks(ctx context.Context, status string, endpoint str
 		return nil, 0, err
 	}
 
-	// Use the generic List method with filters
-	mysqlTasks, err := s.taskRepo.ListWithTaskID(ctx, filters, taskID, limit, offset)
+	// Use the optimized List method that excludes input field
+	mysqlTasks, err := s.taskRepo.ListWithTaskIDExcludeInput(ctx, filters, taskID, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Convert to TaskResponse format
+	// Convert to TaskResponse format (input will be nil/empty)
 	responses := make([]*model.TaskResponse, 0, len(mysqlTasks))
 	for _, mysqlTask := range mysqlTasks {
 		task := mysql.ToTaskDomain(mysqlTask)

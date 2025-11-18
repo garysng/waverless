@@ -84,6 +84,11 @@ const OverviewTab = ({ appInfo }: OverviewTabProps) => {
         <Descriptions.Item label="Task Timeout">
           {formatTaskTimeout(appInfo.taskTimeout)}
         </Descriptions.Item>
+        <Descriptions.Item label="Max Pending Tasks">
+          <Tooltip title="Maximum allowed pending tasks before warning clients to not submit new tasks">
+            {appInfo.maxPendingTasks || 1}
+          </Tooltip>
+        </Descriptions.Item>
         <Descriptions.Item label="Image" span={2}>
           <Text code style={{ fontSize: 12 }}>
             {appInfo.image || '-'}

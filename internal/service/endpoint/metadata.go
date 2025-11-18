@@ -272,17 +272,18 @@ func toMySQLEndpoint(endpoint *interfaces.EndpointMetadata) *mysql.Endpoint {
 
 func fromMySQLEndpoint(endpoint *mysql.Endpoint) *interfaces.EndpointMetadata {
 	return &interfaces.EndpointMetadata{
-		Name:         endpoint.Endpoint,
-		SpecName:     endpoint.SpecName,
-		Image:        endpoint.Image,
-		Replicas:     endpoint.Replicas,
-		TaskTimeout:  endpoint.TaskTimeout,
-		EnablePtrace: endpoint.EnablePtrace,
-		Env:          mysql.JSONMapToStringMap(endpoint.Env),
-		Labels:       mysql.JSONMapToStringMap(endpoint.Labels),
-		Status:       endpoint.Status,
-		CreatedAt:    endpoint.CreatedAt,
-		UpdatedAt:    endpoint.UpdatedAt,
+		Name:            endpoint.Endpoint,
+		SpecName:        endpoint.SpecName,
+		Image:           endpoint.Image,
+		Replicas:        endpoint.Replicas,
+		TaskTimeout:     endpoint.TaskTimeout,
+		EnablePtrace:    endpoint.EnablePtrace,
+		MaxPendingTasks: endpoint.MaxPendingTasks,
+		Env:             mysql.JSONMapToStringMap(endpoint.Env),
+		Labels:          mysql.JSONMapToStringMap(endpoint.Labels),
+		Status:          endpoint.Status,
+		CreatedAt:       endpoint.CreatedAt,
+		UpdatedAt:       endpoint.UpdatedAt,
 	}
 }
 
