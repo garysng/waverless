@@ -149,11 +149,23 @@ func (e *Executor) scaleDown(ctx context.Context, decision *ScaleDecision) error
 	}
 
 	// Step 2: Filter workers for this endpoint and find idle ones
+	// Priority: select the worker with the longest idle time (earliest LastTaskTime)
 	var idleWorker *model.Worker
+	var oldestIdleTime time.Time
+
 	for _, w := range allWorkers {
 		if w.Endpoint == decision.Endpoint && w.CurrentJobs == 0 {
-			idleWorker = w
-			break
+			// If this is the first idle worker, or has been idle longer
+			if idleWorker == nil {
+				idleWorker = w
+				oldestIdleTime = w.LastTaskTime
+			} else if !w.LastTaskTime.IsZero() {
+				// Select worker with earliest LastTaskTime (longest idle)
+				if oldestIdleTime.IsZero() || w.LastTaskTime.Before(oldestIdleTime) {
+					idleWorker = w
+					oldestIdleTime = w.LastTaskTime
+				}
+			}
 		}
 	}
 
@@ -178,7 +190,18 @@ func (e *Executor) scaleDown(ctx context.Context, decision *ScaleDecision) error
 
 	// Step 4: Target Pod Name = worker ID (from deployment.yaml: RUNPOD_POD_ID = metadata.name)
 	targetPodName := idleWorker.ID
-	logger.InfoCtx(ctx, "selected idle worker for scale down: %s (endpoint: %s)", targetPodName, decision.Endpoint)
+
+	// Log idle duration for visibility
+	var idleDurationMsg string
+	if !idleWorker.LastTaskTime.IsZero() {
+		idleDuration := time.Since(idleWorker.LastTaskTime)
+		idleDurationMsg = fmt.Sprintf(", idle for %.0f seconds", idleDuration.Seconds())
+	} else {
+		idleDurationMsg = ", never processed tasks"
+	}
+
+	logger.InfoCtx(ctx, "selected idle worker for scale down: %s (endpoint: %s%s)",
+		targetPodName, decision.Endpoint, idleDurationMsg)
 
 	// Step 5: Mark Pod as draining (prevent pulling new tasks) + set deletion priority
 	if e.k8sProvider != nil {

@@ -37,12 +37,12 @@ func (s *WorkerService) SetTaskService(taskService *TaskService) {
 
 // HandleHeartbeat handles heartbeat requests
 func (s *WorkerService) HandleHeartbeat(ctx context.Context, req *model.HeartbeatRequest, endpoint string) error {
-	if err := s.workerRepo.UpdateHeartbeat(ctx, req.WorkerID, endpoint, req.JobsInProgress); err != nil {
+	if err := s.workerRepo.UpdateHeartbeat(ctx, req.WorkerID, endpoint, req.JobsInProgress, req.Version); err != nil {
 		return fmt.Errorf("failed to update heartbeat: %w", err)
 	}
 
-	logger.DebugCtx(ctx, "heartbeat received, worker_id: %s, endpoint: %s, jobs_count: %d",
-		req.WorkerID, endpoint, len(req.JobsInProgress))
+	logger.DebugCtx(ctx, "heartbeat received, worker_id: %s, endpoint: %s, jobs_count: %d, version: %s",
+		req.WorkerID, endpoint, len(req.JobsInProgress), req.Version)
 
 	return nil
 }
@@ -54,8 +54,8 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 		endpoint = "default"
 	}
 
-	// Update heartbeat
-	if err := s.workerRepo.UpdateHeartbeat(ctx, req.WorkerID, endpoint, req.JobsInProgress); err != nil {
+	// Update heartbeat (no version in job pull request)
+	if err := s.workerRepo.UpdateHeartbeat(ctx, req.WorkerID, endpoint, req.JobsInProgress, ""); err != nil {
 		logger.ErrorCtx(ctx, "failed to update heartbeat: %v", err)
 	}
 
@@ -268,9 +268,9 @@ func (s *WorkerService) ListWorkers(ctx context.Context, endpoint string) ([]*mo
 func (s *WorkerService) UpdateWorkerHeartbeat(ctx context.Context, workerID string, heartbeat time.Time) error {
 	worker, err := s.workerRepo.Get(ctx, workerID)
 	if err != nil {
-		return s.workerRepo.UpdateHeartbeat(ctx, workerID, "", []string{})
+		return s.workerRepo.UpdateHeartbeat(ctx, workerID, "", []string{}, "")
 	}
-	return s.workerRepo.UpdateHeartbeat(ctx, workerID, worker.Endpoint, worker.JobsInProgress)
+	return s.workerRepo.UpdateHeartbeat(ctx, workerID, worker.Endpoint, worker.JobsInProgress, worker.Version)
 }
 
 // DeleteWorker deletes worker

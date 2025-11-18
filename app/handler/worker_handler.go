@@ -70,10 +70,12 @@ func (h *WorkerHandler) Heartbeat(c *gin.Context) {
 	}
 
 	jobsInProgress := c.QueryArray("job_id")
+	version := c.Query("runpod_version") // Extract runpod_version from query parameter
 
 	req := &model.HeartbeatRequest{
 		WorkerID:       workerID,
 		JobsInProgress: jobsInProgress,
+		Version:        version,
 	}
 
 	if err := h.workerService.HandleHeartbeat(c.Request.Context(), req, endpoint); err != nil {
@@ -326,7 +328,7 @@ func (h *WorkerHandler) GetWorkerList(c *gin.Context) {
 // @Router /endpoints/:name/workers/:pod_name/describe [get]
 func (h *WorkerHandler) DescribeWorker(c *gin.Context) {
 	ctx := c.Request.Context()
-	endpoint := c.Param("name")  // Route parameter is :name not :endpoint
+	endpoint := c.Param("name") // Route parameter is :name not :endpoint
 	podName := c.Param("pod_name")
 
 	if endpoint == "" || podName == "" {

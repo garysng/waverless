@@ -199,6 +199,7 @@ export interface Worker {
   current_jobs: number;
   jobs_in_progress: string[];
   last_heartbeat: string;
+  last_task_time?: string; // Last time a task was completed (for idle tracking)
   version?: string;
   registered_at: string;
 }

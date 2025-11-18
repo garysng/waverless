@@ -124,7 +124,7 @@ func (r *WorkerRepository) GetAll(ctx context.Context) ([]*model.Worker, error) 
 }
 
 // UpdateHeartbeat updates heartbeat
-func (r *WorkerRepository) UpdateHeartbeat(ctx context.Context, workerID, endpoint string, jobsInProgress []string) error {
+func (r *WorkerRepository) UpdateHeartbeat(ctx context.Context, workerID, endpoint string, jobsInProgress []string, version string) error {
 	worker, err := r.Get(ctx, workerID)
 	if err != nil {
 		// Worker doesn't exist, create new one
@@ -138,6 +138,7 @@ func (r *WorkerRepository) UpdateHeartbeat(ctx context.Context, workerID, endpoi
 			Concurrency:    1,
 			JobsInProgress: jobsInProgress,
 			RegisteredAt:   time.Now(),
+			Version:        version,
 		}
 	}
 
@@ -148,9 +149,23 @@ func (r *WorkerRepository) UpdateHeartbeat(ctx context.Context, workerID, endpoi
 		worker.Endpoint = "default"
 	}
 
+	// Update version if provided
+	if version != "" {
+		worker.Version = version
+	}
+
+	// Track task completion: if jobs went from non-zero to zero, update LastTaskTime
+	previousJobs := worker.CurrentJobs
+	currentJobs := len(jobsInProgress)
+
 	worker.LastHeartbeat = time.Now()
 	worker.JobsInProgress = jobsInProgress
-	worker.CurrentJobs = len(jobsInProgress)
+	worker.CurrentJobs = currentJobs
+
+	// Update LastTaskTime when worker becomes idle (completed all tasks)
+	if previousJobs > 0 && currentJobs == 0 {
+		worker.LastTaskTime = time.Now()
+	}
 
 	// Determine status based on current number of tasks
 	// IMPORTANT: Do not override DRAINING status (set by Pod Watcher when pod is terminating)
