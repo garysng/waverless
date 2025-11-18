@@ -54,6 +54,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 			endpoint.GET("/status/:task_id", r.taskHandler.Status)  // Reuse existing
 			endpoint.POST("/cancel/:task_id", r.taskHandler.Cancel) // Reuse existing
 			endpoint.GET("/stats", r.taskHandler.GetEndpointStats)  // endpoint statistics
+			endpoint.GET("/check", r.taskHandler.CheckSubmitEligibility) // check if task submission is recommended
 		}
 	}
 

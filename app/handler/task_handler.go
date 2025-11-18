@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -258,6 +259,45 @@ func (h *TaskHandler) GetEndpointStats(c *gin.Context) {
 		"total_workers": len(workers),
 		"busy_workers":  busyCount,
 	})
+}
+
+// CheckSubmitEligibility checks if task submission is recommended
+// @Summary Check if task submission is recommended
+// @Description Returns whether task submission is recommended based on pending queue depth
+// @Tags tasks
+// @Produce json
+// @Param endpoint path string true "Endpoint name"
+// @Success 200 {object} map[string]interface{}
+// @Router /{endpoint}/check [get]
+func (h *TaskHandler) CheckSubmitEligibility(c *gin.Context) {
+	endpoint := c.Param("endpoint")
+	if endpoint == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "endpoint required"})
+		return
+	}
+
+	shouldSubmit, pendingCount, maxPendingTasks, err := h.taskService.CheckSubmitEligibility(c.Request.Context(), endpoint)
+	if err != nil {
+		logger.ErrorCtx(c.Request.Context(), "failed to check submit eligibility: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"endpoint":           endpoint,
+		"can_submit":         shouldSubmit,
+		"pending_tasks":      pendingCount,
+		"max_pending_tasks":  maxPendingTasks,
+		"message":            getEligibilityMessage(shouldSubmit, pendingCount, maxPendingTasks),
+	})
+}
+
+// getEligibilityMessage returns a user-friendly message about submission eligibility
+func getEligibilityMessage(canSubmit bool, pendingCount int64, maxPendingTasks int) string {
+	if canSubmit {
+		return "Task submission is recommended"
+	}
+	return fmt.Sprintf("Task submission not recommended: pending tasks (%d) >= max allowed (%d)", pendingCount, maxPendingTasks)
 }
 
 // GetTaskExecutionHistory gets task execution history
