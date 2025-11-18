@@ -35,11 +35,41 @@ interface TasksTabProps {
   workers?: WorkerWithPodInfo[];
 }
 
+// Helper function to check if JSON data is too large
+const isDataTooLarge = (data: any, maxSizeKB = 50): boolean => {
+  if (!data) return false;
+  try {
+    const jsonString = JSON.stringify(data);
+    const sizeKB = new Blob([jsonString]).size / 1024;
+    return sizeKB > maxSizeKB;
+  } catch {
+    return false;
+  }
+};
+
+// Helper function to format data size
+const formatDataSize = (data: any): string => {
+  if (!data) return '0 KB';
+  try {
+    const jsonString = JSON.stringify(data);
+    const sizeKB = new Blob([jsonString]).size / 1024;
+    if (sizeKB < 1) {
+      return `${(sizeKB * 1024).toFixed(0)} B`;
+    } else if (sizeKB < 1024) {
+      return `${sizeKB.toFixed(2)} KB`;
+    } else {
+      return `${(sizeKB / 1024).toFixed(2)} MB`;
+    }
+  } catch {
+    return 'Unknown';
+  }
+};
+
 const TasksTab = ({ endpoint, onJumpToWorker, workers = [] }: TasksTabProps) => {
-  const [taskDetail, setTaskDetail] = useState<Task | null>(null);
   const [taskDrawerVisible, setTaskDrawerVisible] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
   const [taskIdSearch, setTaskIdSearch] = useState<string>('');
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
   // Fetch tasks
   const { data: tasksResponse, isLoading: loadingTasks } = useQuery<TaskListResponse>({
@@ -58,6 +88,17 @@ const TasksTab = ({ endpoint, onJumpToWorker, workers = [] }: TasksTabProps) => 
     placeholderData: (previousData) => previousData,
   });
 
+  // Fetch full task details when task is selected (includes input field)
+  const { data: fullTaskDetail } = useQuery({
+    queryKey: ['task-detail', selectedTaskId],
+    queryFn: async () => {
+      if (!selectedTaskId) return null;
+      const response = await api.tasks.get(selectedTaskId);
+      return response.data;
+    },
+    enabled: !!selectedTaskId && taskDrawerVisible,
+  });
+
   // Filter tasks by search term (frontend filter as backup)
   const tasks = (tasksResponse?.tasks || []).filter((task) => {
     if (taskIdSearch && !task.id.toLowerCase().includes(taskIdSearch.toLowerCase())) {
@@ -68,35 +109,35 @@ const TasksTab = ({ endpoint, onJumpToWorker, workers = [] }: TasksTabProps) => 
 
   // Fetch task events when task is selected
   const { data: _eventsData } = useQuery({
-    queryKey: ['task-events', taskDetail?.id],
+    queryKey: ['task-events', selectedTaskId],
     queryFn: async () => {
-      if (!taskDetail?.id) return null;
-      const response = await api.tasks.getEvents(taskDetail.id);
+      if (!selectedTaskId) return null;
+      const response = await api.tasks.getEvents(selectedTaskId);
       return response.data;
     },
-    enabled: !!taskDetail?.id && taskDrawerVisible,
+    enabled: !!selectedTaskId && taskDrawerVisible,
   });
 
   // Fetch task timeline
   const { data: timelineData } = useQuery({
-    queryKey: ['task-timeline', taskDetail?.id],
+    queryKey: ['task-timeline', selectedTaskId],
     queryFn: async () => {
-      if (!taskDetail?.id) return null;
-      const response = await api.tasks.getTimeline(taskDetail.id);
+      if (!selectedTaskId) return null;
+      const response = await api.tasks.getTimeline(selectedTaskId);
       return response.data;
     },
-    enabled: !!taskDetail?.id && taskDrawerVisible,
+    enabled: !!selectedTaskId && taskDrawerVisible,
   });
 
   // Fetch task execution history
   const { data: executionHistory } = useQuery({
-    queryKey: ['task-execution-history', taskDetail?.id],
+    queryKey: ['task-execution-history', selectedTaskId],
     queryFn: async () => {
-      if (!taskDetail?.id) return null;
-      const response = await api.tasks.getExecutionHistory(taskDetail.id);
+      if (!selectedTaskId) return null;
+      const response = await api.tasks.getExecutionHistory(selectedTaskId);
       return response.data;
     },
-    enabled: !!taskDetail?.id && taskDrawerVisible,
+    enabled: !!selectedTaskId && taskDrawerVisible,
   });
 
   // Calculate statistics
@@ -241,7 +282,7 @@ const TasksTab = ({ endpoint, onJumpToWorker, workers = [] }: TasksTabProps) => 
         <Button
           size="small"
           onClick={() => {
-            setTaskDetail(task);
+            setSelectedTaskId(task.id);
             setTaskDrawerVisible(true);
           }}
         >
@@ -315,81 +356,119 @@ const TasksTab = ({ endpoint, onJumpToWorker, workers = [] }: TasksTabProps) => 
 
       {/* Task Detail Drawer */}
       <Drawer
-        title={`Task Details: ${taskDetail?.id?.substring(0, 16) || '-'}...`}
+        title={`Task Details: ${fullTaskDetail?.id?.substring(0, 16) || selectedTaskId?.substring(0, 16) || '-'}...`}
         open={taskDrawerVisible}
         width="60%"
         onClose={() => {
           setTaskDrawerVisible(false);
-          setTaskDetail(null);
+          setSelectedTaskId(null);
         }}
       >
-        {taskDetail && (
+        {fullTaskDetail && (
           <Space direction="vertical" size="large" style={{ width: '100%' }}>
             {/* Basic Info */}
             <Descriptions title="Basic Information" bordered column={1} size="small">
               <Descriptions.Item label="Task ID">
-                <Text code>{taskDetail.id}</Text>
+                <Text code>{fullTaskDetail.id}</Text>
               </Descriptions.Item>
               <Descriptions.Item label="Status">
-                <Tag color={getStatusColor(taskDetail.status)} icon={getStatusIcon(taskDetail.status)}>
-                  {taskDetail.status}
+                <Tag color={getStatusColor(fullTaskDetail.status)} icon={getStatusIcon(fullTaskDetail.status)}>
+                  {fullTaskDetail.status}
                 </Tag>
               </Descriptions.Item>
-              <Descriptions.Item label="Endpoint">{taskDetail.endpoint || '-'}</Descriptions.Item>
+              <Descriptions.Item label="Endpoint">{fullTaskDetail.endpoint || '-'}</Descriptions.Item>
               <Descriptions.Item label="Worker ID">
-                {taskDetail.workerId ? <Text code>{taskDetail.workerId}</Text> : '-'}
+                {fullTaskDetail.workerId ? <Text code>{fullTaskDetail.workerId}</Text> : '-'}
               </Descriptions.Item>
               <Descriptions.Item label="Created At">
-                {taskDetail.createdAt ? new Date(taskDetail.createdAt).toLocaleString() : '-'}
+                {fullTaskDetail.createdAt ? new Date(fullTaskDetail.createdAt).toLocaleString() : '-'}
               </Descriptions.Item>
               <Descriptions.Item label="Execution Time">
-                {taskDetail.executionTime ? `${taskDetail.executionTime}ms` : '-'}
+                {fullTaskDetail.executionTime ? `${fullTaskDetail.executionTime}ms` : '-'}
               </Descriptions.Item>
               <Descriptions.Item label="Delay Time">
-                {taskDetail.delayTime ? `${taskDetail.delayTime}ms` : '-'}
+                {fullTaskDetail.delayTime ? `${fullTaskDetail.delayTime}ms` : '-'}
               </Descriptions.Item>
             </Descriptions>
 
             {/* Input */}
-            {taskDetail.input && (
+            {fullTaskDetail.input && (
               <div>
-                <Text strong>Input:</Text>
-                <pre
-                  style={{
-                    background: '#f5f5f5',
-                    padding: '12px',
-                    borderRadius: '4px',
-                    marginTop: '8px',
-                    maxHeight: '200px',
-                    overflow: 'auto',
-                  }}
-                >
-                  {JSON.stringify(taskDetail.input, null, 2)}
-                </pre>
+                <Space>
+                  <Text strong>Input:</Text>
+                  <Tag color="blue">{formatDataSize(fullTaskDetail.input)}</Tag>
+                </Space>
+                {isDataTooLarge(fullTaskDetail.input) ? (
+                  <div
+                    style={{
+                      background: '#fff7e6',
+                      padding: '12px',
+                      borderRadius: '4px',
+                      marginTop: '8px',
+                      border: '1px solid #ffd591',
+                    }}
+                  >
+                    <Text type="warning">
+                      ⚠️ Input data is too large ({formatDataSize(fullTaskDetail.input)}) and has been omitted for performance reasons.
+                    </Text>
+                  </div>
+                ) : (
+                  <pre
+                    style={{
+                      background: '#f5f5f5',
+                      padding: '12px',
+                      borderRadius: '4px',
+                      marginTop: '8px',
+                      maxHeight: '200px',
+                      overflow: 'auto',
+                    }}
+                  >
+                    {JSON.stringify(fullTaskDetail.input, null, 2)}
+                  </pre>
+                )}
               </div>
             )}
 
             {/* Output */}
-            {taskDetail.output && (
+            {fullTaskDetail.output && (
               <div>
-                <Text strong>Output:</Text>
-                <pre
-                  style={{
-                    background: '#f5f5f5',
-                    padding: '12px',
-                    borderRadius: '4px',
-                    marginTop: '8px',
-                    maxHeight: '200px',
-                    overflow: 'auto',
-                  }}
-                >
-                  {JSON.stringify(taskDetail.output, null, 2)}
-                </pre>
+                <Space>
+                  <Text strong>Output:</Text>
+                  <Tag color="green">{formatDataSize(fullTaskDetail.output)}</Tag>
+                </Space>
+                {isDataTooLarge(fullTaskDetail.output) ? (
+                  <div
+                    style={{
+                      background: '#fff7e6',
+                      padding: '12px',
+                      borderRadius: '4px',
+                      marginTop: '8px',
+                      border: '1px solid #ffd591',
+                    }}
+                  >
+                    <Text type="warning">
+                      ⚠️ Output data is too large ({formatDataSize(fullTaskDetail.output)}) and has been omitted for performance reasons.
+                    </Text>
+                  </div>
+                ) : (
+                  <pre
+                    style={{
+                      background: '#f5f5f5',
+                      padding: '12px',
+                      borderRadius: '4px',
+                      marginTop: '8px',
+                      maxHeight: '200px',
+                      overflow: 'auto',
+                    }}
+                  >
+                    {JSON.stringify(fullTaskDetail.output, null, 2)}
+                  </pre>
+                )}
               </div>
             )}
 
             {/* Error */}
-            {taskDetail.error && (
+            {fullTaskDetail.error && (
               <div>
                 <Text strong type="danger">
                   Error:
@@ -406,7 +485,7 @@ const TasksTab = ({ endpoint, onJumpToWorker, workers = [] }: TasksTabProps) => 
                     overflowWrap: 'break-word',
                   }}
                 >
-                  {taskDetail.error}
+                  {fullTaskDetail.error}
                 </pre>
               </div>
             )}

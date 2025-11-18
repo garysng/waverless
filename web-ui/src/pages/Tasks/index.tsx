@@ -42,10 +42,40 @@ import type { Task, TaskListParams } from '@/types';
 
 const { Title, Paragraph, Text } = Typography;
 
+// Helper function to check if JSON data is too large
+const isDataTooLarge = (data: any, maxSizeKB = 50): boolean => {
+  if (!data) return false;
+  try {
+    const jsonString = JSON.stringify(data);
+    const sizeKB = new Blob([jsonString]).size / 1024;
+    return sizeKB > maxSizeKB;
+  } catch {
+    return false;
+  }
+};
+
+// Helper function to format data size
+const formatDataSize = (data: any): string => {
+  if (!data) return '0 KB';
+  try {
+    const jsonString = JSON.stringify(data);
+    const sizeKB = new Blob([jsonString]).size / 1024;
+    if (sizeKB < 1) {
+      return `${(sizeKB * 1024).toFixed(0)} B`;
+    } else if (sizeKB < 1024) {
+      return `${sizeKB.toFixed(2)} KB`;
+    } else {
+      return `${(sizeKB / 1024).toFixed(2)} MB`;
+    }
+  } catch {
+    return 'Unknown';
+  }
+};
+
 const TasksPage = () => {
   const queryClient = useQueryClient();
-  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [detailsDrawerVisible, setDetailsDrawerVisible] = useState(false);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [filters, setFilters] = useState<TaskListParams>({
     limit: 20,
     offset: 0,
@@ -97,6 +127,17 @@ const TasksPage = () => {
   const tasksData = tasksResponse?.tasks || [];
   const totalTasks = tasksResponse?.total || 0;
 
+  // Fetch full task details when task is selected (includes input field)
+  const { data: fullTaskDetail } = useQuery({
+    queryKey: ['task-detail', selectedTaskId],
+    queryFn: async () => {
+      if (!selectedTaskId) return null;
+      const response = await api.tasks.get(selectedTaskId);
+      return response.data;
+    },
+    enabled: !!selectedTaskId && detailsDrawerVisible,
+  });
+
   // Cancel task mutation
   const cancelMutation = useMutation({
     mutationFn: async (taskId: string) => {
@@ -113,39 +154,39 @@ const TasksPage = () => {
 
   // Fetch task events when task is selected
   const { data: eventsData } = useQuery({
-    queryKey: ['task-events', selectedTask?.id],
+    queryKey: ['task-events', selectedTaskId],
     queryFn: async () => {
-      if (!selectedTask?.id) return null;
-      const response = await api.tasks.getEvents(selectedTask.id);
+      if (!selectedTaskId) return null;
+      const response = await api.tasks.getEvents(selectedTaskId);
       return response.data;
     },
-    enabled: !!selectedTask?.id && detailsDrawerVisible,
+    enabled: !!selectedTaskId && detailsDrawerVisible,
   });
 
   // Fetch task timeline
   const { data: timelineData } = useQuery({
-    queryKey: ['task-timeline', selectedTask?.id],
+    queryKey: ['task-timeline', selectedTaskId],
     queryFn: async () => {
-      if (!selectedTask?.id) return null;
-      const response = await api.tasks.getTimeline(selectedTask.id);
+      if (!selectedTaskId) return null;
+      const response = await api.tasks.getTimeline(selectedTaskId);
       return response.data;
     },
-    enabled: !!selectedTask?.id && detailsDrawerVisible,
+    enabled: !!selectedTaskId && detailsDrawerVisible,
   });
 
   // Fetch task execution history
   const { data: executionHistory } = useQuery({
-    queryKey: ['task-execution-history', selectedTask?.id],
+    queryKey: ['task-execution-history', selectedTaskId],
     queryFn: async () => {
-      if (!selectedTask?.id) return null;
-      const response = await api.tasks.getExecutionHistory(selectedTask.id);
+      if (!selectedTaskId) return null;
+      const response = await api.tasks.getExecutionHistory(selectedTaskId);
       return response.data;
     },
-    enabled: !!selectedTask?.id && detailsDrawerVisible,
+    enabled: !!selectedTaskId && detailsDrawerVisible,
   });
 
   const handleShowDetails = (task: Task) => {
-    setSelectedTask(task);
+    setSelectedTaskId(task.id);
     setDetailsDrawerVisible(true);
   };
 
@@ -569,11 +610,14 @@ const TasksPage = () => {
       <Drawer
         title={<Space><FileTextOutlined /> Task Details</Space>}
         placement="right"
-        onClose={() => setDetailsDrawerVisible(false)}
+        onClose={() => {
+          setDetailsDrawerVisible(false);
+          setSelectedTaskId(null);
+        }}
         open={detailsDrawerVisible}
         width="70%"
       >
-        {selectedTask && (
+        {fullTaskDetail && (
           <Tabs
             defaultActiveKey="details"
             items={[
@@ -584,60 +628,108 @@ const TasksPage = () => {
                   <div>
                     <Descriptions column={1} bordered>
                       <Descriptions.Item label="Task ID">
-                        <Text code>{selectedTask.id}</Text>
+                        <Text code>{fullTaskDetail.id}</Text>
                       </Descriptions.Item>
-                      {selectedTask.endpoint && (
+                      {fullTaskDetail.endpoint && (
                         <Descriptions.Item label="Endpoint">
-                          <Text strong>{selectedTask.endpoint}</Text>
+                          <Text strong>{fullTaskDetail.endpoint}</Text>
                         </Descriptions.Item>
                       )}
                       <Descriptions.Item label="Status">
-                        <Tag icon={getStatusIcon(selectedTask.status)} color={getStatusColor(selectedTask.status)}>
-                          {selectedTask.status}
+                        <Tag icon={getStatusIcon(fullTaskDetail.status)} color={getStatusColor(fullTaskDetail.status)}>
+                          {fullTaskDetail.status}
                         </Tag>
                       </Descriptions.Item>
-                      {selectedTask.workerId && (
+                      {fullTaskDetail.workerId && (
                         <Descriptions.Item label="Worker ID">
-                          <Text code>{selectedTask.workerId}</Text>
+                          <Text code>{fullTaskDetail.workerId}</Text>
                         </Descriptions.Item>
                       )}
-                      {selectedTask.createdAt && (
+                      {fullTaskDetail.createdAt && (
                         <Descriptions.Item label="Created At">
-                          {new Date(selectedTask.createdAt).toLocaleString()}
+                          {new Date(fullTaskDetail.createdAt).toLocaleString()}
                         </Descriptions.Item>
                       )}
-                      {selectedTask.delayTime !== undefined && (
+                      {fullTaskDetail.delayTime !== undefined && (
                         <Descriptions.Item label="Delay Time">
-                          {selectedTask.delayTime}ms
+                          {fullTaskDetail.delayTime}ms
                         </Descriptions.Item>
                       )}
-                      {selectedTask.executionTime !== undefined && (
+                      {fullTaskDetail.executionTime !== undefined && (
                         <Descriptions.Item label="Execution Time">
-                          {(selectedTask.executionTime / 1000).toFixed(2)}s
+                          {(fullTaskDetail.executionTime / 1000).toFixed(2)}s
                         </Descriptions.Item>
                       )}
                     </Descriptions>
 
-                    {selectedTask.input && Object.keys(selectedTask.input).length > 0 && (
-                      <Card title="Input" style={{ marginTop: 16 }} size="small">
-                        <pre style={{ maxHeight: 300, overflow: 'auto', fontSize: 12 }}>
-                          {JSON.stringify(selectedTask.input, null, 2)}
-                        </pre>
+                    {fullTaskDetail.input && Object.keys(fullTaskDetail.input).length > 0 && (
+                      <Card
+                        title={
+                          <Space>
+                            <span>Input</span>
+                            <Tag color="blue">{formatDataSize(fullTaskDetail.input)}</Tag>
+                          </Space>
+                        }
+                        style={{ marginTop: 16 }}
+                        size="small"
+                      >
+                        {isDataTooLarge(fullTaskDetail.input) ? (
+                          <div
+                            style={{
+                              background: '#fff7e6',
+                              padding: '12px',
+                              borderRadius: '4px',
+                              border: '1px solid #ffd591',
+                            }}
+                          >
+                            <Text type="warning">
+                              ⚠️ Input data is too large ({formatDataSize(fullTaskDetail.input)}) and has been omitted for performance reasons.
+                            </Text>
+                          </div>
+                        ) : (
+                          <pre style={{ maxHeight: 300, overflow: 'auto', fontSize: 12 }}>
+                            {JSON.stringify(fullTaskDetail.input, null, 2)}
+                          </pre>
+                        )}
                       </Card>
                     )}
 
-                    {selectedTask.output && Object.keys(selectedTask.output).length > 0 && (
-                      <Card title="Output" style={{ marginTop: 16 }} size="small">
-                        <pre style={{ maxHeight: 300, overflow: 'auto', fontSize: 12 }}>
-                          {JSON.stringify(selectedTask.output, null, 2)}
-                        </pre>
+                    {fullTaskDetail.output && Object.keys(fullTaskDetail.output).length > 0 && (
+                      <Card
+                        title={
+                          <Space>
+                            <span>Output</span>
+                            <Tag color="green">{formatDataSize(fullTaskDetail.output)}</Tag>
+                          </Space>
+                        }
+                        style={{ marginTop: 16 }}
+                        size="small"
+                      >
+                        {isDataTooLarge(fullTaskDetail.output) ? (
+                          <div
+                            style={{
+                              background: '#fff7e6',
+                              padding: '12px',
+                              borderRadius: '4px',
+                              border: '1px solid #ffd591',
+                            }}
+                          >
+                            <Text type="warning">
+                              ⚠️ Output data is too large ({formatDataSize(fullTaskDetail.output)}) and has been omitted for performance reasons.
+                            </Text>
+                          </div>
+                        ) : (
+                          <pre style={{ maxHeight: 300, overflow: 'auto', fontSize: 12 }}>
+                            {JSON.stringify(fullTaskDetail.output, null, 2)}
+                          </pre>
+                        )}
                       </Card>
                     )}
 
-                    {selectedTask.error && (
+                    {fullTaskDetail.error && (
                       <Card title="Error" style={{ marginTop: 16 }} size="small">
                         <Text type="danger" style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                          {selectedTask.error}
+                          {fullTaskDetail.error}
                         </Text>
                       </Card>
                     )}

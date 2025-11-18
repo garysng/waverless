@@ -139,15 +139,15 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 	logger.DebugCtx(ctx, "🔍 Step 1: Selecting PENDING tasks from MySQL, worker_id: %s, endpoint: %s, batch_size: %d",
 		req.WorkerID, worker.Endpoint, batchSize)
 
-	candidateTasks, err := s.taskRepo.SelectPendingTasksForUpdate(ctx, worker.Endpoint, batchSize)
+	taskIDs, err := s.taskRepo.SelectPendingTasksForUpdate(ctx, worker.Endpoint, batchSize)
 	if err != nil {
 		logger.ErrorCtx(ctx, "❌ Failed to select pending tasks: %v", err)
 		return nil, fmt.Errorf("failed to select pending tasks: %w", err)
 	}
 
-	logger.DebugCtx(ctx, "📦 Selected and locked %d candidate tasks", len(candidateTasks))
+	logger.DebugCtx(ctx, "📦 Selected and locked %d candidate tasks", len(taskIDs))
 
-	if len(candidateTasks) == 0 {
+	if len(taskIDs) == 0 {
 		logger.DebugCtx(ctx, "⚠️  No pending tasks available, worker_id: %s, endpoint: %s",
 			req.WorkerID, worker.Endpoint)
 		return &model.JobPullResponse{Jobs: []model.JobInfo{}}, nil
@@ -159,18 +159,13 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 	workerBeforeAssignment, err := s.workerRepo.Get(ctx, req.WorkerID)
 	if err == nil && workerBeforeAssignment.Status == model.WorkerStatusDraining {
 		logger.WarnCtx(ctx, "🔴 Worker %s is DRAINING, skipping task assignment for %d tasks",
-			req.WorkerID, len(candidateTasks))
+			req.WorkerID, len(taskIDs))
 		// Tasks remain in PENDING status, no need to revert
 		return &model.JobPullResponse{Jobs: []model.JobInfo{}}, nil
 	}
 
 	// Step 3: Use CAS atomic update for task status (only PENDING status will be updated)
-	logger.InfoCtx(ctx, "🔄 Step 3: Assigning %d tasks to worker using CAS update", len(candidateTasks))
-
-	taskIDs := make([]string, len(candidateTasks))
-	for i, task := range candidateTasks {
-		taskIDs[i] = task.TaskID
-	}
+	logger.InfoCtx(ctx, "🔄 Step 3: Assigning %d tasks to worker using CAS update", len(taskIDs))
 
 	assignedTasks, err := s.taskRepo.AssignTasksToWorker(ctx, taskIDs, req.WorkerID)
 	if err != nil {
@@ -179,7 +174,7 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 	}
 
 	logger.InfoCtx(ctx, "✅ Successfully assigned %d/%d tasks to worker (CAS succeeded)",
-		len(assignedTasks), len(candidateTasks))
+		len(assignedTasks), len(taskIDs))
 
 	if len(assignedTasks) == 0 {
 		logger.InfoCtx(ctx, "⚠️  No tasks were assigned (all CAS failed), worker_id: %s", req.WorkerID)

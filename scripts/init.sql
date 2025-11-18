@@ -229,6 +229,11 @@ CREATE TABLE `tasks` (
   KEY `idx_completed_at` (`completed_at`)
 ) ENGINE=InnoDB AUTO_INCREMENT=26304 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Task records with all statuses';
 
+ALTER TABLE `tasks`
+  ADD INDEX `idx_endpoint_id` (`endpoint`, `id`),
+  ADD INDEX `idx_endpoint_status_id` (`endpoint`, `status`, `id`),
+  ADD INDEX `idx_status_id` (`status`, `id`);
+  
 CREATE TABLE `resource_specs` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Spec name (unique identifier)',

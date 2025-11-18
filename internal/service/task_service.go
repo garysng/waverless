@@ -368,6 +368,7 @@ func (s *TaskService) GetPendingTaskCount(ctx context.Context, endpoint string) 
 }
 
 // ListTasks retrieves a list of tasks with optional filtering
+// OPTIMIZATION: Excludes input field to avoid fetching potentially large data (e.g., base64 images)
 func (s *TaskService) ListTasks(ctx context.Context, status string, endpoint string, taskID string, limit int, offset int) ([]*model.TaskResponse, int64, error) {
 	// Build filters
 	filters := make(map[string]interface{})
@@ -384,13 +385,13 @@ func (s *TaskService) ListTasks(ctx context.Context, status string, endpoint str
 		return nil, 0, err
 	}
 
-	// Use the generic List method with filters
-	mysqlTasks, err := s.taskRepo.ListWithTaskID(ctx, filters, taskID, limit, offset)
+	// Use the optimized List method that excludes input field
+	mysqlTasks, err := s.taskRepo.ListWithTaskIDExcludeInput(ctx, filters, taskID, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Convert to TaskResponse format
+	// Convert to TaskResponse format (input will be nil/empty)
 	responses := make([]*model.TaskResponse, 0, len(mysqlTasks))
 	for _, mysqlTask := range mysqlTasks {
 		task := mysql.ToTaskDomain(mysqlTask)
