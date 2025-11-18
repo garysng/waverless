@@ -124,9 +124,10 @@ type UpdateDeploymentRequest struct {
 // Only contains fields that users can edit via UI
 type UpdateEndpointConfigRequest struct {
 	// Basic metadata
-	DisplayName *string `json:"displayName,omitempty"` // Display name
-	Description *string `json:"description,omitempty"` // Description
-	TaskTimeout *int    `json:"taskTimeout,omitempty"` // Task timeout in seconds
+	DisplayName     *string `json:"displayName,omitempty"`     // Display name
+	Description     *string `json:"description,omitempty"`     // Description
+	TaskTimeout     *int    `json:"taskTimeout,omitempty"`     // Task timeout in seconds
+	MaxPendingTasks *int    `json:"maxPendingTasks,omitempty"` // Maximum allowed pending tasks before warning clients
 
 	// Autoscaling configuration
 	MinReplicas       *int    `json:"minReplicas,omitempty"`       // Minimum replicas (0 = scale-to-zero)

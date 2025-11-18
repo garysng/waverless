@@ -405,6 +405,9 @@ func (h *EndpointHandler) UpdateEndpoint(c *gin.Context) {
 	if req.TaskTimeout != nil {
 		existingMeta.TaskTimeout = *req.TaskTimeout
 	}
+	if req.MaxPendingTasks != nil {
+		existingMeta.MaxPendingTasks = *req.MaxPendingTasks
+	}
 
 	// Autoscaling configuration
 	if req.MinReplicas != nil {
@@ -591,6 +594,11 @@ func (h *EndpointHandler) buildMetadataFromRequest(c *gin.Context, req k8s.Deplo
 			maxReplicas = 10
 		}
 
+		maxPendingTasks := req.MaxPendingTasks
+		if maxPendingTasks == 0 {
+			maxPendingTasks = 1
+		}
+
 		return &interfaces.EndpointMetadata{
 			Name:              req.Endpoint,
 			DisplayName:       req.Endpoint,
@@ -598,6 +606,7 @@ func (h *EndpointHandler) buildMetadataFromRequest(c *gin.Context, req k8s.Deplo
 			Image:             req.Image,
 			Replicas:          req.Replicas,
 			TaskTimeout:       req.TaskTimeout,
+			MaxPendingTasks:   maxPendingTasks,
 			Env:               req.Env,
 			EnablePtrace:      req.EnablePtrace,
 			Status:            "Deploying",
@@ -619,6 +628,9 @@ func (h *EndpointHandler) buildMetadataFromRequest(c *gin.Context, req k8s.Deplo
 	metadata.Image = req.Image
 	metadata.Replicas = req.Replicas
 	metadata.TaskTimeout = req.TaskTimeout
+	if req.MaxPendingTasks > 0 {
+		metadata.MaxPendingTasks = req.MaxPendingTasks
+	}
 	metadata.Env = req.Env
 	metadata.EnablePtrace = req.EnablePtrace
 	metadata.Status = "Deploying"

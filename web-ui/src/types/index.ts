@@ -14,6 +14,7 @@ export interface AppInfo {
   description?: string;
   specName?: string;
   taskTimeout?: number;
+  maxPendingTasks?: number; // Maximum allowed pending tasks before warning clients
   env?: Record<string, string>;
   minReplicas?: number;
   maxReplicas?: number;
@@ -95,6 +96,7 @@ export interface DeployRequest {
   image: string;
   replicas: number;
   taskTimeout?: number;
+  maxPendingTasks?: number; // Maximum allowed pending tasks before warning clients
   env?: Record<string, string>; // Custom environment variables
   volumeMounts?: VolumeMount[];
   shmSize?: string; // Shared memory size (e.g., "1Gi", "512Mi")
@@ -129,6 +131,7 @@ export interface UpdateEndpointConfigRequest {
   displayName?: string;
   description?: string;
   taskTimeout?: number;
+  maxPendingTasks?: number; // Maximum allowed pending tasks before warning clients
 
   // Autoscaling configuration
   minReplicas?: number;

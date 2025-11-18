@@ -245,15 +245,16 @@ func NewManager(namespace, platformName, configDir string) (*Manager, error) {
 // DeployAppRequest deployment request (simplified version)
 type DeployAppRequest struct {
 	// Core variables (user input)
-	Endpoint     string                     `json:"endpoint" binding:"required"` // Endpoint name
-	SpecName     string                     `json:"specName" binding:"required"` // Spec name
-	Image        string                     `json:"image" binding:"required"`    // Image
-	Replicas     int                        `json:"replicas,omitempty"`          // Replica count (default 1)
-	TaskTimeout  int                        `json:"taskTimeout,omitempty"`       // Task execution timeout in seconds (0 = use global default)
-	VolumeMounts []interfaces.VolumeMount `json:"volumeMounts,omitempty"`      // PVC volume mounts
-	ShmSize      string                     `json:"shmSize,omitempty"`           // Shared memory size (e.g., "1Gi", "512Mi")
-	EnablePtrace bool                       `json:"enablePtrace,omitempty"`      // Enable SYS_PTRACE capability for debugging (only for fixed resource pools)
-	Env          map[string]string          `json:"env,omitempty"`               // Custom environment variables
+	Endpoint        string                     `json:"endpoint" binding:"required"` // Endpoint name
+	SpecName        string                     `json:"specName" binding:"required"` // Spec name
+	Image           string                     `json:"image" binding:"required"`    // Image
+	Replicas        int                        `json:"replicas,omitempty"`          // Replica count (default 1)
+	TaskTimeout     int                        `json:"taskTimeout,omitempty"`       // Task execution timeout in seconds (0 = use global default)
+	MaxPendingTasks int                        `json:"maxPendingTasks,omitempty"`   // Maximum allowed pending tasks before warning clients (default 1)
+	VolumeMounts    []interfaces.VolumeMount `json:"volumeMounts,omitempty"`      // PVC volume mounts
+	ShmSize         string                     `json:"shmSize,omitempty"`           // Shared memory size (e.g., "1Gi", "512Mi")
+	EnablePtrace    bool                       `json:"enablePtrace,omitempty"`      // Enable SYS_PTRACE capability for debugging (only for fixed resource pools)
+	Env             map[string]string          `json:"env,omitempty"`               // Custom environment variables
 
 	// Auto-scaling configuration (optional)
 	MinReplicas       int   `json:"minReplicas,omitempty"`       // Minimum replica count (default 0)

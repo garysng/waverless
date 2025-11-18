@@ -139,6 +139,7 @@ const DeployPage = () => {
       image: values.image,
       replicas: values.replicas || 1,
       taskTimeout: values.taskTimeout || 0,
+      maxPendingTasks: values.maxPendingTasks || undefined,
       shmSize: values.shmSize,
       enablePtrace: values.enablePtrace || false,
     };
@@ -212,6 +213,7 @@ const DeployPage = () => {
         image: values.image,
         replicas: values.replicas || 1,
         taskTimeout: values.taskTimeout || 0,
+        maxPendingTasks: values.maxPendingTasks || undefined,
         shmSize: values.shmSize,
         enablePtrace: values.enablePtrace || false,
       };
@@ -359,6 +361,18 @@ const DeployPage = () => {
                       tooltip="0 = use global default (3600s)"
                     >
                       <InputNumber min={0} step={300} style={{ width: '100%' }} />
+                    </Form.Item>
+                  </Col>
+                </Row>
+
+                <Row gutter={16}>
+                  <Col span={12}>
+                    <Form.Item
+                      name="maxPendingTasks"
+                      label="Max Pending Tasks"
+                      tooltip="Maximum allowed pending tasks before warning clients to not submit new tasks. Default is 1."
+                    >
+                      <InputNumber min={1} max={1000} style={{ width: '100%' }} placeholder="1" />
                     </Form.Item>
                   </Col>
                 </Row>
