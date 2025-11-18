@@ -251,6 +251,17 @@ func (app *Application) cleanupStuckTerminatingPods(k8sProvider *k8s.K8sDeployme
 			continue
 		}
 
+		// Wait a short grace period after termination begins
+		if ts, err := time.Parse(time.RFC3339, pod.DeletionTimestamp); err == nil {
+			if time.Since(ts) < 5*time.Second {
+				logger.InfoCtx(ctx, "Worker %s has NO running tasks but was just marked for deletion (<5s), NOT force deleting (waiting briefly)", workerID)
+				continue
+			}
+		} else {
+			logger.WarnCtx(ctx, "Failed to parse DeletionTimestamp for pod %s: %v, skipping force delete this round", pod.Name, err)
+			continue
+		}
+
 		// ✅ Confirmed idle, force delete
 		logger.WarnCtx(ctx, "🔥 Pod %s is stuck in Terminating with NO running tasks, force deleting...",
 			pod.Name)

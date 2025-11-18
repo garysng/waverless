@@ -63,16 +63,6 @@ spec:
         ports:
         - containerPort: {{.ContainerPort}}
           protocol: TCP
-        lifecycle:
-          preStop:
-            exec:
-              # Graceful shutdown: Send SIGTERM to trigger worker shutdown
-              # The worker will stop accepting new tasks and wait for current tasks to complete
-              # K8s will wait up to terminationGracePeriodSeconds before sending SIGKILL
-              command:
-                - "/bin/sh"
-                - "-c"
-                - "kill -TERM 1"
         env:
         - name: RUNPOD_ENDPOINT_ID
           value: {{.Endpoint}}
@@ -161,7 +151,7 @@ spec:
       restartPolicy: Always
       # Termination grace period: Maximum time K8s waits before sending SIGKILL
       # Formula: Expected task timeout + 30s buffer
-      # - preStop hook sends SIGTERM (instant)
+      # - K8s sends SIGTERM to container main process (PID 1)
       # - Worker stops accepting new tasks and waits for current tasks to complete
       # - After terminationGracePeriodSeconds, K8s sends SIGKILL to force exit
       # Example: If tasks take up to 5 minutes, set to 330 (300s + 30s buffer)

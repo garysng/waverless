@@ -253,6 +253,8 @@ func (app *Application) setupPodWatcher(k8sProvider *k8s.K8sDeploymentProvider) 
 }
 
 // setupDeploymentWatcher sets up Deployment change listener (optimizes rolling updates)
+// This watcher only sets Pod Deletion Cost to guide K8s on which pods to delete first
+// It does NOT mark workers as DRAINING - that's handled by setupPodWatcher when pods are actually terminated
 func (app *Application) setupDeploymentWatcher(k8sProvider *k8s.K8sDeploymentProvider) error {
 	if k8sProvider == nil {
 		logger.InfoCtx(app.ctx, "K8s provider not available, skipping deployment watcher setup")
@@ -263,9 +265,9 @@ func (app *Application) setupDeploymentWatcher(k8sProvider *k8s.K8sDeploymentPro
 
 	// Register Deployment spec change callback
 	err := k8sProvider.WatchDeploymentSpecChange(app.ctx, func(endpoint string) {
-		logger.InfoCtx(app.ctx, "🔄 Deployment spec changed for endpoint %s, optimizing pod replacement...", endpoint)
+		logger.InfoCtx(app.ctx, "🔄 Deployment spec changed for endpoint %s, setting pod deletion priorities...", endpoint)
 
-		// Step 1: Get all workers for this endpoint
+		// Get all workers for this endpoint
 		workers, err := app.workerService.ListWorkers(app.ctx, endpoint)
 		if err != nil {
 			logger.ErrorCtx(app.ctx, "Failed to get workers for endpoint %s: %v", endpoint, err)
@@ -277,51 +279,43 @@ func (app *Application) setupDeploymentWatcher(k8sProvider *k8s.K8sDeploymentPro
 			return
 		}
 
-		logger.InfoCtx(app.ctx, "Found %d workers for endpoint %s, marking as draining and prioritizing deletion...",
+		logger.InfoCtx(app.ctx, "Found %d workers for endpoint %s, setting deletion priorities based on workload...",
 			len(workers), endpoint)
 
-		// Step 2 & 3: Mark all workers as DRAINING and prioritize deletion based on workload
+		// Set Pod Deletion Cost based on workload
+		// This guides K8s to delete idle pods first, busy pods last
+		// Workers will be marked as DRAINING by setupPodWatcher when K8s actually deletes them
 		idleCount := 0
 		busyCount := 0
 
 		for _, worker := range workers {
-			// 2.1: Mark worker as DRAINING (stops accepting new tasks)
-			err := app.workerService.UpdateWorkerStatus(app.ctx, worker.ID, model.WorkerStatusDraining)
-			if err != nil {
-				logger.WarnCtx(app.ctx, "Failed to mark worker %s as draining: %v", worker.ID, err)
-				continue
-			}
-
-			// 2.2: Set Pod Deletion Cost based on workload
 			podName := worker.ID // worker.ID == podName (from RUNPOD_POD_ID)
 
 			if worker.CurrentJobs == 0 {
 				// Idle worker: Set deletion cost to -1000 (highest priority for deletion)
+				// K8s will prefer to delete these pods first during rolling update
 				if err := k8sProvider.SetPodDeletionCost(app.ctx, podName, -1000); err != nil {
 					logger.WarnCtx(app.ctx, "Failed to set deletion cost for idle worker %s: %v", podName, err)
 				} else {
-					logger.InfoCtx(app.ctx, "✅ Idle worker %s: deletion-cost = -1000 (will be deleted first)", podName)
+					logger.InfoCtx(app.ctx, "✅ Idle worker %s: deletion-cost = -1000 (will be deleted first by K8s)", podName)
 					idleCount++
 				}
 			} else {
 				// Busy worker: Set deletion cost to 1000 (lowest priority for deletion)
+				// K8s will delete these pods last, giving them time to finish tasks
 				if err := k8sProvider.SetPodDeletionCost(app.ctx, podName, 1000); err != nil {
 					logger.WarnCtx(app.ctx, "Failed to set deletion cost for busy worker %s: %v", podName, err)
 				} else {
-					logger.InfoCtx(app.ctx, "⏳ Busy worker %s (jobs=%d): deletion-cost = 1000 (will be deleted last)",
+					logger.InfoCtx(app.ctx, "⏳ Busy worker %s (jobs=%d): deletion-cost = 1000 (will be deleted last by K8s)",
 						podName, worker.CurrentJobs)
 					busyCount++
 				}
 			}
-
-			// 2.3: Mark Pod as draining in K8s (for observability)
-			if err := k8sProvider.MarkPodDraining(app.ctx, podName); err != nil {
-				logger.WarnCtx(app.ctx, "Failed to mark pod %s as draining: %v", podName, err)
-			}
 		}
 
-		logger.InfoCtx(app.ctx, "✅ Optimized pod replacement for endpoint %s: %d idle workers (priority deletion), %d busy workers (delayed deletion)",
+		logger.InfoCtx(app.ctx, "✅ Pod deletion priorities set for endpoint %s: %d idle workers (delete first), %d busy workers (delete last)",
 			endpoint, idleCount, busyCount)
+		logger.InfoCtx(app.ctx, "ℹ️  Workers will be marked as DRAINING by PodWatcher when K8s actually deletes them (respects maxUnavailable)")
 	})
 
 	if err != nil {

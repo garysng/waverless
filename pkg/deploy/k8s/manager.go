@@ -245,16 +245,16 @@ func NewManager(namespace, platformName, configDir string) (*Manager, error) {
 // DeployAppRequest deployment request (simplified version)
 type DeployAppRequest struct {
 	// Core variables (user input)
-	Endpoint        string                     `json:"endpoint" binding:"required"` // Endpoint name
-	SpecName        string                     `json:"specName" binding:"required"` // Spec name
-	Image           string                     `json:"image" binding:"required"`    // Image
-	Replicas        int                        `json:"replicas,omitempty"`          // Replica count (default 1)
-	TaskTimeout     int                        `json:"taskTimeout,omitempty"`       // Task execution timeout in seconds (0 = use global default)
-	MaxPendingTasks int                        `json:"maxPendingTasks,omitempty"`   // Maximum allowed pending tasks before warning clients (default 1)
+	Endpoint        string                   `json:"endpoint" binding:"required"` // Endpoint name
+	SpecName        string                   `json:"specName" binding:"required"` // Spec name
+	Image           string                   `json:"image" binding:"required"`    // Image
+	Replicas        int                      `json:"replicas,omitempty"`          // Replica count (default 1)
+	TaskTimeout     int                      `json:"taskTimeout,omitempty"`       // Task execution timeout in seconds (0 = use global default)
+	MaxPendingTasks int                      `json:"maxPendingTasks,omitempty"`   // Maximum allowed pending tasks before warning clients (default 1)
 	VolumeMounts    []interfaces.VolumeMount `json:"volumeMounts,omitempty"`      // PVC volume mounts
-	ShmSize         string                     `json:"shmSize,omitempty"`           // Shared memory size (e.g., "1Gi", "512Mi")
-	EnablePtrace    bool                       `json:"enablePtrace,omitempty"`      // Enable SYS_PTRACE capability for debugging (only for fixed resource pools)
-	Env             map[string]string          `json:"env,omitempty"`               // Custom environment variables
+	ShmSize         string                   `json:"shmSize,omitempty"`           // Shared memory size (e.g., "1Gi", "512Mi")
+	EnablePtrace    bool                     `json:"enablePtrace,omitempty"`      // Enable SYS_PTRACE capability for debugging (only for fixed resource pools)
+	Env             map[string]string        `json:"env,omitempty"`               // Custom environment variables
 
 	// Auto-scaling configuration (optional)
 	MinReplicas       int   `json:"minReplicas,omitempty"`       // Minimum replica count (default 0)
@@ -460,74 +460,6 @@ func (m *Manager) applyYAML(ctx context.Context, yamlContent string) error {
 	return nil
 }
 
-// applyPV applies PersistentVolume
-func (m *Manager) applyPV(ctx context.Context, pv *corev1.PersistentVolume) error {
-	pvs := m.client.CoreV1().PersistentVolumes()
-	existing, err := pvs.Get(ctx, pv.Name, metav1.GetOptions{})
-	if err != nil {
-		if !errors.IsNotFound(err) {
-			return fmt.Errorf("failed to get PV: %v", err)
-		}
-		// Create new
-		_, err = pvs.Create(ctx, pv, metav1.CreateOptions{})
-		return err
-	}
-
-	// Update existing
-	pv.ResourceVersion = existing.ResourceVersion
-	_, err = pvs.Update(ctx, pv, metav1.UpdateOptions{})
-	return err
-}
-
-// applyPVC applies PersistentVolumeClaim
-func (m *Manager) applyPVC(ctx context.Context, pvc *corev1.PersistentVolumeClaim) error {
-	pvcs := m.client.CoreV1().PersistentVolumeClaims(m.namespace)
-	existing, err := pvcs.Get(ctx, pvc.Name, metav1.GetOptions{})
-	if err != nil {
-		if !errors.IsNotFound(err) {
-			return fmt.Errorf("failed to get PVC: %v", err)
-		}
-		// Create new
-		_, err = pvcs.Create(ctx, pvc, metav1.CreateOptions{})
-		return err
-	}
-
-	// PVC doesn't support updating specs, skip
-	_ = existing
-	return nil
-}
-
-// applyPod applies Pod
-func (m *Manager) applyPod(ctx context.Context, pod *corev1.Pod) error {
-	pods := m.client.CoreV1().Pods(m.namespace)
-	existing, err := pods.Get(ctx, pod.Name, metav1.GetOptions{})
-	if err != nil {
-		if !errors.IsNotFound(err) {
-			return fmt.Errorf("failed to get Pod: %v", err)
-		}
-		// Create new
-		_, err = pods.Create(ctx, pod, metav1.CreateOptions{})
-		return err
-	}
-
-	// Pod exists, need to delete before creating
-	if err := pods.Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
-		return fmt.Errorf("failed to delete existing pod: %v", err)
-	}
-
-	// Wait for Pod deletion
-	time.Sleep(2 * time.Second)
-
-	// Create new Pod
-	_, err = pods.Create(ctx, pod, metav1.CreateOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to create new pod: %v", err)
-	}
-
-	_ = existing
-	return nil
-}
-
 // applyDeployment applies Deployment
 func (m *Manager) applyDeployment(ctx context.Context, deployment *appsv1.Deployment) error {
 	deployments := m.client.AppsV1().Deployments(m.namespace)
@@ -567,19 +499,19 @@ func (m *Manager) PreviewYAML(req *DeployAppRequest) (string, error) {
 
 // AppInfo application information
 type AppInfo struct {
-	Name              string                     `json:"name"`
-	Namespace         string                     `json:"namespace"`
-	Type              string                     `json:"type"` // Pod or Deployment
-	Status            string                     `json:"status"`
-	Replicas          int32                      `json:"replicas,omitempty"`          // Deployment desired replica count
-	ReadyReplicas     int32                      `json:"readyReplicas,omitempty"`     // Deployment ready replica count
-	AvailableReplicas int32                      `json:"availableReplicas,omitempty"` // Deployment available replica count
-	PodIP             string                     `json:"podIp,omitempty"`
-	HostIP            string                     `json:"hostIp,omitempty"`
-	Image             string                     `json:"image"`
-	Labels            map[string]string          `json:"labels"`
-	CreatedAt         string                     `json:"createdAt"`
-	ShmSize           string                     `json:"shmSize,omitempty"`      // Shared memory size from deployment volumes
+	Name              string                   `json:"name"`
+	Namespace         string                   `json:"namespace"`
+	Type              string                   `json:"type"` // Pod or Deployment
+	Status            string                   `json:"status"`
+	Replicas          int32                    `json:"replicas,omitempty"`          // Deployment desired replica count
+	ReadyReplicas     int32                    `json:"readyReplicas,omitempty"`     // Deployment ready replica count
+	AvailableReplicas int32                    `json:"availableReplicas,omitempty"` // Deployment available replica count
+	PodIP             string                   `json:"podIp,omitempty"`
+	HostIP            string                   `json:"hostIp,omitempty"`
+	Image             string                   `json:"image"`
+	Labels            map[string]string        `json:"labels"`
+	CreatedAt         string                   `json:"createdAt"`
+	ShmSize           string                   `json:"shmSize,omitempty"`      // Shared memory size from deployment volumes
 	VolumeMounts      []interfaces.VolumeMount `json:"volumeMounts,omitempty"` // PVC volume mounts from deployment
 }
 
@@ -1185,22 +1117,6 @@ func (m *Manager) DeleteApp(ctx context.Context, name string) error {
 	if err != nil && !errors.IsNotFound(err) {
 		// Log warning but don't fail - service might not exist
 		fmt.Printf("Warning: failed to delete service %s: %v\n", name, err)
-	}
-
-	// Try to delete PVC (if exists) - best effort, don't fail on permission errors
-	pvcName := fmt.Sprintf("%s-pvc", name)
-	err = m.client.CoreV1().PersistentVolumeClaims(m.namespace).Delete(ctx, pvcName, metav1.DeleteOptions{})
-	if err != nil && !errors.IsNotFound(err) {
-		// Log warning but don't fail - PVC might not exist or we may not have permission
-		fmt.Printf("Warning: failed to delete PVC %s: %v\n", pvcName, err)
-	}
-
-	// Try to delete PV (if exists) - best effort, don't fail on permission errors
-	pvName := fmt.Sprintf("%s-pv", name)
-	err = m.client.CoreV1().PersistentVolumes().Delete(ctx, pvName, metav1.DeleteOptions{})
-	if err != nil && !errors.IsNotFound(err) {
-		// Log warning but don't fail - PV might not exist or we may not have permission
-		fmt.Printf("Warning: failed to delete PV %s: %v\n", pvName, err)
 	}
 
 	return nil
@@ -1844,11 +1760,16 @@ func (m *Manager) DeletePod(ctx context.Context, podName string) error {
 	return nil
 }
 
-// ForceDeletePod immediately deletes a pod with zero grace period (SIGKILL)
+// ForceDeletePod forcefully deletes a stuck pod using a multi-stage approach
 // This should only be used as a safety net when:
 // 1. Pod is in Terminating state for too long
 // 2. Database confirms the worker has no running tasks
 // 3. Worker is not responding to SIGTERM
+//
+// Multi-stage deletion to avoid containerd/zombie process issues:
+// Stage 1: Remove finalizers (common blocker for deletion)
+// Stage 2: Delete with short grace period (1s) to give container time to cleanup
+// Stage 3: If still stuck, delete with grace period 0 (SIGKILL)
 func (m *Manager) ForceDeletePod(ctx context.Context, podName string) error {
 	if podName == "" {
 		return fmt.Errorf("pod name cannot be empty")
@@ -1856,22 +1777,76 @@ func (m *Manager) ForceDeletePod(ctx context.Context, podName string) error {
 
 	pods := m.client.CoreV1().Pods(m.namespace)
 
-	// Force delete with grace period of 0 (immediate SIGKILL)
-	gracePeriodSeconds := int64(0)
-	deleteOptions := metav1.DeleteOptions{
-		GracePeriodSeconds: &gracePeriodSeconds,
-	}
-
-	err := pods.Delete(ctx, podName, deleteOptions)
+	// Stage 1: Remove finalizers (if any)
+	// Finalizers can block pod deletion even with grace period 0
+	pod, err := pods.Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// Pod already deleted, not an error
+			logger.InfoCtx(ctx, "Pod %s already deleted", podName)
 			return nil
 		}
-		return fmt.Errorf("failed to force delete pod %s: %w", podName, err)
+		return fmt.Errorf("failed to get pod %s: %w", podName, err)
 	}
 
-	logger.WarnCtx(ctx, "⚠️ Force deleted pod %s with grace period 0 (SIGKILL)", podName)
+	// Remove finalizers if present
+	if len(pod.Finalizers) > 0 {
+		logger.InfoCtx(ctx, "🔧 Removing %d finalizers from pod %s to unblock deletion", len(pod.Finalizers), podName)
+		pod.Finalizers = []string{}
+		_, err = pods.Update(ctx, pod, metav1.UpdateOptions{})
+		if err != nil {
+			logger.WarnCtx(ctx, "Failed to remove finalizers from pod %s: %v (continuing anyway)", podName, err)
+		} else {
+			logger.InfoCtx(ctx, "✅ Finalizers removed from pod %s", podName)
+		}
+	}
+
+	// Stage 2: Try deletion with short grace period (2 second)
+	// This gives containerd/container runtime a chance to cleanup gracefully
+	// Avoids zombie processes and resource leaks
+	shortGracePeriod := int64(2)
+	deleteOptions := metav1.DeleteOptions{
+		GracePeriodSeconds: &shortGracePeriod,
+	}
+
+	logger.InfoCtx(ctx, "🔄 Attempting to delete pod %s with 2s grace period", podName)
+	err = pods.Delete(ctx, podName, deleteOptions)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			logger.InfoCtx(ctx, "Pod %s already deleted", podName)
+			return nil
+		}
+		logger.WarnCtx(ctx, "Failed to delete pod %s with 1s grace period: %v", podName, err)
+	} else {
+		// Wait 2 seconds to see if pod gets deleted
+		time.Sleep(2 * time.Second)
+
+		// Check if pod is gone
+		_, err = pods.Get(ctx, podName, metav1.GetOptions{})
+		if errors.IsNotFound(err) {
+			logger.InfoCtx(ctx, "✅ Pod %s deleted successfully with 1s grace period", podName)
+			return nil
+		}
+	}
+
+	// Stage 3: Last resort - force delete with grace period 0 (SIGKILL)
+	// This can cause containerd cleanup issues, but sometimes necessary
+	logger.WarnCtx(ctx, "⚠️ Pod %s still stuck, forcing deletion with 0 grace period (SIGKILL)", podName)
+
+	zeroGracePeriod := int64(0)
+	forceDeleteOptions := metav1.DeleteOptions{
+		GracePeriodSeconds: &zeroGracePeriod,
+	}
+
+	err = pods.Delete(ctx, podName, forceDeleteOptions)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			logger.InfoCtx(ctx, "Pod %s already deleted", podName)
+			return nil
+		}
+		return fmt.Errorf("failed to force delete pod %s with grace period 0: %w", podName, err)
+	}
+
+	logger.WarnCtx(ctx, "🔴 Force deleted pod %s with grace period 0 (SIGKILL) - may cause containerd cleanup issues", podName)
 	return nil
 }
 
