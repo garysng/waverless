@@ -753,6 +753,20 @@ func (m *Manager) checkAndScaleDownIdleWorkers(ctx context.Context, endpoints []
 			continue
 		}
 
+		// 🔒 Critical: Check if there is already a pod being deleted (DRAINING status)
+		// If so, skip this endpoint to ensure only one pod is deleted at a time
+		hasDrainingWorker := false
+		for _, w := range workers {
+			if w.Status == model.WorkerStatusDraining {
+				hasDrainingWorker = true
+				logger.DebugCtx(ctx, "endpoint %s already has draining worker %s, skipping scale-down this cycle", ep.Name, w.ID)
+				break
+			}
+		}
+		if hasDrainingWorker {
+			continue
+		}
+
 		// Find workers idle longer than ScaleDownIdleTime
 		scaleDownThreshold := time.Duration(ep.ScaleDownIdleTime) * time.Second
 		now := time.Now()
@@ -760,11 +774,6 @@ func (m *Manager) checkAndScaleDownIdleWorkers(ctx context.Context, endpoints []
 		for _, w := range workers {
 			// Skip workers with current jobs
 			if w.CurrentJobs > 0 {
-				continue
-			}
-
-			// Skip workers that are draining
-			if w.Status == model.WorkerStatusDraining {
 				continue
 			}
 
