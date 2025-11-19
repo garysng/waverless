@@ -223,59 +223,15 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 	return &model.JobPullResponse{Jobs: jobs}, nil
 }
 
-// GetWorker gets Worker information
-func (s *WorkerService) GetWorker(ctx context.Context, workerID string) (*model.Worker, error) {
-	return s.workerRepo.Get(ctx, workerID)
-}
-
-// GetWorkerList gets Worker list
-func (s *WorkerService) GetWorkerList(ctx context.Context) ([]*model.Worker, error) {
-	return s.workerRepo.GetAll(ctx)
-}
-
-// GetOnlineWorkerCount gets online Worker count
-func (s *WorkerService) GetOnlineWorkerCount(ctx context.Context) (int, error) {
-	return s.workerRepo.GetOnlineWorkerCount(ctx)
-}
-
-// SaveWorker saves worker information
-func (s *WorkerService) SaveWorker(ctx context.Context, worker *model.Worker) error {
-	return s.workerRepo.Save(ctx, worker)
-}
-
 // ListWorkers lists all workers (optionally filtered by endpoint)
 func (s *WorkerService) ListWorkers(ctx context.Context, endpoint string) ([]*model.Worker, error) {
-	workers, err := s.workerRepo.GetAll(ctx)
-	if err != nil {
-		return nil, err
+	// If endpoint is specified, use GetByEndpoint for optimized query
+	if endpoint != "" {
+		return s.workerRepo.GetByEndpoint(ctx, endpoint)
 	}
 
-	// Filter by endpoint if specified
-	if endpoint == "" {
-		return workers, nil
-	}
-
-	filtered := make([]*model.Worker, 0, len(workers))
-	for _, worker := range workers {
-		if worker.Endpoint == endpoint {
-			filtered = append(filtered, worker)
-		}
-	}
-	return filtered, nil
-}
-
-// UpdateWorkerHeartbeat updates worker heartbeat
-func (s *WorkerService) UpdateWorkerHeartbeat(ctx context.Context, workerID string, heartbeat time.Time) error {
-	worker, err := s.workerRepo.Get(ctx, workerID)
-	if err != nil {
-		return s.workerRepo.UpdateHeartbeat(ctx, workerID, "", []string{}, "")
-	}
-	return s.workerRepo.UpdateHeartbeat(ctx, workerID, worker.Endpoint, worker.JobsInProgress, worker.Version)
-}
-
-// DeleteWorker deletes worker
-func (s *WorkerService) DeleteWorker(ctx context.Context, workerID string) error {
-	return s.workerRepo.Delete(ctx, workerID)
+	// Otherwise return all workers
+	return s.workerRepo.GetAll(ctx)
 }
 
 // GetWorkerByPodName finds a worker by its pod name for a given endpoint

@@ -142,19 +142,19 @@ func (e *Executor) scaleDown(ctx context.Context, decision *ScaleDecision) error
 	logger.InfoCtx(ctx, "smart scale down %s from %d to %d replicas (reason: %s)",
 		decision.Endpoint, decision.CurrentReplicas, decision.DesiredReplicas, decision.Reason)
 
-	// Step 1: Get all workers for this endpoint
-	allWorkers, err := e.workerRepo.GetAll(ctx)
+	// Step 1: Get workers for this endpoint only (optimized query)
+	endpointWorkers, err := e.workerRepo.GetByEndpoint(ctx, decision.Endpoint)
 	if err != nil {
 		return fmt.Errorf("failed to get workers: %w", err)
 	}
 
-	// Step 2: Filter workers for this endpoint and find idle ones
+	// Step 2: Find idle workers
 	// Priority: select the worker with the longest idle time (earliest LastTaskTime)
 	var idleWorker *model.Worker
 	var oldestIdleTime time.Time
 
-	for _, w := range allWorkers {
-		if w.Endpoint == decision.Endpoint && w.CurrentJobs == 0 {
+	for _, w := range endpointWorkers {
+		if w.CurrentJobs == 0 {
 			// If this is the first idle worker, or has been idle longer
 			if idleWorker == nil {
 				idleWorker = w

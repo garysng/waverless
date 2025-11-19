@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	workerKeyPrefixActive = "worker:"        // Active worker data
-	workerSetKeyActive    = "workers:active" // Active worker set
-	workerDataTTL         = 5 * time.Minute  // Worker data TTL
+	workerKeyPrefixActive   = "worker:"           // Active worker data
+	workerSetKeyActive      = "workers:active"    // Active worker set
+	workerEndpointSetPrefix = "workers:endpoint:" // Worker set by endpoint (workers:endpoint:{endpoint})
+	workerDataTTL           = 5 * time.Minute     // Worker data TTL
 )
 
 // WorkerRepository manages worker data in Redis (ephemeral data with TTL)
@@ -37,10 +38,17 @@ func (r *WorkerRepository) Save(ctx context.Context, worker *model.Worker) error
 		return fmt.Errorf("failed to marshal worker: %w", err)
 	}
 
+	// Build endpoint index key
+	endpointSetKey := workerEndpointSetPrefix + worker.Endpoint
+
 	pipe := r.redis.Pipeline()
 	pipe.Set(ctx, key, data, workerDataTTL)
 	pipe.SAdd(ctx, workerSetKeyActive, worker.ID)
 	pipe.Expire(ctx, workerSetKeyActive, workerDataTTL*2)
+
+	// Add to endpoint index
+	pipe.SAdd(ctx, endpointSetKey, worker.ID)
+	pipe.Expire(ctx, endpointSetKey, workerDataTTL*2)
 
 	_, err = pipe.Exec(ctx)
 	if err != nil {
@@ -126,6 +134,7 @@ func (r *WorkerRepository) GetAll(ctx context.Context) ([]*model.Worker, error) 
 // UpdateHeartbeat updates heartbeat
 func (r *WorkerRepository) UpdateHeartbeat(ctx context.Context, workerID, endpoint string, jobsInProgress []string, version string) error {
 	worker, err := r.Get(ctx, workerID)
+	oldEndpoint := ""
 	if err != nil {
 		// Worker doesn't exist, create new one
 		if endpoint == "" {
@@ -140,6 +149,8 @@ func (r *WorkerRepository) UpdateHeartbeat(ctx context.Context, workerID, endpoi
 			RegisteredAt:   time.Now(),
 			Version:        version,
 		}
+	} else {
+		oldEndpoint = worker.Endpoint
 	}
 
 	// Update endpoint (allow dynamic modification)
@@ -177,17 +188,37 @@ func (r *WorkerRepository) UpdateHeartbeat(ctx context.Context, workerID, endpoi
 		}
 	}
 
+	// If endpoint changed, remove from old endpoint index
+	if oldEndpoint != "" && oldEndpoint != worker.Endpoint {
+		oldEndpointSetKey := workerEndpointSetPrefix + oldEndpoint
+		_ = r.redis.SRem(ctx, oldEndpointSetKey, workerID).Err()
+	}
+
 	return r.Save(ctx, worker)
 }
 
 // Delete deletes Worker
 func (r *WorkerRepository) Delete(ctx context.Context, workerID string) error {
+	// First, get worker to know which endpoint index to update
+	worker, err := r.Get(ctx, workerID)
+	if err != nil {
+		// Worker doesn't exist, but still try to clean up from global set
+		pipe := r.redis.Pipeline()
+		pipe.Del(ctx, workerKeyPrefixActive+workerID)
+		pipe.SRem(ctx, workerSetKeyActive, workerID)
+		_, _ = pipe.Exec(ctx)
+		return nil
+	}
+
 	key := workerKeyPrefixActive + workerID
+	endpointSetKey := workerEndpointSetPrefix + worker.Endpoint
+
 	pipe := r.redis.Pipeline()
 	pipe.Del(ctx, key)
 	pipe.SRem(ctx, workerSetKeyActive, workerID)
+	pipe.SRem(ctx, endpointSetKey, workerID)
 
-	_, err := pipe.Exec(ctx)
+	_, err = pipe.Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to delete worker: %w", err)
 	}
@@ -253,57 +284,58 @@ func (r *WorkerRepository) ClearWorkerTasks(ctx context.Context, workerID string
 
 // GetByEndpoint retrieves all workers for specified endpoint
 func (r *WorkerRepository) GetByEndpoint(ctx context.Context, endpoint string) ([]*model.Worker, error) {
-	workers, err := r.GetAll(ctx)
+	// Use endpoint index to get worker IDs directly
+	endpointSetKey := workerEndpointSetPrefix + endpoint
+	workerIDs, err := r.redis.SMembers(ctx, endpointSetKey).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get worker IDs for endpoint: %w", err)
 	}
-	
-	result := make([]*model.Worker, 0)
-	for _, w := range workers {
-		if w.Endpoint == endpoint {
-			result = append(result, w)
-		}
-	}
-	return result, nil
-}
 
-// CountByEndpoint counts workers for endpoint
-func (r *WorkerRepository) CountByEndpoint(ctx context.Context, endpoint string) (int, error) {
-	workers, err := r.GetByEndpoint(ctx, endpoint)
-	return len(workers), err
-}
+	if len(workerIDs) == 0 {
+		// No workers for this endpoint (or index not yet populated after deployment)
+		// Index will be automatically populated via UpdateHeartbeat within ~30-60 seconds
+		return []*model.Worker{}, nil
+	}
 
-// GetBusyWorkers retrieves busy workers
-func (r *WorkerRepository) GetBusyWorkers(ctx context.Context, endpoint string) ([]*model.Worker, error) {
-	workers, err := r.GetByEndpoint(ctx, endpoint)
-	if err != nil {
-		return nil, err
-	}
-	
-	result := make([]*model.Worker, 0)
-	for _, w := range workers {
-		if w.Status == model.WorkerStatusBusy {
-			result = append(result, w)
-		}
-	}
-	return result, nil
-}
+	// Batch fetch all workers using pipeline
+	pipe := r.redis.Pipeline()
+	cmds := make([]*redis.StringCmd, 0, len(workerIDs))
 
-// GetOfflineWorkers retrieves offline workers (heartbeat timeout)
-func (r *WorkerRepository) GetOfflineWorkers(ctx context.Context, timeout time.Duration) ([]*model.Worker, error) {
-	workers, err := r.GetAll(ctx)
-	if err != nil {
-		return nil, err
+	for _, workerID := range workerIDs {
+		key := workerKeyPrefixActive + workerID
+		cmds = append(cmds, pipe.Get(ctx, key))
 	}
-	
-	now := time.Now()
-	result := make([]*model.Worker, 0)
-	
-	for _, worker := range workers {
-		if now.Sub(worker.LastHeartbeat) > timeout {
-			result = append(result, worker)
+
+	_, err = pipe.Exec(ctx)
+	if err != nil && err != redis.Nil {
+		// Pipeline failed, fall back to individual gets
+		workers := make([]*model.Worker, 0, len(workerIDs))
+		for _, workerID := range workerIDs {
+			worker, err := r.Get(ctx, workerID)
+			if err != nil {
+				continue
+			}
+			workers = append(workers, worker)
 		}
+		return workers, nil
 	}
-	
-	return result, nil
+
+	// Parse results from pipeline
+	workers := make([]*model.Worker, 0, len(workerIDs))
+	for _, cmd := range cmds {
+		data, err := cmd.Result()
+		if err != nil {
+			// Worker expired or error, skip
+			continue
+		}
+
+		var worker model.Worker
+		if err := json.Unmarshal([]byte(data), &worker); err != nil {
+			// Malformed data, skip
+			continue
+		}
+		workers = append(workers, &worker)
+	}
+
+	return workers, nil
 }

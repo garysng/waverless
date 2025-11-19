@@ -230,26 +230,22 @@ func (h *TaskHandler) GetEndpointStats(c *gin.Context) {
 		return
 	}
 
-	// Get all workers (need to filter by endpoint)
-	allWorkers, err := h.workerService.GetWorkerList(c.Request.Context())
+	// Get workers for this endpoint (optimized query)
+	workers, err := h.workerService.ListWorkers(c.Request.Context(), endpoint)
 	if err != nil {
 		logger.ErrorCtx(c.Request.Context(), "failed to list workers: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Filter workers for this endpoint
-	var workers []*model.Worker
+	// Calculate stats
 	busyCount := 0
 	inProgressCount := 0
-	for _, w := range allWorkers {
-		if w.Endpoint == endpoint {
-			workers = append(workers, w)
-			if w.Status == model.WorkerStatusBusy {
-				busyCount++
-			}
-			inProgressCount += len(w.JobsInProgress)
+	for _, w := range workers {
+		if w.Status == model.WorkerStatusBusy {
+			busyCount++
 		}
+		inProgressCount += len(w.JobsInProgress)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

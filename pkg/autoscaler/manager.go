@@ -735,25 +735,15 @@ func (m *Manager) persistConfig(ctx context.Context) {
 // checkAndScaleDownIdleWorkers 检查长时间空闲的 worker，触发主动缩容
 // 即使 Endpoint 整体未达到空闲阈值，如果有个别 worker 空闲时间过长，也可以缩容
 func (m *Manager) checkAndScaleDownIdleWorkers(ctx context.Context, endpoints []*EndpointConfig) error {
-	// Get all workers
-	allWorkers, err := m.executor.workerRepo.GetAll(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get workers: %w", err)
-	}
-
-	if len(allWorkers) == 0 {
-		return nil
-	}
-
-	// Group workers by endpoint
-	workersByEndpoint := make(map[string][]*model.Worker)
-	for _, w := range allWorkers {
-		workersByEndpoint[w.Endpoint] = append(workersByEndpoint[w.Endpoint], w)
-	}
-
 	// Check each endpoint for long-idle workers
 	for _, ep := range endpoints {
-		workers := workersByEndpoint[ep.Name]
+		// Get workers for this endpoint only (optimized query)
+		workers, err := m.executor.workerRepo.GetByEndpoint(ctx, ep.Name)
+		if err != nil {
+			logger.ErrorCtx(ctx, "failed to get workers for endpoint %s: %v", ep.Name, err)
+			continue
+		}
+
 		if len(workers) == 0 {
 			continue
 		}

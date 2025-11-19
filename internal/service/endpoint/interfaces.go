@@ -29,6 +29,7 @@ type taskRepository interface {
 
 type workerRepository interface {
 	GetAll(ctx context.Context) ([]*model.Worker, error)
+	GetByEndpoint(ctx context.Context, endpoint string) ([]*model.Worker, error)
 }
 
 // compile-time assertions

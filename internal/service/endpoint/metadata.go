@@ -173,12 +173,10 @@ func (m *MetadataManager) GetStats(ctx context.Context, name string) (*interface
 		stats.FailedTasks = int(count)
 	}
 
-	workers, err := m.workerRepo.GetAll(ctx)
+	// Use GetByEndpoint to directly fetch workers for this endpoint (avoids full scan)
+	workers, err := m.workerRepo.GetByEndpoint(ctx, name)
 	if err == nil {
 		for _, worker := range workers {
-			if worker.Endpoint != name {
-				continue
-			}
 			stats.TotalWorkers++
 			switch worker.Status {
 			case model.WorkerStatusBusy:
