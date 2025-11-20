@@ -147,6 +147,7 @@ func (r *WorkerRepository) UpdateHeartbeat(ctx context.Context, workerID, endpoi
 			Concurrency:    1,
 			JobsInProgress: jobsInProgress,
 			RegisteredAt:   time.Now(),
+			LastTaskTime:   time.Now(), // new worker, last task time is now
 			Version:        version,
 		}
 	} else {

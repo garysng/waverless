@@ -71,6 +71,7 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 			JobsInProgress: req.JobsInProgress,
 			RegisteredAt:   time.Now(),
 			LastHeartbeat:  time.Now(),
+			LastTaskTime:   time.Now(),   // new worker, last task time is now
 			PodName:        req.WorkerID, // Worker ID == Pod Name (from RUNPOD_POD_ID env)
 		}
 		if err := s.workerRepo.Save(ctx, worker); err != nil {
