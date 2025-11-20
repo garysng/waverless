@@ -820,7 +820,7 @@ const AppDetailPage = () => {
                 name="scaleDownIdleTime"
                 help="0 = immediate scale down when idle."
               >
-                <InputNumber min={60} style={{ width: '100%' }} />
+                <InputNumber min={0} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
           </Row>

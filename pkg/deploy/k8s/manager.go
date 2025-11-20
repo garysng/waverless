@@ -25,6 +25,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/remotecommand"
+	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/yaml"
 
 	"waverless/pkg/interfaces"
@@ -382,7 +384,7 @@ func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) 
 	// Default: 330s (300s task timeout + 30s buffer)
 	taskTimeout := ctx.TaskTimeout
 	if taskTimeout == 0 {
-		taskTimeout = 300 // Default 5 minutes
+		taskTimeout = 3600
 	}
 	ctx.TerminationGracePeriodSeconds = int64(taskTimeout + 30)
 
@@ -1879,4 +1881,55 @@ func (m *Manager) GetDefaultEnvFromConfigMap(ctx context.Context) (map[string]st
 	}
 
 	return cm.Data, nil
+}
+
+// ExecPodCommand executes a command in a pod's container
+// Returns stdout, stderr, and error
+func (m *Manager) ExecPodCommand(ctx context.Context, podName, endpoint string, command []string) (string, string, error) {
+	if podName == "" {
+		return "", "", fmt.Errorf("pod name cannot be empty")
+	}
+	if endpoint == "" {
+		return "", "", fmt.Errorf("endpoint cannot be empty")
+	}
+	if len(command) == 0 {
+		return "", "", fmt.Errorf("command cannot be empty")
+	}
+
+	// Container name follows the pattern: {endpoint}-worker
+	containerName := endpoint + "-worker"
+
+	// Create exec request
+	req := m.client.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(m.namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: containerName,
+			Command:   command,
+			Stdin:     false,
+			Stdout:    true,
+			Stderr:    true,
+			TTY:       false,
+		}, scheme.ParameterCodec)
+
+	// Create executor
+	executor, err := remotecommand.NewSPDYExecutor(m.config, "POST", req.URL())
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create executor: %w", err)
+	}
+
+	// Capture stdout and stderr
+	var stdout, stderr bytes.Buffer
+
+	// Execute the command
+	err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdin:  nil,
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Tty:    false,
+	})
+
+	return stdout.String(), stderr.String(), err
 }

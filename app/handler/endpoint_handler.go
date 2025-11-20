@@ -56,6 +56,9 @@ func (h *EndpointHandler) CreateEndpoint(c *gin.Context) {
 	logger.InfoCtx(c.Request.Context(), "[INFO] Creating endpoint: endpoint=%s, spec=%s, image=%s, replicas=%d, taskTimeout=%d",
 		req.Endpoint, req.SpecName, req.Image, req.Replicas, req.TaskTimeout)
 
+	if req.TaskTimeout == 0 {
+		req.TaskTimeout = 3600
+	}
 	providerReq := &interfaces.DeployRequest{
 		Endpoint:     req.Endpoint,
 		SpecName:     req.SpecName,
@@ -70,19 +73,7 @@ func (h *EndpointHandler) CreateEndpoint(c *gin.Context) {
 
 	metadata := h.buildMetadataFromRequest(c, req)
 
-	var (
-		resp *interfaces.DeployResponse
-		err  error
-	)
-
-	switch {
-	case h.endpointService != nil:
-		resp, err = h.endpointService.Deploy(c.Request.Context(), providerReq, metadata)
-	case h.deploymentProvider != nil:
-		resp, err = h.deploymentProvider.Deploy(c.Request.Context(), providerReq)
-	default:
-		err = fmt.Errorf("deployment provider unavailable")
-	}
+	resp, err := h.endpointService.Deploy(c.Request.Context(), providerReq, metadata)
 
 	if err != nil {
 		logger.ErrorCtx(c.Request.Context(), "[ERROR] Failed to deploy app %s: %v", req.Endpoint, err)
@@ -118,6 +109,9 @@ func (h *EndpointHandler) PreviewDeploymentYAML(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	if req.TaskTimeout == 0 {
+		req.TaskTimeout = 3600
 	}
 
 	providerReq := &interfaces.DeployRequest{
@@ -267,19 +261,8 @@ func (h *EndpointHandler) ListEndpoints(c *gin.Context) {
 func (h *EndpointHandler) DeleteEndpoint(c *gin.Context) {
 	name := c.Param("name")
 
-	switch {
-	case h.endpointService != nil:
-		if err := h.endpointService.DeleteDeployment(c.Request.Context(), name); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-	case h.deploymentProvider != nil:
-		if err := h.deploymentProvider.DeleteApp(c.Request.Context(), name); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-	default:
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "deployment provider unavailable"})
+	if err := h.endpointService.DeleteDeployment(c.Request.Context(), name); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -484,19 +467,7 @@ func (h *EndpointHandler) UpdateEndpointDeployment(c *gin.Context) {
 	logger.InfoCtx(c.Request.Context(), "Updating deployment: endpoint=%s, spec=%s, image=%s, replicas=%v",
 		name, req.SpecName, req.Image, req.Replicas)
 
-	var (
-		resp *interfaces.DeployResponse
-		err  error
-	)
-
-	switch {
-	case h.endpointService != nil:
-		resp, err = h.endpointService.UpdateDeployment(c.Request.Context(), &req)
-	case h.deploymentProvider != nil:
-		resp, err = h.deploymentProvider.UpdateDeployment(c.Request.Context(), &req)
-	default:
-		err = fmt.Errorf("deployment provider unavailable")
-	}
+	resp, err := h.endpointService.UpdateDeployment(c.Request.Context(), &req)
 
 	if err != nil {
 		logger.ErrorCtx(c.Request.Context(), "Failed to update deployment %s: %v", name, err)

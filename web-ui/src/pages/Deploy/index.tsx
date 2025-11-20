@@ -231,6 +231,16 @@ const DeployPage = () => {
         }
       }
 
+      // Add volume mounts if provided
+      if (values.volumeMounts && values.volumeMounts.length > 0) {
+        previewData.volumeMounts = values.volumeMounts
+          .filter((vm: any) => vm && vm.pvcName && vm.mountPath)
+          .map((vm: any) => ({
+            pvcName: vm.pvcName,
+            mountPath: vm.mountPath,
+          }));
+      }
+
       // Add autoscaler config if provided
       if (values.autoscaler) {
         if (values.autoscaler.minReplicas !== undefined) {

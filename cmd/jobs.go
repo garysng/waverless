@@ -251,25 +251,29 @@ func (app *Application) cleanupStuckTerminatingPods(k8sProvider *k8s.K8sDeployme
 			continue
 		}
 
-		// Wait a short grace period after termination begins
-		if ts, err := time.Parse(time.RFC3339, pod.DeletionTimestamp); err == nil {
-			if time.Since(ts) < 5*time.Second {
-				logger.InfoCtx(ctx, "Worker %s has NO running tasks but was just marked for deletion (<5s), NOT force deleting (waiting briefly)", workerID)
-				continue
-			}
-		} else {
-			logger.WarnCtx(ctx, "Failed to parse DeletionTimestamp for pod %s: %v, skipping force delete this round", pod.Name, err)
+		// ✅ Worker has no running tasks and pod is Terminating - kill main process
+		logger.WarnCtx(ctx, "🔥 Pod %s is stuck in Terminating with NO running tasks, killing main process (PID 1)...",
+			pod.Name)
+
+		// Get endpoint from pod labels (pod.Labels["app"] = endpoint)
+		endpoint := ""
+		if pod.Labels != nil {
+			endpoint = pod.Labels["app"]
+		}
+		if endpoint == "" {
+			logger.ErrorCtx(ctx, "Failed to get endpoint from pod %s labels, skipping", pod.Name)
 			continue
 		}
 
-		// ✅ Confirmed idle, force delete
-		logger.WarnCtx(ctx, "🔥 Pod %s is stuck in Terminating with NO running tasks, force deleting...",
-			pod.Name)
-
-		if err := k8sProvider.ForceDeletePod(ctx, pod.Name); err != nil {
-			logger.ErrorCtx(ctx, "Failed to force delete stuck pod %s: %v", pod.Name, err)
+		// Execute pkill -9 1 to kill the main process (PID 1) in container
+		// This will cause container to exit and pod to terminate naturally
+		stdout, stderr, err := k8sProvider.ExecPodCommand(ctx, pod.Name, endpoint, []string{"sh", "-c", "pkill -9 1"})
+		if err != nil {
+			logger.ErrorCtx(ctx, "Failed to kill main process in pod %s: %v, stdout: %s, stderr: %s",
+				pod.Name, err, stdout, stderr)
 		} else {
-			logger.InfoCtx(ctx, "✅ Successfully force deleted stuck pod %s", pod.Name)
+			logger.InfoCtx(ctx, "✅ Successfully killed main process in pod %s (stdout: %s, stderr: %s)",
+				pod.Name, stdout, stderr)
 		}
 	}
 }

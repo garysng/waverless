@@ -206,10 +206,14 @@ func (p *K8sDeploymentProvider) GetSpec(ctx context.Context, specName string) (*
 func (p *K8sDeploymentProvider) PreviewDeploymentYAML(ctx context.Context, req *interfaces.DeployRequest) (string, error) {
 	// Convert to DeployAppRequest
 	k8sReq := &DeployAppRequest{
-		Endpoint: req.Endpoint,
-		SpecName: req.SpecName,
-		Image:    req.Image,
-		Replicas: req.Replicas,
+		Endpoint:     req.Endpoint,
+		SpecName:     req.SpecName,
+		Image:        req.Image,
+		Replicas:     req.Replicas,
+		TaskTimeout:  req.TaskTimeout,
+		Env:          req.Env,
+		VolumeMounts: req.VolumeMounts,
+		ShmSize:      req.ShmSize,
 	}
 
 	return p.manager.PreviewYAML(k8sReq)
@@ -273,6 +277,12 @@ func (p *K8sDeploymentProvider) DeletePod(ctx context.Context, podName string) e
 // This is a safety net for stuck pods that don't respond to SIGTERM
 func (p *K8sDeploymentProvider) ForceDeletePod(ctx context.Context, podName string) error {
 	return p.manager.ForceDeletePod(ctx, podName)
+}
+
+// ExecPodCommand executes a command in a pod's container
+// Returns stdout, stderr, and error
+func (p *K8sDeploymentProvider) ExecPodCommand(ctx context.Context, podName, endpoint string, command []string) (string, string, error) {
+	return p.manager.ExecPodCommand(ctx, podName, endpoint, command)
 }
 
 // WatchReplicas registers a callback to observe replica changes.
