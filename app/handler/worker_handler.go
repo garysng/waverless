@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"waverless/internal/model"
 	"waverless/internal/service"
@@ -172,6 +173,10 @@ func (h *WorkerHandler) SubmitResult(c *gin.Context) {
 	if req.TaskID == "" {
 		// Try URL path parameter first
 		taskID := c.Param("task_id")
+		//failed to update task result: task not found: 8edae883-00b5-4fb5-b9a2-69f20b57319e&isStream=false
+		if strings.Index(taskID, "&") > 0 {
+			taskID = strings.Split(taskID, "&")[0]
+		}
 		if taskID != "" {
 			req.TaskID = taskID
 			logger.DebugCtx(c.Request.Context(), "got task_id from URL path, task_id: %s", taskID)
