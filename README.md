@@ -1,6 +1,6 @@
 <div align="center">
   <a href="https://wavespeed.ai" target="_blank" rel="noopener noreferrer">
-    <img src="docs/images/wavespeed-dark-logo.png" alt="Wavespeed.ai Logo" width="200"/>
+    <img src="docs/images/wavespeed-dark-logo.png" alt="WaveSpeedAI Logo" width="200"/>
   </a>
 
   <h1>Waverless</h1>
@@ -11,7 +11,7 @@
 
   <p>
     <a href="https://wavespeed.ai"
-    target="_blank" rel="noopener noreferrer">🌐 Visit Wavespeed.ai</a> •
+    target="_blank" rel="noopener noreferrer">🌐 Visit wavespeed.ai</a> •
     <a href="docs/USER_GUIDE.md">📖 Documentation</a> •
     <a href="https://github.com/wavespeedai/waverless/issues">💬 Issues</a>
   </p>
@@ -21,7 +21,7 @@
 
 ## Overview
 
-Waverless is a high-performance Serverless GPU task orchestration system designed for AI inference and training workloads, powered by [Wavespeed.ai](https://wavespeed.ai).
+Waverless is a high-performance Serverless GPU task orchestration system designed for AI inference and training workloads, powered by [WaveSpeedAI](https://wavespeed.ai).
 
 ## Core Features
 
