@@ -93,7 +93,12 @@ const AppDetailPage = () => {
     queryFn: async () => {
       if (!endpoint) throw new Error('Endpoint is required');
       const response = await api.apps.get(endpoint);
-      return response.data;
+      const app = response.data;
+      // Compute imageUpdateAvailable
+      return {
+        ...app,
+        imageUpdateAvailable: !!app.latestImage && app.latestImage !== app.image,
+      };
     },
     enabled: !!endpoint,
     refetchInterval: 10000,
@@ -196,6 +201,31 @@ const AppDetailPage = () => {
     },
   });
 
+  // Check image update mutation
+  const checkImageMutation = useMutation({
+    mutationFn: async () => {
+      if (!endpoint) throw new Error('Endpoint is required');
+      const response = await api.apps.checkImage(endpoint);
+      return response.data;
+    },
+    onSuccess: (data) => {
+      if (data.updateAvailable) {
+        message.info({
+          content: `New image version available: ${data.newDigest?.substring(0, 19)}...`,
+          duration: 5,
+        });
+      } else {
+        message.success('Image is up to date');
+      }
+      queryClient.invalidateQueries({ queryKey: ['apps'] });
+      queryClient.invalidateQueries({ queryKey: ['app', endpoint] });
+      refetch();
+    },
+    onError: (error: any) => {
+      message.error(error.response?.data?.error || 'Failed to check image update');
+    },
+  });
+
   // Scroll to top when page loads
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' });
@@ -221,6 +251,7 @@ const AppDetailPage = () => {
       priority: appInfo.priority ?? 50,
       taskTimeout: appInfo.taskTimeout ?? 0,
       maxPendingTasks: appInfo.maxPendingTasks ?? 1,
+      imagePrefix: appInfo.imagePrefix || '',
       autoscalerEnabled: appInfo.autoscalerEnabled || '',
       scaleUpThreshold: appInfo.scaleUpThreshold ?? 1,
       scaleDownIdleTime: appInfo.scaleDownIdleTime ?? 300,
@@ -242,6 +273,7 @@ const AppDetailPage = () => {
         description: values.description,
         taskTimeout: values.taskTimeout,
         maxPendingTasks: values.maxPendingTasks,
+        imagePrefix: values.imagePrefix !== undefined ? values.imagePrefix : undefined,
         minReplicas: values.minReplicas,
         maxReplicas: values.maxReplicas,
         priority: values.priority,
@@ -386,6 +418,42 @@ const AppDetailPage = () => {
         />
       </div>
 
+      {/* Image Update Alert */}
+      {appInfo?.imageUpdateAvailable && (
+        <Alert
+          message="New Docker Image Version Available"
+          description={
+            <Space direction="vertical" size="small">
+              <Text>A new version of the Docker image is available for this endpoint.</Text>
+              {appInfo.latestImage && (
+                <Text code style={{ fontSize: 11 }}>
+                  Latest: {appInfo.latestImage}
+                </Text>
+              )}
+              {appInfo.imageLastChecked && (
+                <Text type="secondary">
+                  Last checked: {new Date(appInfo.imageLastChecked).toLocaleString()}
+                </Text>
+              )}
+            </Space>
+          }
+          type="warning"
+          showIcon
+          closable
+          style={{ marginBottom: 16 }}
+          action={
+            <Button
+              size="small"
+              type="primary"
+              icon={<RocketOutlined />}
+              onClick={handleUpdateDeployment}
+            >
+              Update Now
+            </Button>
+          }
+        />
+      )}
+
       {/* Header Section */}
       <Card loading={isLoading} style={{ marginBottom: 16 }} bodyStyle={{ padding: '24px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -490,7 +558,14 @@ const AppDetailPage = () => {
                   Overview
                 </span>
               ),
-              children: <OverviewTab endpoint={endpoint} appInfo={appInfo} />,
+              children: (
+                <OverviewTab
+                  endpoint={endpoint}
+                  appInfo={appInfo}
+                  onCheckImage={() => checkImageMutation.mutate()}
+                  checkingImage={checkImageMutation.isPending}
+                />
+              ),
             },
             {
               key: 'workers',
@@ -766,6 +841,14 @@ const AppDetailPage = () => {
             tooltip="When pending tasks reach this threshold, the /check endpoint will return can_submit=false"
           >
             <InputNumber min={1} max={1000} placeholder="1" style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            label="Image Prefix"
+            name="imagePrefix"
+            help="Optional prefix for automatic image update detection"
+            tooltip="E.g., 'wavespeed/model-deploy:wan_i2v-default-' for images like 'wavespeed/model-deploy:wan_i2v-default-202511051642'"
+          >
+            <Input placeholder="e.g., wavespeed/model-deploy:wan_i2v-default-" />
           </Form.Item>
 
           <Divider>AutoScaler Configuration</Divider>

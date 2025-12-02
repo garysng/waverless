@@ -1,0 +1,85 @@
+# Waverless Configuration Example
+
+server:
+  port: 8090
+  mode: debug  # debug, release
+  api_key: ""  # API key for worker authentication (optional)
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+mysql:
+  host: "localhost"
+  port: 3306
+  user: "root"
+  password: "password"
+  database: "waverless"
+
+queue:
+  concurrency: 10
+  max_retry: 3
+  task_timeout: 3600
+
+worker:
+  heartbeat_interval: 30
+  heartbeat_timeout: 90
+  default_concurrency: 1
+
+logger:
+  level: info  # debug, info, warn, error
+  output: console  # console, file, both
+  file:
+    path: "logs/waverless.log"
+
+k8s:
+  enabled: true
+  namespace: "default"
+  platform: "generic"  # generic, aliyun-ack, aws-eks
+  config_dir: "config/k8s"
+
+autoscaler:
+  enabled: true
+  interval: 30
+  max_gpu_count: 100
+  max_cpu_cores: 1000
+  max_memory_gb: 2000
+  starvation_time: 300
+
+# Docker Registry Authentication (for private images)
+docker:
+  # Optional HTTP proxy for DockerHub API calls
+  # Useful when direct access to DockerHub is blocked or slow
+  proxy_url: "http://127.0.0.1:7890"  # Example: local proxy (used for both HTTP and HTTPS)
+  # proxy_url: ""  # Leave empty to use environment variables (HTTP_PROXY, HTTPS_PROXY, http_proxy, https_proxy)
+
+  # If proxy_url is not set, the system will automatically use standard proxy environment variables:
+  # - HTTP_PROXY / http_proxy: for HTTP requests
+  # - HTTPS_PROXY / https_proxy: for HTTPS requests
+  # - NO_PROXY / no_proxy: for addresses that should bypass proxy
+
+  registries:
+    # Docker Hub authentication
+    "https://index.docker.io/v1/":
+      username: "your-dockerhub-username"
+      password: "your-dockerhub-token"  # Use access token instead of password
+      # OR use pre-encoded auth (base64 encoded username:password)
+      # auth: "base64-encoded-credentials"
+
+    # Add more registries as needed
+    # "your-private-registry.com":
+    #   username: "username"
+    #   password: "password"
+
+# Notification configuration
+notification:
+  # Feishu (Lark) webhook URL for image update notifications
+  # You can create a webhook in Feishu group settings
+  # If not set, will fallback to FEISHU_WEBHOOK_URL environment variable
+  feishu_webhook_url: ""  # Example: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx"
+
+providers:
+  deployment: "k8s"  # k8s, docker
+  queue: "redis"     # redis, mysql
+  metadata: "mysql"  # redis, mysql

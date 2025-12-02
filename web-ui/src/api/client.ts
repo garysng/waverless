@@ -68,6 +68,28 @@ export const api = {
       client.post<string>('/endpoints/preview', data, {
         headers: { Accept: 'text/plain' },
       }),
+    checkImage: (name: string) => client.post<{
+      endpoint: string;
+      currentImage: string;
+      currentDigest: string;
+      newDigest: string;
+      updateAvailable: boolean;
+      lastChecked: string;
+    }>(`/endpoints/${name}/check-image`),
+    checkAllImages: () => client.post<{
+      message: string;
+      totalChecked: number;
+      updatesFound: number;
+      notifiedCount: number;
+      results: Array<{
+        endpoint: string;
+        currentImage: string;
+        updateAvailable: boolean;
+        currentDigest?: string;
+        newDigest?: string;
+        error?: string;
+      }>;
+    }>('/endpoints/check-images'),
   },
 
   // Specs (CRUD from database)

@@ -63,21 +63,25 @@ type EndpointMetadata struct {
 	Description string `json:"description"`         // Description
 
 	// Deployment information
-	SpecName string `json:"specName"` // Spec name
-	Image    string `json:"image"`    // Docker image
-	Replicas int    `json:"replicas"` // Replica count
+	SpecName         string     `json:"specName"`         // Spec name
+	Image            string     `json:"image"`            // Docker image
+	ImagePrefix      string     `json:"imagePrefix"`      // Image prefix for matching updates (e.g., "wavespeed/model-deploy:wan_i2v-default-")
+	ImageDigest      string     `json:"imageDigest"`      // Current image digest from DockerHub
+	ImageLastChecked *time.Time `json:"imageLastChecked"` // Last time image was checked for updates
+	LatestImage      string     `json:"latestImage"`      // Latest available image if update is available
+	Replicas         int        `json:"replicas"`         // Replica count
 
 	// Auto-scaling configuration
-	MinReplicas       int     `json:"minReplicas"`       // Minimum replica count (default 0)
-	MaxReplicas       int     `json:"maxReplicas"`       // Maximum replica count
-	ScaleUpThreshold  int     `json:"scaleUpThreshold"`  // Queue threshold for scale up (default 1)
-	ScaleDownIdleTime int     `json:"scaleDownIdleTime"` // Idle time in seconds before scale down (default 300)
-	ScaleUpCooldown   int     `json:"scaleUpCooldown"`   // Scale up cooldown in seconds (default 30)
-	ScaleDownCooldown int     `json:"scaleDownCooldown"` // Scale down cooldown in seconds (default 60)
-	Priority          int     `json:"priority"`          // Priority for resource allocation (0-100, default 50)
-	EnableDynamicPrio *bool   `json:"enableDynamicPrio"` // Enable dynamic priority (default true)
-	HighLoadThreshold int     `json:"highLoadThreshold"` // High load threshold for priority boost (default 10)
-	PriorityBoost     int     `json:"priorityBoost"`     // Priority boost amount when high load (default 20)
+	MinReplicas       int     `json:"minReplicas"`                 // Minimum replica count (default 0)
+	MaxReplicas       int     `json:"maxReplicas"`                 // Maximum replica count
+	ScaleUpThreshold  int     `json:"scaleUpThreshold"`            // Queue threshold for scale up (default 1)
+	ScaleDownIdleTime int     `json:"scaleDownIdleTime"`           // Idle time in seconds before scale down (default 300)
+	ScaleUpCooldown   int     `json:"scaleUpCooldown"`             // Scale up cooldown in seconds (default 30)
+	ScaleDownCooldown int     `json:"scaleDownCooldown"`           // Scale down cooldown in seconds (default 60)
+	Priority          int     `json:"priority"`                    // Priority for resource allocation (0-100, default 50)
+	EnableDynamicPrio *bool   `json:"enableDynamicPrio"`           // Enable dynamic priority (default true)
+	HighLoadThreshold int     `json:"highLoadThreshold"`           // High load threshold for priority boost (default 10)
+	PriorityBoost     int     `json:"priorityBoost"`               // Priority boost amount when high load (default 20)
 	AutoscalerEnabled *string `json:"autoscalerEnabled,omitempty"` // Autoscaler override: nil/"" = follow global, "disabled" = force off, "enabled" = force on
 
 	// Auto-scaling runtime state

@@ -219,17 +219,17 @@ func (m *MetadataManager) saveAutoscalerConfig(ctx context.Context, meta *interf
 		Endpoint:          meta.Name,
 		DisplayName:       meta.DisplayName,
 		SpecName:          meta.SpecName,
-		MinReplicas:       meta.MinReplicas,       // 0 is valid (scale-to-zero)
-		MaxReplicas:       meta.MaxReplicas,       // Direct value (0 means no autoscaling)
-		Replicas:          meta.Replicas,          // Direct value
-		ScaleUpThreshold:  defaultIfZero(meta.ScaleUpThreshold, 1),   // 0 behaves like 1 anyway
+		MinReplicas:       meta.MinReplicas,                           // 0 is valid (scale-to-zero)
+		MaxReplicas:       meta.MaxReplicas,                           // Direct value (0 means no autoscaling)
+		Replicas:          meta.Replicas,                              // Direct value
+		ScaleUpThreshold:  defaultIfZero(meta.ScaleUpThreshold, 1),    // 0 behaves like 1 anyway
 		ScaleDownIdleTime: defaultIfZero(meta.ScaleDownIdleTime, 300), // Use default if not set
-		ScaleUpCooldown:   meta.ScaleUpCooldown,   // 0 is valid (no cooldown)
-		ScaleDownCooldown: meta.ScaleDownCooldown, // 0 is valid (no cooldown)
-		Priority:          meta.Priority,          // 0 is valid (lowest priority)
+		ScaleUpCooldown:   meta.ScaleUpCooldown,                       // 0 is valid (no cooldown)
+		ScaleDownCooldown: meta.ScaleDownCooldown,                     // 0 is valid (no cooldown)
+		Priority:          meta.Priority,                              // 0 is valid (lowest priority)
 		EnableDynamicPrio: enableDynamic,
 		HighLoadThreshold: defaultIfZero(meta.HighLoadThreshold, 10), // Use default if not set
-		PriorityBoost:     meta.PriorityBoost,     // 0 is valid (no boost)
+		PriorityBoost:     meta.PriorityBoost,                        // 0 is valid (no boost)
 		Enabled:           true,
 		AutoscalerEnabled: meta.AutoscalerEnabled,
 	}
@@ -254,34 +254,44 @@ func (m *MetadataManager) saveAutoscalerConfig(ctx context.Context, meta *interf
 
 func toMySQLEndpoint(endpoint *interfaces.EndpointMetadata) *mysql.Endpoint {
 	return &mysql.Endpoint{
-		Endpoint:     endpoint.Name,
-		SpecName:     endpoint.SpecName,
-		Image:        endpoint.Image,
-		Replicas:     endpoint.Replicas,
-		TaskTimeout:  endpoint.TaskTimeout,
-		EnablePtrace: endpoint.EnablePtrace,
-		Env:          mysql.StringMapToJSONMap(endpoint.Env),
-		Labels:       mysql.StringMapToJSONMap(endpoint.Labels),
-		Status:       endpoint.Status,
-		CreatedAt:    endpoint.CreatedAt,
-		UpdatedAt:    endpoint.UpdatedAt,
+		Endpoint:         endpoint.Name,
+		SpecName:         endpoint.SpecName,
+		Description:      endpoint.Description,
+		Image:            endpoint.Image,
+		ImagePrefix:      endpoint.ImagePrefix,
+		ImageDigest:      endpoint.ImageDigest,
+		ImageLastChecked: endpoint.ImageLastChecked,
+		LatestImage:      endpoint.LatestImage,
+		Replicas:         endpoint.Replicas,
+		TaskTimeout:      endpoint.TaskTimeout,
+		EnablePtrace:     endpoint.EnablePtrace,
+		Env:              mysql.StringMapToJSONMap(endpoint.Env),
+		Labels:           mysql.StringMapToJSONMap(endpoint.Labels),
+		Status:           endpoint.Status,
+		CreatedAt:        endpoint.CreatedAt,
+		UpdatedAt:        endpoint.UpdatedAt,
 	}
 }
 
 func fromMySQLEndpoint(endpoint *mysql.Endpoint) *interfaces.EndpointMetadata {
 	return &interfaces.EndpointMetadata{
-		Name:            endpoint.Endpoint,
-		SpecName:        endpoint.SpecName,
-		Image:           endpoint.Image,
-		Replicas:        endpoint.Replicas,
-		TaskTimeout:     endpoint.TaskTimeout,
-		EnablePtrace:    endpoint.EnablePtrace,
-		MaxPendingTasks: endpoint.MaxPendingTasks,
-		Env:             mysql.JSONMapToStringMap(endpoint.Env),
-		Labels:          mysql.JSONMapToStringMap(endpoint.Labels),
-		Status:          endpoint.Status,
-		CreatedAt:       endpoint.CreatedAt,
-		UpdatedAt:       endpoint.UpdatedAt,
+		Name:             endpoint.Endpoint,
+		SpecName:         endpoint.SpecName,
+		Description:      endpoint.Description,
+		Image:            endpoint.Image,
+		ImagePrefix:      endpoint.ImagePrefix,
+		ImageDigest:      endpoint.ImageDigest,
+		ImageLastChecked: endpoint.ImageLastChecked,
+		LatestImage:      endpoint.LatestImage,
+		Replicas:         endpoint.Replicas,
+		TaskTimeout:      endpoint.TaskTimeout,
+		EnablePtrace:     endpoint.EnablePtrace,
+		MaxPendingTasks:  endpoint.MaxPendingTasks,
+		Env:              mysql.JSONMapToStringMap(endpoint.Env),
+		Labels:           mysql.JSONMapToStringMap(endpoint.Labels),
+		Status:           endpoint.Status,
+		CreatedAt:        endpoint.CreatedAt,
+		UpdatedAt:        endpoint.UpdatedAt,
 	}
 }
 

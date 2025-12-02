@@ -250,6 +250,7 @@ type DeployAppRequest struct {
 	Endpoint        string                   `json:"endpoint" binding:"required"` // Endpoint name
 	SpecName        string                   `json:"specName" binding:"required"` // Spec name
 	Image           string                   `json:"image" binding:"required"`    // Image
+	ImagePrefix     string                   `json:"imagePrefix,omitempty"`       // Image prefix for matching updates (e.g., "wavespeed/model-deploy:wan_i2v-default-")
 	Replicas        int                      `json:"replicas,omitempty"`          // Replica count (default 1)
 	TaskTimeout     int                      `json:"taskTimeout,omitempty"`       // Task execution timeout in seconds (0 = use global default)
 	MaxPendingTasks int                      `json:"maxPendingTasks,omitempty"`   // Maximum allowed pending tasks before warning clients (default 1)
