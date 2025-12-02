@@ -86,7 +86,39 @@ func (h *ImageHandler) DockerHubWebhook(c *gin.Context) {
 	for _, endpoint := range endpoints {
 		// Check if the endpoint's image prefix matches the pushed image
 		if endpoint.ImagePrefix != "" && strings.HasPrefix(fullImageName, endpoint.ImagePrefix) {
-			logger.InfoCtx(ctx, "[Image Webhook] Endpoint %s matches image prefix: prefix=%s, newImage=%s, currentImage=%s",
+			// Extract tag from fullImageName
+			_, newTag := image.ParseImageName(fullImageName)
+			// Extract prefix from endpoint.ImagePrefix to get tagPrefix
+			prefixParts := strings.Split(endpoint.ImagePrefix, ":")
+			if len(prefixParts) != 2 {
+				logger.WarnCtx(ctx, "[Image Webhook] Invalid image prefix format for endpoint %s: %s", endpoint.Name, endpoint.ImagePrefix)
+				continue
+			}
+			tagPrefix := prefixParts[1]
+
+			// Validate that the suffix after prefix is exactly 12 digits (YYYYMMDDHHMM)
+			suffix := strings.TrimPrefix(newTag, tagPrefix)
+			if len(suffix) != 12 {
+				logger.InfoCtx(ctx, "[Image Webhook] Skipping endpoint %s: tag suffix length is %d, expected 12 (YYYYMMDDHHMM). Tag: %s",
+					endpoint.Name, len(suffix), newTag)
+				continue
+			}
+
+			// Validate all characters are digits
+			allDigits := true
+			for _, c := range suffix {
+				if c < '0' || c > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if !allDigits {
+				logger.InfoCtx(ctx, "[Image Webhook] Skipping endpoint %s: tag suffix contains non-digit characters. Tag: %s",
+					endpoint.Name, newTag)
+				continue
+			}
+
+			logger.InfoCtx(ctx, "[Image Webhook] Endpoint %s matches image prefix with valid date format: prefix=%s, newImage=%s, currentImage=%s",
 				endpoint.Name, endpoint.ImagePrefix, fullImageName, endpoint.Image)
 
 			// Get the new image digest

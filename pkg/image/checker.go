@@ -339,16 +339,36 @@ func (c *Checker) GetLatestImageByPrefix(ctx context.Context, imagePrefix string
 		return "", "", fmt.Errorf("failed to decode tags response: %w", err)
 	}
 
-	// Filter tags by prefix and find the latest one
+	// Filter tags by prefix and validate date format
+	// Date format after prefix must be exactly 12 digits: YYYYMMDDHHMM
 	var matchingTags []string
 	for _, tag := range tagsResp.Tags {
 		if strings.HasPrefix(tag, tagPrefix) {
-			matchingTags = append(matchingTags, tag)
+			// Extract the suffix after the prefix
+			suffix := strings.TrimPrefix(tag, tagPrefix)
+
+			// Validate that suffix is exactly 12 digits (YYYYMMDDHHMM)
+			if len(suffix) == 12 {
+				allDigits := true
+				for _, c := range suffix {
+					if c < '0' || c > '9' {
+						allDigits = false
+						break
+					}
+				}
+				if allDigits {
+					matchingTags = append(matchingTags, tag)
+				} else {
+					logger.InfoCtx(ctx, "Skipping tag %s: suffix contains non-digit characters", tag)
+				}
+			} else {
+				logger.InfoCtx(ctx, "Skipping tag %s: suffix length is %d, expected 12 (YYYYMMDDHHMM)", tag, len(suffix))
+			}
 		}
 	}
 
 	if len(matchingTags) == 0 {
-		return "", "", fmt.Errorf("no tags found matching prefix: %s", imagePrefix)
+		return "", "", fmt.Errorf("no tags found matching prefix %s with valid date format (YYYYMMDDHHMM)", imagePrefix)
 	}
 
 	// Sort tags in descending order (lexicographically, assuming timestamp format)
