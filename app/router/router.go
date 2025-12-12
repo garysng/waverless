@@ -16,10 +16,11 @@ type Router struct {
 	statisticsHandler *handler.StatisticsHandler
 	gpuUsageHandler   *handler.GPUUsageHandler
 	specHandler       *handler.SpecHandler
+	imageHandler      *handler.ImageHandler
 }
 
 // NewRouter creates a new Router
-func NewRouter(taskHandler *handler.TaskHandler, workerHandler *handler.WorkerHandler, endpointHandler *handler.EndpointHandler, autoscalerHandler *handler.AutoScalerHandler, statisticsHandler *handler.StatisticsHandler, gpuUsageHandler *handler.GPUUsageHandler, specHandler *handler.SpecHandler) *Router {
+func NewRouter(taskHandler *handler.TaskHandler, workerHandler *handler.WorkerHandler, endpointHandler *handler.EndpointHandler, autoscalerHandler *handler.AutoScalerHandler, statisticsHandler *handler.StatisticsHandler, gpuUsageHandler *handler.GPUUsageHandler, specHandler *handler.SpecHandler, imageHandler *handler.ImageHandler) *Router {
 	return &Router{
 		taskHandler:       taskHandler,
 		workerHandler:     workerHandler,
@@ -28,6 +29,7 @@ func NewRouter(taskHandler *handler.TaskHandler, workerHandler *handler.WorkerHa
 		statisticsHandler: statisticsHandler,
 		gpuUsageHandler:   gpuUsageHandler,
 		specHandler:       specHandler,
+		imageHandler:      imageHandler,
 	}
 }
 
@@ -93,6 +95,12 @@ func (r *Router) Setup(engine *gin.Engine) {
 				endpoints.GET("/:name/workers/:pod_name/describe", r.workerHandler.DescribeWorker) // Describe Worker (Pod detail)
 				endpoints.GET("/:name/workers/:pod_name/yaml", r.workerHandler.GetWorkerYAML)      // Get Worker Pod YAML
 				endpoints.GET("/:name/workers/exec", r.endpointHandler.ExecWorker)                 // Worker Exec (WebSocket)
+
+				// Image update check
+				if r.imageHandler != nil {
+					endpoints.POST("/:name/check-image", r.imageHandler.CheckImageUpdate)     // Check image update for specific endpoint
+					endpoints.POST("/check-images", r.imageHandler.CheckAllImagesUpdate)      // Check image updates for all endpoints
+				}
 			}
 
 			// Task history APIs
@@ -125,6 +133,14 @@ func (r *Router) Setup(engine *gin.Engine) {
 			config := api.Group("/config")
 			{
 				config.GET("/default-env", r.endpointHandler.GetDefaultEnv) // Get default environment variables from ConfigMap
+			}
+
+			// Webhook APIs
+			if r.imageHandler != nil {
+				webhooks := api.Group("/webhooks")
+				{
+					webhooks.POST("/dockerhub", r.imageHandler.DockerHubWebhook) // DockerHub webhook
+				}
 			}
 
 			// AutoScaler management

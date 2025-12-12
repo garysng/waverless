@@ -10,15 +10,17 @@ var GlobalConfig *Config
 
 // Config global configuration
 type Config struct {
-	Server     ServerConfig      `yaml:"server"`
-	Redis      RedisConfig       `yaml:"redis"`
-	MySQL      MySQLConfig       `yaml:"mysql"`
-	Queue      QueueConfig       `yaml:"queue"`
-	Worker     WorkerConfig      `yaml:"worker"`
-	Logger     LoggerConfig      `yaml:"logger"`
-	K8s        K8sConfig         `yaml:"k8s"`
-	AutoScaler AutoScalerConfig  `yaml:"autoscaler"`
-	Providers  *ProvidersConfig  `yaml:"providers,omitempty"` // Providers configuration (optional)
+	Server       ServerConfig       `yaml:"server"`
+	Redis        RedisConfig        `yaml:"redis"`
+	MySQL        MySQLConfig        `yaml:"mysql"`
+	Queue        QueueConfig        `yaml:"queue"`
+	Worker       WorkerConfig       `yaml:"worker"`
+	Logger       LoggerConfig       `yaml:"logger"`
+	K8s          K8sConfig          `yaml:"k8s"`
+	AutoScaler   AutoScalerConfig   `yaml:"autoscaler"`
+	Docker       DockerConfig       `yaml:"docker"`                  // Docker registry authentication
+	Notification NotificationConfig `yaml:"notification"`            // Notification configuration
+	Providers    *ProvidersConfig   `yaml:"providers,omitempty"`     // Providers configuration (optional)
 }
 
 // ServerConfig server configuration
@@ -94,6 +96,24 @@ type AutoScalerConfig struct {
 	MaxCPUCores    int  `yaml:"max_cpu_cores"`   // Total cluster CPU cores
 	MaxMemoryGB    int  `yaml:"max_memory_gb"`   // Total cluster memory (GB)
 	StarvationTime int  `yaml:"starvation_time"` // Starvation time threshold (seconds)
+}
+
+// DockerConfig Docker registry authentication configuration
+type DockerConfig struct {
+	ProxyURL   string                        `yaml:"proxy_url"`  // HTTP proxy URL (e.g., "http://127.0.0.1:7890")
+	Registries map[string]DockerRegistryAuth `yaml:"registries"` // Registry authentication (key: registry URL)
+}
+
+// DockerRegistryAuth Docker registry authentication info
+type DockerRegistryAuth struct {
+	Username string `yaml:"username"` // Registry username
+	Password string `yaml:"password"` // Registry password or token
+	Auth     string `yaml:"auth"`     // Base64 encoded username:password (optional)
+}
+
+// NotificationConfig Notification configuration
+type NotificationConfig struct {
+	FeishuWebhookURL string `yaml:"feishu_webhook_url"` // Feishu (Lark) webhook URL
 }
 
 // Init initializes configuration

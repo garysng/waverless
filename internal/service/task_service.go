@@ -278,6 +278,11 @@ func (s *TaskService) UpdateTaskResult(ctx context.Context, req *model.JobResult
 
 	logger.InfoCtx(ctx, "task result updated, task_id: %s, status: %s", req.TaskID, updates["status"])
 
+	// 🔥 CRITICAL: Update mysqlTask.CompletedAt before recording GPU usage
+	// The mysqlTask object was fetched from DB before updates, so CompletedAt is still nil
+	// We must update it with the value from updates map for GPU usage recording to work
+	mysqlTask.CompletedAt = &now
+
 	// Record GPU usage statistics
 	if err := s.recordGPUUsage(ctx, mysqlTask); err != nil {
 		logger.WarnCtx(ctx, "failed to record GPU usage for task %s: %v", req.TaskID, err)

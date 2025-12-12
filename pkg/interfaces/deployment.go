@@ -91,15 +91,15 @@ type VolumeMount struct {
 
 // DeployRequest deployment request
 type DeployRequest struct {
-	Endpoint     string            `json:"endpoint"`              // Application name/endpoint
-	SpecName     string            `json:"specName"`              // Spec name
-	Image        string            `json:"image"`                 // Docker image
-	Replicas     int               `json:"replicas"`              // Replica count
-	TaskTimeout  int               `json:"taskTimeout"`           // Task execution timeout in seconds (0 = use global default)
-	Env          map[string]string `json:"env"`                   // Environment variables
-	Labels       map[string]string `json:"labels"`                // Labels
+	Endpoint     string            `json:"endpoint"`               // Application name/endpoint
+	SpecName     string            `json:"specName"`               // Spec name
+	Image        string            `json:"image"`                  // Docker image
+	Replicas     int               `json:"replicas"`               // Replica count
+	TaskTimeout  int               `json:"taskTimeout"`            // Task execution timeout in seconds (0 = use global default)
+	Env          map[string]string `json:"env"`                    // Environment variables
+	Labels       map[string]string `json:"labels"`                 // Labels
 	VolumeMounts []VolumeMount     `json:"volumeMounts,omitempty"` // PVC volume mounts
-	ShmSize      string            `json:"shmSize,omitempty"`     // Shared memory size (e.g., "1Gi", "512Mi")
+	ShmSize      string            `json:"shmSize,omitempty"`      // Shared memory size (e.g., "1Gi", "512Mi")
 	EnablePtrace bool              `json:"enablePtrace,omitempty"` // Enable SYS_PTRACE capability for debugging (only for fixed resource pools)
 }
 
@@ -112,15 +112,15 @@ type DeployResponse struct {
 
 // UpdateDeploymentRequest update deployment request (image, specification, replica count)
 type UpdateDeploymentRequest struct {
-	Endpoint     string         `json:"endpoint"`                    // Application name (required)
-	SpecName     string         `json:"specName,omitempty"`          // New spec name (optional)
-	Image        string         `json:"image,omitempty"`             // New docker image (optional)
-	Replicas     *int           `json:"replicas,omitempty"`          // New replica count (optional, use pointer to distinguish 0 from unset)
-	VolumeMounts *[]VolumeMount    `json:"volumeMounts,omitempty"`      // New volume mounts (optional, use pointer to distinguish empty from unset)
-	ShmSize      *string           `json:"shmSize,omitempty"`           // New shared memory size (optional, use pointer to distinguish empty from unset)
-	EnablePtrace *bool             `json:"enablePtrace,omitempty"`      // Enable SYS_PTRACE capability (optional, use pointer to distinguish false from unset)
-	Env          *map[string]string `json:"env,omitempty"`              // New environment variables (optional, use pointer to distinguish empty from unset)
-	TaskTimeout  *int              `json:"taskTimeout,omitempty"`       // New task timeout (optional)
+	Endpoint     string             `json:"endpoint"`               // Application name (required)
+	SpecName     string             `json:"specName,omitempty"`     // New spec name (optional)
+	Image        string             `json:"image,omitempty"`        // New docker image (optional)
+	Replicas     *int               `json:"replicas,omitempty"`     // New replica count (optional, use pointer to distinguish 0 from unset)
+	VolumeMounts *[]VolumeMount     `json:"volumeMounts,omitempty"` // New volume mounts (optional, use pointer to distinguish empty from unset)
+	ShmSize      *string            `json:"shmSize,omitempty"`      // New shared memory size (optional, use pointer to distinguish empty from unset)
+	EnablePtrace *bool              `json:"enablePtrace,omitempty"` // Enable SYS_PTRACE capability (optional, use pointer to distinguish false from unset)
+	Env          *map[string]string `json:"env,omitempty"`          // New environment variables (optional, use pointer to distinguish empty from unset)
+	TaskTimeout  *int               `json:"taskTimeout,omitempty"`  // New task timeout (optional)
 }
 
 // UpdateEndpointConfigRequest update Endpoint configuration request (metadata + autoscaling configuration)
@@ -131,6 +131,7 @@ type UpdateEndpointConfigRequest struct {
 	Description     *string `json:"description,omitempty"`     // Description
 	TaskTimeout     *int    `json:"taskTimeout,omitempty"`     // Task timeout in seconds
 	MaxPendingTasks *int    `json:"maxPendingTasks,omitempty"` // Maximum allowed pending tasks before warning clients
+	ImagePrefix     *string `json:"imagePrefix,omitempty"`     // Image prefix for matching updates
 
 	// Autoscaling configuration
 	MinReplicas       *int    `json:"minReplicas,omitempty"`       // Minimum replicas (0 = scale-to-zero)
@@ -177,7 +178,7 @@ type SpecInfo struct {
 	Name         string                 `json:"name"`
 	DisplayName  string                 `json:"displayName"`
 	Category     string                 `json:"category"`
-	ResourceType string                 `json:"resourceType"`       // fixed, serverless
+	ResourceType string                 `json:"resourceType"` // fixed, serverless
 	Resources    ResourceRequirements   `json:"resources"`
 	Platforms    map[string]interface{} `json:"platforms"`
 }
@@ -196,7 +197,7 @@ type ResourceRequirements struct {
 type CreateSpecRequest struct {
 	Name         string                 `json:"name" binding:"required"`
 	DisplayName  string                 `json:"displayName" binding:"required"`
-	Category     string                 `json:"category" binding:"required"` // cpu, gpu
+	Category     string                 `json:"category" binding:"required"`     // cpu, gpu
 	ResourceType string                 `json:"resourceType" binding:"required"` // fixed, serverless
 	Resources    ResourceRequirements   `json:"resources" binding:"required"`
 	Platforms    map[string]interface{} `json:"platforms,omitempty"`
@@ -249,7 +250,7 @@ type PodDetail struct {
 type ContainerInfo struct {
 	Name         string                 `json:"name"`
 	Image        string                 `json:"image"`
-	State        string                 `json:"state"`         // Waiting, Running, Terminated
+	State        string                 `json:"state"` // Waiting, Running, Terminated
 	Ready        bool                   `json:"ready"`
 	RestartCount int32                  `json:"restartCount"`
 	Reason       string                 `json:"reason,omitempty"`
@@ -298,7 +299,7 @@ type PodCondition struct {
 
 // PodEvent Pod event
 type PodEvent struct {
-	Type      string `json:"type"`      // Normal, Warning
+	Type      string `json:"type"` // Normal, Warning
 	Reason    string `json:"reason"`
 	Message   string `json:"message"`
 	Count     int32  `json:"count"`

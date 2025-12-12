@@ -7,6 +7,11 @@ export interface AppInfo {
   readyReplicas?: number;
   availableReplicas?: number;
   image: string;
+  imagePrefix?: string; // Image prefix for matching updates
+  imageDigest?: string; // Current image digest from DockerHub
+  imageLastChecked?: string; // Last time image was checked for updates
+  latestImage?: string; // Latest available image (if update is available)
+  imageUpdateAvailable?: boolean; // Computed: true if latestImage exists and differs from image
   labels?: Record<string, string>;
   createdAt: string;
   updatedAt?: string;
@@ -94,6 +99,7 @@ export interface DeployRequest {
   endpoint: string;
   specName: string;
   image: string;
+  imagePrefix?: string; // Image prefix for matching updates (e.g., "wavespeed/model-deploy:wan_i2v-default-")
   replicas: number;
   taskTimeout?: number;
   maxPendingTasks?: number; // Maximum allowed pending tasks before warning clients
@@ -132,6 +138,7 @@ export interface UpdateEndpointConfigRequest {
   description?: string;
   taskTimeout?: number;
   maxPendingTasks?: number; // Maximum allowed pending tasks before warning clients
+  imagePrefix?: string; // Image prefix for matching updates
 
   // Autoscaling configuration
   minReplicas?: number;

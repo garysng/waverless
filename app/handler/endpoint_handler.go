@@ -426,6 +426,9 @@ func (h *EndpointHandler) UpdateEndpoint(c *gin.Context) {
 	if req.AutoscalerEnabled != nil {
 		existingMeta.AutoscalerEnabled = req.AutoscalerEnabled
 	}
+	if req.ImagePrefix != nil {
+		existingMeta.ImagePrefix = *req.ImagePrefix
+	}
 
 	// Save the updated metadata
 	// This will update both endpoints table and autoscaler_configs table
@@ -575,6 +578,7 @@ func (h *EndpointHandler) buildMetadataFromRequest(c *gin.Context, req k8s.Deplo
 			DisplayName:       req.Endpoint,
 			SpecName:          req.SpecName,
 			Image:             req.Image,
+			ImagePrefix:       req.ImagePrefix,
 			Replicas:          req.Replicas,
 			TaskTimeout:       req.TaskTimeout,
 			MaxPendingTasks:   maxPendingTasks,

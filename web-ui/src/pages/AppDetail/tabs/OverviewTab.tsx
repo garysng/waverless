@@ -1,9 +1,11 @@
-import { Descriptions, Tag, Typography } from 'antd';
+import { Descriptions, Tag, Typography, Space, Alert, Button } from 'antd';
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   GlobalOutlined,
   QuestionCircleOutlined,
+  SyncOutlined,
+  ClockCircleOutlined,
 } from '@ant-design/icons';
 import type { AppInfo } from '@/types';
 import { Tooltip } from 'antd';
@@ -14,6 +16,8 @@ const { Text } = Typography;
 interface OverviewTabProps {
   endpoint: string;
   appInfo?: AppInfo;
+  onCheckImage?: () => void;
+  checkingImage?: boolean;
 }
 
 const AUTOSCALER_FIELD_TIPS = {
@@ -49,7 +53,7 @@ const renderZeroHint = (condition: boolean, text: string) =>
 const formatTaskTimeout = (value?: number) =>
   value && value > 0 ? `${value}` : `0 (uses global default ${GLOBAL_TASK_TIMEOUT}s)`;
 
-const OverviewTab = ({ endpoint, appInfo }: OverviewTabProps) => {
+const OverviewTab = ({ endpoint, appInfo, onCheckImage, checkingImage }: OverviewTabProps) => {
   if (!appInfo) {
     return <div style={{ padding: 24 }}>Loading...</div>;
   }
@@ -93,11 +97,6 @@ const OverviewTab = ({ endpoint, appInfo }: OverviewTabProps) => {
             {appInfo.maxPendingTasks || 1}
           </Tooltip>
         </Descriptions.Item>
-        <Descriptions.Item label="Image" span={2}>
-          <Text code style={{ fontSize: 12 }}>
-            {appInfo.image || '-'}
-          </Text>
-        </Descriptions.Item>
         <Descriptions.Item label="Created At">
           {appInfo.createdAt ? new Date(appInfo.createdAt).toLocaleString() : '-'}
         </Descriptions.Item>
@@ -109,6 +108,95 @@ const OverviewTab = ({ endpoint, appInfo }: OverviewTabProps) => {
         </Descriptions.Item>
         <Descriptions.Item label="Last Task Time">
           {appInfo.lastTaskTime ? new Date(appInfo.lastTaskTime).toLocaleString() : '-'}
+        </Descriptions.Item>
+      </Descriptions>
+
+      {/* Image Information */}
+      <Descriptions
+        title={
+          <Space>
+            <span>Image Information</span>
+            {onCheckImage && (
+              <Button
+                size="small"
+                icon={<SyncOutlined spin={checkingImage} />}
+                onClick={onCheckImage}
+                loading={checkingImage}
+              >
+                Check Image
+              </Button>
+            )}
+          </Space>
+        }
+        bordered
+        column={2}
+        size="middle"
+        style={{ marginBottom: 24 }}
+      >
+        <Descriptions.Item label="Image" span={2}>
+          <Text code style={{ fontSize: 12 }}>
+            {appInfo.image || '-'}
+          </Text>
+        </Descriptions.Item>
+        <Descriptions.Item label="Update Status" span={2}>
+          {appInfo.imageUpdateAvailable ? (
+            <Alert
+              message="New Image Version Available"
+              description={
+                <Space direction="vertical" size="small">
+                  <Text>A new version of this Docker image is available. Consider updating the deployment.</Text>
+                  {appInfo.latestImage && (
+                    <Text code style={{ fontSize: 11 }}>
+                      Latest: {appInfo.latestImage}
+                    </Text>
+                  )}
+                </Space>
+              }
+              type="warning"
+              showIcon
+              icon={<SyncOutlined spin />}
+            />
+          ) : appInfo.imageLastChecked ? (
+            <Alert
+              message="Image is up to date"
+              description="No new version detected."
+              type="success"
+              showIcon
+              icon={<CheckCircleOutlined />}
+            />
+          ) : (
+            <Text type="secondary">Not checked yet</Text>
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="Image Prefix">
+          {appInfo.imagePrefix ? (
+            <Text code style={{ fontSize: 11 }}>
+              {appInfo.imagePrefix}
+            </Text>
+          ) : (
+            <Text type="secondary">Not set</Text>
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="Image Digest">
+          {appInfo.imageDigest ? (
+            <Tooltip title={appInfo.imageDigest}>
+              <Text code style={{ fontSize: 11 }}>
+                {appInfo.imageDigest.substring(0, 19)}...
+              </Text>
+            </Tooltip>
+          ) : (
+            <Text type="secondary">Not checked</Text>
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="Last Checked" span={2}>
+          {appInfo.imageLastChecked ? (
+            <Space>
+              <ClockCircleOutlined />
+              <Text>{new Date(appInfo.imageLastChecked).toLocaleString()}</Text>
+            </Space>
+          ) : (
+            <Text type="secondary">Never checked</Text>
+          )}
         </Descriptions.Item>
       </Descriptions>
 

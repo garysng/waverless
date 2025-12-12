@@ -73,6 +73,13 @@ export default function GPUUsage() {
     }
   };
 
+  // Quick time range shortcuts
+  const handleQuickRange = (minutes: number) => {
+    const now = dayjs();
+    const start = now.subtract(minutes, 'minutes');
+    setDateRange([start, now]);
+  };
+
   // Backfill historical data mutation
   const backfillMutation = useMutation({
     mutationFn: async (params?: { batch_size?: number; max_tasks?: number }) => {
@@ -250,6 +257,17 @@ export default function GPUUsage() {
             onChange={handleDateRangeChange}
             format={granularity === 'daily' ? 'YYYY-MM-DD' : 'YYYY-MM-DD HH:mm'}
           />
+
+          {/* Quick Time Range Shortcuts */}
+          <Space.Compact>
+            <Button size="small" onClick={() => handleQuickRange(15)}>15min</Button>
+            <Button size="small" onClick={() => handleQuickRange(30)}>30min</Button>
+            <Button size="small" onClick={() => handleQuickRange(60)}>1h</Button>
+            <Button size="small" onClick={() => handleQuickRange(12 * 60)}>12h</Button>
+            <Button size="small" onClick={() => handleQuickRange(24 * 60)}>1d</Button>
+            <Button size="small" onClick={() => handleQuickRange(3 * 24 * 60)}>3d</Button>
+            <Button size="small" onClick={() => handleQuickRange(7 * 24 * 60)}>7d</Button>
+          </Space.Compact>
 
           <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
             Refresh
