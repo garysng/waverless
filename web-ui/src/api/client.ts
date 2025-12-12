@@ -129,6 +129,12 @@ export const api = {
     cancel: (taskId: string) => axios.post(`/v1/cancel/${taskId}`, {}, {
       baseURL: window.location.origin,
     }),
+    submit: (endpoint: string, input: any) => axios.post<{ id: string; status: string }>(`/v1/${endpoint}/run`, { input }, {
+      baseURL: window.location.origin,
+    }),
+    submitSync: (endpoint: string, input: any) => axios.post<Task>(`/v1/${endpoint}/runsync`, { input }, {
+      baseURL: window.location.origin,
+    }),
     getEvents: (taskId: string) => client.get<TaskEventsResponse>(`/tasks/${taskId}/events`),
     getTimeline: (taskId: string) => client.get<TaskTimelineResponse>(`/tasks/${taskId}/timeline`),
     getExecutionHistory: (taskId: string) => client.get<TaskExecutionHistoryResponse>(`/tasks/${taskId}/execution-history`),

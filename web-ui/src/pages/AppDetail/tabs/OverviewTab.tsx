@@ -7,6 +7,7 @@ import {
 } from '@ant-design/icons';
 import type { AppInfo } from '@/types';
 import { Tooltip } from 'antd';
+import QuickStartPanel from '@/components/QuickStartPanel';
 
 const { Text } = Typography;
 
@@ -48,13 +49,16 @@ const renderZeroHint = (condition: boolean, text: string) =>
 const formatTaskTimeout = (value?: number) =>
   value && value > 0 ? `${value}` : `0 (uses global default ${GLOBAL_TASK_TIMEOUT}s)`;
 
-const OverviewTab = ({ appInfo }: OverviewTabProps) => {
+const OverviewTab = ({ endpoint, appInfo }: OverviewTabProps) => {
   if (!appInfo) {
     return <div style={{ padding: 24 }}>Loading...</div>;
   }
 
   return (
     <div style={{ padding: 24 }}>
+      {/* Quick Start Panel */}
+      <QuickStartPanel endpoint={endpoint} />
+
       {/* Basic Information */}
       <Descriptions
         title="Basic Information"
