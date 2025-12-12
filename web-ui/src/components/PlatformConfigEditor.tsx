@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Input,
   Button,
@@ -20,10 +20,11 @@ import {
 } from '@ant-design/icons';
 import type { CollapseProps } from 'antd';
 import yaml from 'js-yaml';
+import Editor from '@monaco-editor/react';
+import type { editor } from 'monaco-editor';
 
 const { Text } = Typography;
 const { Option } = Select;
-const { TextArea } = Input;
 
 export interface Toleration {
   key: string;
@@ -56,6 +57,25 @@ const PlatformConfigEditor: React.FC<PlatformConfigEditorProps> = ({
 }) => {
   const [activeMode, setActiveMode] = useState<'simple' | 'advanced' | 'yaml'>(mode);
   const [platforms, setPlatforms] = useState<PlatformConfigs>(value);
+  const [jsonText, setJsonText] = useState(JSON.stringify(value, null, 2));
+  const [yamlText, setYamlText] = useState(yaml.dump(value, { indent: 2 }));
+  const [jsonError, setJsonError] = useState<string | null>(null);
+  const [yamlError, setYamlError] = useState<string | null>(null);
+
+  // Update internal state when value prop changes (for edit mode)
+  useEffect(() => {
+    if (value && Object.keys(value).length > 0) {
+      setPlatforms(value);
+      setJsonText(JSON.stringify(value, null, 2));
+      setYamlText(yaml.dump(value, { indent: 2 }));
+    }
+  }, [value]);
+
+  // Update JSON/YAML text when platforms change (from Simple mode)
+  useEffect(() => {
+    setJsonText(JSON.stringify(platforms, null, 2));
+    setYamlText(yaml.dump(platforms, { indent: 2 }));
+  }, [platforms]);
 
   const handlePlatformsChange = (newPlatforms: PlatformConfigs) => {
     setPlatforms(newPlatforms);
@@ -448,33 +468,47 @@ const PlatformConfigEditor: React.FC<PlatformConfigEditorProps> = ({
     );
   };
 
+  // Handle JSON text change
+  const handleJsonChange = (text: string) => {
+    setJsonText(text);
+    try {
+      const parsed = JSON.parse(text);
+      setJsonError(null);
+      handlePlatformsChange(parsed);
+    } catch (e) {
+      setJsonError((e as Error).message);
+    }
+  };
+
   // Render advanced mode (JSON editor)
   const renderAdvancedMode = () => {
-    const [jsonText, setJsonText] = useState(JSON.stringify(platforms, null, 2));
-    const [error, setError] = useState<string | null>(null);
-
-    const handleJsonChange = (text: string) => {
-      setJsonText(text);
-      try {
-        const parsed = JSON.parse(text);
-        setError(null);
-        handlePlatformsChange(parsed);
-      } catch (e) {
-        setError((e as Error).message);
-      }
-    };
-
     return (
       <Space direction="vertical" style={{ width: '100%' }}>
-        {error && (
-          <Text type="danger">Invalid JSON: {error}</Text>
+        {jsonError && (
+          <Text type="danger">Invalid JSON: {jsonError}</Text>
         )}
-        <TextArea
-          value={jsonText}
-          onChange={(e) => handleJsonChange(e.target.value)}
-          rows={20}
-          style={{ fontFamily: 'monospace' }}
-        />
+        <div style={{ height: '500px', border: '1px solid #d9d9d9', borderRadius: 4 }}>
+          <Editor
+            height="100%"
+            language="json"
+            value={jsonText}
+            onChange={(value) => handleJsonChange(value || '')}
+            theme="vs-light"
+            options={{
+              readOnly: false,
+              minimap: { enabled: false },
+              scrollBeyondLastLine: false,
+              fontSize: 13,
+              lineNumbers: 'on',
+              folding: true,
+              automaticLayout: true,
+              wordWrap: 'off',
+              tabSize: 2,
+              formatOnPaste: true,
+              formatOnType: true,
+            }}
+          />
+        </div>
         <Space>
           <Button
             icon={<CopyOutlined />}
@@ -503,51 +537,47 @@ const PlatformConfigEditor: React.FC<PlatformConfigEditorProps> = ({
     );
   };
 
+  // Handle YAML text change
+  const handleYamlChange = (text: string) => {
+    setYamlText(text);
+    try {
+      const parsed = yaml.load(text) as PlatformConfigs;
+      setYamlError(null);
+      handlePlatformsChange(parsed);
+    } catch (e) {
+      setYamlError((e as Error).message);
+    }
+  };
+
   // Render YAML mode
   const renderYamlMode = () => {
-    const [yamlText, setYamlText] = useState(yaml.dump(platforms, { indent: 2 }));
-    const [error, setError] = useState<string | null>(null);
-
-    const handleYamlChange = (text: string) => {
-      setYamlText(text);
-      try {
-        const parsed = yaml.load(text) as PlatformConfigs;
-        setError(null);
-        handlePlatformsChange(parsed);
-      } catch (e) {
-        setError((e as Error).message);
-      }
-    };
-
     return (
       <Space direction="vertical" style={{ width: '100%' }}>
-        {error && (
-          <Text type="danger">Invalid YAML: {error}</Text>
+        {yamlError && (
+          <Text type="danger">Invalid YAML: {yamlError}</Text>
         )}
-        <TextArea
-          value={yamlText}
-          onChange={(e) => handleYamlChange(e.target.value)}
-          rows={20}
-          style={{ fontFamily: 'monospace' }}
-          placeholder={`Example:
-generic:
-  nodeSelector: {}
-  tolerations: []
-  labels: {}
-  annotations: {}
-aliyun-ack:
-  nodeSelector:
-    gpu.nvidia.com/class: H200
-  tolerations:
-    - key: hardware-type/h200
-      operator: Equal
-      value: gpu-cpfs
-      effect: NoSchedule
-  labels:
-    alibabacloud.com/acs: "true"
-  annotations:
-    k8s.aliyun.com/image-accelerate-mode: on-demand`}
-        />
+        <div style={{ height: '500px', border: '1px solid #d9d9d9', borderRadius: 4 }}>
+          <Editor
+            height="100%"
+            language="yaml"
+            value={yamlText}
+            onChange={(value) => handleYamlChange(value || '')}
+            theme="vs-light"
+            options={{
+              readOnly: false,
+              minimap: { enabled: false },
+              scrollBeyondLastLine: false,
+              fontSize: 13,
+              lineNumbers: 'on',
+              folding: true,
+              automaticLayout: true,
+              wordWrap: 'off',
+              tabSize: 2,
+              formatOnPaste: true,
+              formatOnType: true,
+            }}
+          />
+        </div>
         <Space>
           <Button
             icon={<CopyOutlined />}

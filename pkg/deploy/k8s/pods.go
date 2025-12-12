@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"sigs.k8s.io/yaml"
 
 	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
@@ -201,8 +202,10 @@ func (m *Manager) getPodStatus(pod *corev1.Pod) (status, reason, message string)
 
 // getPodEvents gets Events related to Pod
 func (m *Manager) getPodEvents(ctx context.Context, pod *corev1.Pod) ([]interfaces.PodEvent, error) {
+	// Use only pod name for filtering, as UID might cause issues with some K8s versions
+	// This is sufficient since pod names are unique within a namespace
 	events, err := m.client.CoreV1().Events(m.namespace).List(ctx, metav1.ListOptions{
-		FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.uid=%s", pod.Name, pod.UID),
+		FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Pod", pod.Name),
 	})
 	if err != nil {
 		return nil, err
@@ -210,13 +213,32 @@ func (m *Manager) getPodEvents(ctx context.Context, pod *corev1.Pod) ([]interfac
 
 	podEvents := make([]interfaces.PodEvent, 0, len(events.Items))
 	for _, event := range events.Items {
+		// Handle both old (FirstTimestamp/LastTimestamp) and new (EventTime) Event API
+		// Some events only have EventTime, some only have FirstTimestamp/LastTimestamp
+		var firstSeen, lastSeen string
+
+		// Try EventTime first (new API), fallback to FirstTimestamp (old API)
+		if !event.EventTime.IsZero() {
+			firstSeen = event.EventTime.Format(time.RFC3339)
+			lastSeen = event.EventTime.Format(time.RFC3339)
+		} else if !event.FirstTimestamp.IsZero() {
+			firstSeen = event.FirstTimestamp.Format(time.RFC3339)
+		}
+
+		// For LastTimestamp, prefer it over EventTime if available
+		if !event.LastTimestamp.IsZero() {
+			lastSeen = event.LastTimestamp.Format(time.RFC3339)
+		} else if lastSeen == "" && !event.EventTime.IsZero() {
+			lastSeen = event.EventTime.Format(time.RFC3339)
+		}
+
 		podEvents = append(podEvents, interfaces.PodEvent{
 			Type:      event.Type,
 			Reason:    event.Reason,
 			Message:   event.Message,
 			Count:     event.Count,
-			FirstSeen: event.FirstTimestamp.Format(time.RFC3339),
-			LastSeen:  event.LastTimestamp.Format(time.RFC3339),
+			FirstSeen: firstSeen,
+			LastSeen:  lastSeen,
 		})
 	}
 
@@ -395,4 +417,26 @@ func (m *Manager) convertVolumes(volumes []corev1.Volume) []interfaces.VolumeInf
 		result[i] = volumeInfo
 	}
 	return result
+}
+
+// GetPodYAML gets Pod YAML (similar to kubectl get pod -o yaml)
+func (m *Manager) GetPodYAML(ctx context.Context, endpoint string, podName string) (string, error) {
+	// Get Pod from API Server (not cache, to get full details)
+	pod, err := m.client.CoreV1().Pods(m.namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get pod: %w", err)
+	}
+
+	// Verify Pod belongs to specified endpoint (using "app" label)
+	if pod.Labels["app"] != endpoint {
+		return "", fmt.Errorf("pod %s does not belong to endpoint %s", podName, endpoint)
+	}
+
+	// Convert Pod to YAML
+	yamlData, err := yaml.Marshal(pod)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal pod to yaml: %w", err)
+	}
+
+	return string(yamlData), nil
 }

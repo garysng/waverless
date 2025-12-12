@@ -28,6 +28,7 @@ import {
 import { api } from '@/api/client';
 import type { WorkerWithPodInfo, Worker, PodDetail, TaskListResponse } from '@/types';
 import Terminal from '@/components/Terminal';
+import YamlViewer from '@/components/YamlViewer';
 
 const { Text } = Typography;
 
@@ -90,6 +91,17 @@ const WorkersTab = ({ endpoint, jumpToWorker, onClearJumpToWorker }: WorkersTabP
     queryFn: async () => {
       if (!selectedPod) throw new Error('No pod selected');
       const response = await api.apps.describePod(selectedPod.endpoint, selectedPod.podName);
+      return response.data;
+    },
+    enabled: !!selectedPod && workerDrawerVisible && workerDrawerTab === 'details',
+  });
+
+  // Fetch Pod YAML
+  const { data: podYaml, isFetching: loadingPodYaml } = useQuery<string>({
+    queryKey: ['pod-yaml', selectedPod?.endpoint, selectedPod?.podName],
+    queryFn: async () => {
+      if (!selectedPod) throw new Error('No pod selected');
+      const response = await api.apps.getPodYaml(selectedPod.endpoint, selectedPod.podName);
       return response.data;
     },
     enabled: !!selectedPod && workerDrawerVisible && workerDrawerTab === 'details',
@@ -801,20 +813,14 @@ const WorkersTab = ({ endpoint, jumpToWorker, onClearJumpToWorker }: WorkersTabP
                     {
                       key: 'yaml',
                       label: 'YAML',
-                      children: (
-                        <div style={{ height: 'calc(100vh - 250px)', overflow: 'auto', padding: 16 }}>
-                          <pre style={{
-                            backgroundColor: '#f5f5f5',
-                            padding: 16,
-                            borderRadius: 4,
-                            fontSize: 12,
-                            fontFamily: 'Monaco, Consolas, monospace',
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word'
-                          }}>
-                            {JSON.stringify(podDetail, null, 2)}
-                          </pre>
+                      children: loadingPodYaml ? (
+                        <div style={{ padding: 24 }}>Loading pod YAML...</div>
+                      ) : podYaml ? (
+                        <div style={{ padding: '16px 16px 0 16px' }}>
+                          <YamlViewer yaml={podYaml} />
                         </div>
+                      ) : (
+                        <div style={{ padding: 24 }}>No YAML available</div>
                       ),
                     },
                   ]}

@@ -64,6 +64,10 @@ export const api = {
     workers: (name: string) => client.get<WorkerWithPodInfo[]>(`/endpoints/${name}/workers`),
     describePod: (endpoint: string, podName: string) =>
       client.get<PodDetail>(`/endpoints/${endpoint}/workers/${podName}/describe`),
+    getPodYaml: (endpoint: string, podName: string) =>
+      client.get<string>(`/endpoints/${endpoint}/workers/${podName}/yaml`, {
+        headers: { Accept: 'text/plain' },
+      }),
     previewYaml: (data: DeployRequest) =>
       client.post<string>('/endpoints/preview', data, {
         headers: { Accept: 'text/plain' },

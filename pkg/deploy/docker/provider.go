@@ -77,6 +77,10 @@ func (p *DockerDeploymentProvider) DescribePod(ctx context.Context, endpoint str
 	return nil, p.unsupported("DescribePod")
 }
 
+func (p *DockerDeploymentProvider) GetPodYAML(ctx context.Context, endpoint string, podName string) (string, error) {
+	return "", p.unsupported("GetPodYAML")
+}
+
 func (p *DockerDeploymentProvider) ListPVCs(ctx context.Context) ([]*interfaces.PVCInfo, error) {
 	return nil, p.unsupported("ListPVCs")
 }
