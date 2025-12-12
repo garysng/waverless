@@ -251,7 +251,9 @@ func (r *GPUUsageRepository) AggregateMinuteStatistics(ctx context.Context, minu
 	return nil
 }
 
-// AggregateHourlyStatistics aggregates GPU usage records into hourly statistics
+// AggregateHourlyStatistics aggregates minute-level statistics into hourly statistics
+// IMPORTANT: Aggregates from gpu_usage_statistics_minute table, NOT from gpu_usage_records
+// This creates a proper cascade: records -> minute -> hourly -> daily
 // hourBucketStr should be in format "2006-01-02 15:00:00" (UTC, without timezone)
 func (r *GPUUsageRepository) AggregateHourlyStatistics(ctx context.Context, hourBucketStr string) error {
 	// Parse the hour bucket to calculate period end
@@ -264,26 +266,33 @@ func (r *GPUUsageRepository) AggregateHourlyStatistics(ctx context.Context, hour
 	periodEndStr := hourBucket.Add(1 * time.Hour).Format("2006-01-02 15:04:05")
 	nowStr := time.Now().Format("2006-01-02 15:04:05")
 
-	// Aggregate global statistics
+	// Aggregate global statistics from minute-level data
 	err = r.ds.DB(ctx).Exec(`
 		INSERT INTO gpu_usage_statistics_hourly
 		    (time_bucket, scope_type, scope_value, total_tasks, completed_tasks, failed_tasks,
-		     total_gpu_hours, avg_gpu_count, max_gpu_count, period_start, period_end, updated_at)
+		     total_gpu_hours, avg_gpu_count, max_gpu_count,
+		     peak_minute, peak_gpu_hours, period_start, period_end, updated_at)
 		SELECT
 		    ? as time_bucket,
 		    'global' as scope_type,
 		    NULL as scope_value,
-		    COUNT(*) as total_tasks,
-		    SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed_tasks,
-		    SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) as failed_tasks,
-		    SUM(gpu_hours) as total_gpu_hours,
-		    AVG(gpu_count) as avg_gpu_count,
-		    MAX(gpu_count) as max_gpu_count,
+		    SUM(total_tasks) as total_tasks,
+		    SUM(completed_tasks) as completed_tasks,
+		    SUM(failed_tasks) as failed_tasks,
+		    SUM(total_gpu_hours) as total_gpu_hours,
+		    AVG(avg_gpu_count) as avg_gpu_count,
+		    MAX(max_gpu_count) as max_gpu_count,
+		    (SELECT time_bucket FROM gpu_usage_statistics_minute
+		     WHERE scope_type = 'global' AND scope_value IS NULL
+		     AND time_bucket >= ? AND time_bucket < ?
+		     ORDER BY total_gpu_hours DESC LIMIT 1) as peak_minute,
+		    MAX(total_gpu_hours) as peak_gpu_hours,
 		    ? as period_start,
 		    ? as period_end,
 		    ? as updated_at
-		FROM gpu_usage_records
-		WHERE completed_at >= ? AND completed_at < ?
+		FROM gpu_usage_statistics_minute
+		WHERE scope_type = 'global' AND scope_value IS NULL
+		    AND time_bucket >= ? AND time_bucket < ?
 		ON DUPLICATE KEY UPDATE
 		    total_tasks = VALUES(total_tasks),
 		    completed_tasks = VALUES(completed_tasks),
@@ -291,34 +300,45 @@ func (r *GPUUsageRepository) AggregateHourlyStatistics(ctx context.Context, hour
 		    total_gpu_hours = VALUES(total_gpu_hours),
 		    avg_gpu_count = VALUES(avg_gpu_count),
 		    max_gpu_count = VALUES(max_gpu_count),
+		    peak_minute = VALUES(peak_minute),
+		    peak_gpu_hours = VALUES(peak_gpu_hours),
 		    updated_at = VALUES(updated_at)
-	`, hourBucketStr, periodStartStr, periodEndStr, nowStr, periodStartStr, periodEndStr).Error
+	`, hourBucketStr, periodStartStr, periodEndStr, periodStartStr, periodEndStr, nowStr, periodStartStr, periodEndStr).Error
 
 	if err != nil {
 		return fmt.Errorf("failed to aggregate global hourly statistics: %w", err)
 	}
 
-	// Aggregate per-endpoint statistics
+	// Aggregate per-endpoint statistics from minute-level data
 	err = r.ds.DB(ctx).Exec(`
 		INSERT INTO gpu_usage_statistics_hourly
 		    (time_bucket, scope_type, scope_value, total_tasks, completed_tasks, failed_tasks,
-		     total_gpu_hours, avg_gpu_count, max_gpu_count, period_start, period_end, updated_at)
+		     total_gpu_hours, avg_gpu_count, max_gpu_count,
+		     peak_minute, peak_gpu_hours, period_start, period_end, updated_at)
 		SELECT
 		    ? as time_bucket,
 		    'endpoint' as scope_type,
-		    endpoint as scope_value,
-		    COUNT(*) as total_tasks,
-		    SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed_tasks,
-		    SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) as failed_tasks,
-		    SUM(gpu_hours) as total_gpu_hours,
-		    AVG(gpu_count) as avg_gpu_count,
-		    MAX(gpu_count) as max_gpu_count,
+		    scope_value,
+		    SUM(total_tasks) as total_tasks,
+		    SUM(completed_tasks) as completed_tasks,
+		    SUM(failed_tasks) as failed_tasks,
+		    SUM(total_gpu_hours) as total_gpu_hours,
+		    AVG(avg_gpu_count) as avg_gpu_count,
+		    MAX(max_gpu_count) as max_gpu_count,
+		    (SELECT m2.time_bucket
+		     FROM gpu_usage_statistics_minute m2
+		     WHERE m2.scope_type = 'endpoint'
+		       AND m2.scope_value = m1.scope_value
+		       AND m2.time_bucket >= ? AND m2.time_bucket < ?
+		     ORDER BY m2.total_gpu_hours DESC LIMIT 1) as peak_minute,
+		    MAX(total_gpu_hours) as peak_gpu_hours,
 		    ? as period_start,
 		    ? as period_end,
 		    ? as updated_at
-		FROM gpu_usage_records
-		WHERE completed_at >= ? AND completed_at < ?
-		GROUP BY endpoint
+		FROM gpu_usage_statistics_minute m1
+		WHERE scope_type = 'endpoint' AND scope_value IS NOT NULL
+		    AND time_bucket >= ? AND time_bucket < ?
+		GROUP BY scope_value
 		ON DUPLICATE KEY UPDATE
 		    total_tasks = VALUES(total_tasks),
 		    completed_tasks = VALUES(completed_tasks),
@@ -326,11 +346,59 @@ func (r *GPUUsageRepository) AggregateHourlyStatistics(ctx context.Context, hour
 		    total_gpu_hours = VALUES(total_gpu_hours),
 		    avg_gpu_count = VALUES(avg_gpu_count),
 		    max_gpu_count = VALUES(max_gpu_count),
+		    peak_minute = VALUES(peak_minute),
+		    peak_gpu_hours = VALUES(peak_gpu_hours),
 		    updated_at = VALUES(updated_at)
-	`, hourBucketStr, periodStartStr, periodEndStr, nowStr, periodStartStr, periodEndStr).Error
+	`, hourBucketStr, periodStartStr, periodEndStr, periodStartStr, periodEndStr, nowStr, periodStartStr, periodEndStr).Error
 
 	if err != nil {
 		return fmt.Errorf("failed to aggregate endpoint hourly statistics: %w", err)
+	}
+
+	// Aggregate per-spec statistics from minute-level data
+	err = r.ds.DB(ctx).Exec(`
+		INSERT INTO gpu_usage_statistics_hourly
+		    (time_bucket, scope_type, scope_value, total_tasks, completed_tasks, failed_tasks,
+		     total_gpu_hours, avg_gpu_count, max_gpu_count,
+		     peak_minute, peak_gpu_hours, period_start, period_end, updated_at)
+		SELECT
+		    ? as time_bucket,
+		    'spec' as scope_type,
+		    scope_value,
+		    SUM(total_tasks) as total_tasks,
+		    SUM(completed_tasks) as completed_tasks,
+		    SUM(failed_tasks) as failed_tasks,
+		    SUM(total_gpu_hours) as total_gpu_hours,
+		    AVG(avg_gpu_count) as avg_gpu_count,
+		    MAX(max_gpu_count) as max_gpu_count,
+		    (SELECT m2.time_bucket
+		     FROM gpu_usage_statistics_minute m2
+		     WHERE m2.scope_type = 'spec'
+		       AND m2.scope_value = m1.scope_value
+		       AND m2.time_bucket >= ? AND m2.time_bucket < ?
+		     ORDER BY m2.total_gpu_hours DESC LIMIT 1) as peak_minute,
+		    MAX(total_gpu_hours) as peak_gpu_hours,
+		    ? as period_start,
+		    ? as period_end,
+		    ? as updated_at
+		FROM gpu_usage_statistics_minute m1
+		WHERE scope_type = 'spec' AND scope_value IS NOT NULL
+		    AND time_bucket >= ? AND time_bucket < ?
+		GROUP BY scope_value
+		ON DUPLICATE KEY UPDATE
+		    total_tasks = VALUES(total_tasks),
+		    completed_tasks = VALUES(completed_tasks),
+		    failed_tasks = VALUES(failed_tasks),
+		    total_gpu_hours = VALUES(total_gpu_hours),
+		    avg_gpu_count = VALUES(avg_gpu_count),
+		    max_gpu_count = VALUES(max_gpu_count),
+		    peak_minute = VALUES(peak_minute),
+		    peak_gpu_hours = VALUES(peak_gpu_hours),
+		    updated_at = VALUES(updated_at)
+	`, hourBucketStr, periodStartStr, periodEndStr, periodStartStr, periodEndStr, nowStr, periodStartStr, periodEndStr).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to aggregate spec hourly statistics: %w", err)
 	}
 
 	return nil
@@ -427,6 +495,42 @@ func (r *GPUUsageRepository) AggregateDailyStatistics(ctx context.Context, dayBu
 
 	if err != nil {
 		return fmt.Errorf("failed to aggregate endpoint daily statistics: %w", err)
+	}
+
+	// Aggregate per-spec daily statistics from hourly stats
+	err = r.ds.DB(ctx).Exec(`
+		INSERT INTO gpu_usage_statistics_daily
+		    (time_bucket, scope_type, scope_value, total_tasks, completed_tasks, failed_tasks,
+		     total_gpu_hours, avg_gpu_count, max_gpu_count, period_start, period_end, updated_at)
+		SELECT
+		    ? as time_bucket,
+		    'spec' as scope_type,
+		    scope_value,
+		    SUM(total_tasks) as total_tasks,
+		    SUM(completed_tasks) as completed_tasks,
+		    SUM(failed_tasks) as failed_tasks,
+		    SUM(total_gpu_hours) as total_gpu_hours,
+		    AVG(avg_gpu_count) as avg_gpu_count,
+		    MAX(max_gpu_count) as max_gpu_count,
+		    ? as period_start,
+		    ? as period_end,
+		    ? as updated_at
+		FROM gpu_usage_statistics_hourly
+		WHERE scope_type = 'spec' AND scope_value IS NOT NULL
+		    AND time_bucket >= ? AND time_bucket < ?
+		GROUP BY scope_value
+		ON DUPLICATE KEY UPDATE
+		    total_tasks = VALUES(total_tasks),
+		    completed_tasks = VALUES(completed_tasks),
+		    failed_tasks = VALUES(failed_tasks),
+		    total_gpu_hours = VALUES(total_gpu_hours),
+		    avg_gpu_count = VALUES(avg_gpu_count),
+		    max_gpu_count = VALUES(max_gpu_count),
+		    updated_at = VALUES(updated_at)
+	`, dayOnlyStr, periodStartStr, periodEndStr, nowStr, periodStartStr, periodEndStr).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to aggregate spec daily statistics: %w", err)
 	}
 
 	return nil

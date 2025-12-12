@@ -157,7 +157,11 @@ const AppsPage = () => {
     queryKey: ['apps'],
     queryFn: async () => {
       const response = await api.apps.list();
-      return response.data;
+      // Compute imageUpdateAvailable for each app
+      return response.data.map((app: AppInfo) => ({
+        ...app,
+        imageUpdateAvailable: !!app.latestImage && app.latestImage !== app.image,
+      }));
     },
     refetchInterval: 10000, // Auto refresh every 10s
     staleTime: 0, // Always consider data stale to enable background refetch
@@ -318,6 +322,27 @@ const AppsPage = () => {
     },
     onError: (error: any) => {
       message.error(error.response?.data?.error || 'Failed to update global configuration');
+    },
+  });
+
+  // Check all images mutation
+  const checkAllImagesMutation = useMutation({
+    mutationFn: async () => {
+      const response = await api.apps.checkAllImages();
+      return response.data;
+    },
+    onSuccess: (data) => {
+      const { updatesFound, totalChecked } = data;
+      if (updatesFound > 0) {
+        message.success(`Found ${updatesFound} image update(s) in ${totalChecked} application(s)`);
+      } else {
+        message.info(`All ${totalChecked} application(s) are up to date`);
+      }
+      // Refresh apps list to show updated status
+      queryClient.invalidateQueries({ queryKey: ['apps'] });
+    },
+    onError: (error: any) => {
+      message.error(error.response?.data?.error || 'Failed to check images');
     },
   });
 
@@ -556,13 +581,29 @@ const AppsPage = () => {
       title: 'Image',
       dataIndex: 'image',
       key: 'image',
-      width: 250,
-      render: (image: string) => (
-        <Tooltip title={image}>
-          <Text ellipsis style={{ maxWidth: 200 }}>
-            {image || 'N/A'}
-          </Text>
-        </Tooltip>
+      width: 280,
+      render: (image: string, record: AppInfo) => (
+        <Space direction="vertical" size={0} style={{ width: '100%' }}>
+          <Tooltip title={image}>
+            <Text ellipsis style={{ maxWidth: 240 }}>
+              {image || 'N/A'}
+            </Text>
+          </Tooltip>
+          {record.imageUpdateAvailable && (
+            <Tooltip title="New image version available! Click to view details.">
+              <Tag color="warning" icon={<SyncOutlined spin />} style={{ fontSize: 11, padding: '0 4px' }}>
+                Update Available
+              </Tag>
+            </Tooltip>
+          )}
+          {record.imageLastChecked && !record.imageUpdateAvailable && (
+            <Tooltip title={`Last checked: ${new Date(record.imageLastChecked).toLocaleString()}`}>
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                <CheckCircleOutlined /> Up to date
+              </Text>
+            </Tooltip>
+          )}
+        </Space>
       ),
     },
     {
@@ -807,6 +848,14 @@ const AppsPage = () => {
               loading={triggerAutoscalerMutation.isPending}
             >
               Trigger All
+            </Button>
+            <Button
+              icon={<SyncOutlined />}
+              onClick={() => checkAllImagesMutation.mutate()}
+              loading={checkAllImagesMutation.isPending}
+              title="Check all applications for Docker image updates"
+            >
+              Check Images
             </Button>
             <Button
               type="primary"

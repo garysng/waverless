@@ -351,6 +351,12 @@ func (app *Application) initHandlers() error{
 	// Initialize Spec Handler
 	app.specHandler = handler.NewSpecHandler(app.specService)
 
+	// Initialize Image Handler (for DockerHub webhook and image update checking)
+	if app.endpointService != nil {
+		app.imageHandler = handler.NewImageHandler(app.endpointService, &app.config.Docker)
+		logger.InfoCtx(app.ctx, "Image handler initialized")
+	}
+
 	return nil
 }
 
@@ -409,7 +415,7 @@ func (app *Application) initAutoScaler() error {
 // initHTTPServer initializes HTTP server
 func (app *Application) initHTTPServer() error{
 	// Initialize router
-	r := router.NewRouter(app.taskHandler, app.workerHandler, app.endpointHandler, app.autoscalerHandler, app.statisticsHandler, app.gpuUsageHandler, app.specHandler)
+	r := router.NewRouter(app.taskHandler, app.workerHandler, app.endpointHandler, app.autoscalerHandler, app.statisticsHandler, app.gpuUsageHandler, app.specHandler, app.imageHandler)
 
 	// Set Gin mode
 	gin.SetMode(app.config.Server.Mode)

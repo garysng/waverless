@@ -132,11 +132,15 @@ const DeployPage = () => {
   });
 
   const handleDeploy = (values: any) => {
+    // Get all field values from form, including collapsed sections
+    const allValues = form.getFieldsValue(true);
+
     const normalizedEndpoint = normalizeK8sName(values.endpoint);
     const deployData: DeployRequest = {
       endpoint: normalizedEndpoint,
       specName: values.specName,
       image: values.image,
+      imagePrefix: values.imagePrefix || undefined,
       replicas: values.replicas || 1,
       taskTimeout: values.taskTimeout || 0,
       maxPendingTasks: values.maxPendingTasks || undefined,
@@ -144,10 +148,11 @@ const DeployPage = () => {
       enablePtrace: values.enablePtrace || false,
     };
 
-    // Add environment variables if provided
-    if (values.envVars && values.envVars.length > 0) {
+    // Add environment variables if provided (read from allValues to include collapsed sections)
+    const envVars = allValues.envVars || [];
+    if (envVars.length > 0) {
       const env: Record<string, string> = {};
-      values.envVars
+      envVars
         .filter((item: any) => item && item.key && item.value)
         .forEach((item: any) => {
           env[item.key] = item.value;
@@ -157,9 +162,10 @@ const DeployPage = () => {
       }
     }
 
-    // Add volume mounts if provided
-    if (values.volumeMounts && values.volumeMounts.length > 0) {
-      deployData.volumeMounts = values.volumeMounts
+    // Add volume mounts if provided (read from allValues to include collapsed sections)
+    const volumeMounts = allValues.volumeMounts || [];
+    if (volumeMounts.length > 0) {
+      deployData.volumeMounts = volumeMounts
         .filter((vm: any) => vm && vm.pvcName && vm.mountPath)
         .map((vm: any) => ({
           pvcName: vm.pvcName,
@@ -167,37 +173,38 @@ const DeployPage = () => {
         }));
     }
 
-    // Add autoscaler config if provided
-    if (values.autoscaler) {
-      if (values.autoscaler.minReplicas !== undefined) {
-        deployData.minReplicas = values.autoscaler.minReplicas;
+    // Add autoscaler config if provided (read from allValues to include collapsed sections)
+    const autoscaler = allValues.autoscaler || {};
+    if (Object.keys(autoscaler).length > 0) {
+      if (autoscaler.minReplicas !== undefined) {
+        deployData.minReplicas = autoscaler.minReplicas;
       }
-      if (values.autoscaler.maxReplicas !== undefined && values.autoscaler.maxReplicas > 0) {
-        deployData.maxReplicas = values.autoscaler.maxReplicas;
+      if (autoscaler.maxReplicas !== undefined && autoscaler.maxReplicas > 0) {
+        deployData.maxReplicas = autoscaler.maxReplicas;
       }
-      if (values.autoscaler.scaleUpThreshold !== undefined && values.autoscaler.scaleUpThreshold > 0) {
-        deployData.scaleUpThreshold = values.autoscaler.scaleUpThreshold;
+      if (autoscaler.scaleUpThreshold !== undefined && autoscaler.scaleUpThreshold > 0) {
+        deployData.scaleUpThreshold = autoscaler.scaleUpThreshold;
       }
-      if (values.autoscaler.scaleDownIdleTime !== undefined && values.autoscaler.scaleDownIdleTime > 0) {
-        deployData.scaleDownIdleTime = values.autoscaler.scaleDownIdleTime;
+      if (autoscaler.scaleDownIdleTime !== undefined && autoscaler.scaleDownIdleTime > 0) {
+        deployData.scaleDownIdleTime = autoscaler.scaleDownIdleTime;
       }
-      if (values.autoscaler.scaleUpCooldown !== undefined && values.autoscaler.scaleUpCooldown > 0) {
-        deployData.scaleUpCooldown = values.autoscaler.scaleUpCooldown;
+      if (autoscaler.scaleUpCooldown !== undefined && autoscaler.scaleUpCooldown > 0) {
+        deployData.scaleUpCooldown = autoscaler.scaleUpCooldown;
       }
-      if (values.autoscaler.scaleDownCooldown !== undefined && values.autoscaler.scaleDownCooldown > 0) {
-        deployData.scaleDownCooldown = values.autoscaler.scaleDownCooldown;
+      if (autoscaler.scaleDownCooldown !== undefined && autoscaler.scaleDownCooldown > 0) {
+        deployData.scaleDownCooldown = autoscaler.scaleDownCooldown;
       }
-      if (values.autoscaler.priority !== undefined && values.autoscaler.priority > 0) {
-        deployData.priority = values.autoscaler.priority;
+      if (autoscaler.priority !== undefined && autoscaler.priority > 0) {
+        deployData.priority = autoscaler.priority;
       }
-      if (values.autoscaler.enableDynamicPrio !== undefined) {
-        deployData.enableDynamicPrio = values.autoscaler.enableDynamicPrio;
+      if (autoscaler.enableDynamicPrio !== undefined) {
+        deployData.enableDynamicPrio = autoscaler.enableDynamicPrio;
       }
-      if (values.autoscaler.highLoadThreshold !== undefined && values.autoscaler.highLoadThreshold > 0) {
-        deployData.highLoadThreshold = values.autoscaler.highLoadThreshold;
+      if (autoscaler.highLoadThreshold !== undefined && autoscaler.highLoadThreshold > 0) {
+        deployData.highLoadThreshold = autoscaler.highLoadThreshold;
       }
-      if (values.autoscaler.priorityBoost !== undefined && values.autoscaler.priorityBoost > 0) {
-        deployData.priorityBoost = values.autoscaler.priorityBoost;
+      if (autoscaler.priorityBoost !== undefined && autoscaler.priorityBoost > 0) {
+        deployData.priorityBoost = autoscaler.priorityBoost;
       }
     }
 
@@ -206,11 +213,15 @@ const DeployPage = () => {
 
   const handlePreview = () => {
     form.validateFields().then((values) => {
+      // Get all field values from form, including collapsed sections
+      const allValues = form.getFieldsValue(true);
+
       const normalizedEndpoint = normalizeK8sName(values.endpoint);
       const previewData: DeployRequest = {
         endpoint: normalizedEndpoint,
         specName: values.specName,
         image: values.image,
+        imagePrefix: values.imagePrefix || undefined,
         replicas: values.replicas || 1,
         taskTimeout: values.taskTimeout || 0,
         maxPendingTasks: values.maxPendingTasks || undefined,
@@ -218,10 +229,11 @@ const DeployPage = () => {
         enablePtrace: values.enablePtrace || false,
       };
 
-      // Add environment variables if provided
-      if (values.envVars && values.envVars.length > 0) {
+      // Add environment variables if provided (read from allValues to include collapsed sections)
+      const envVars = allValues.envVars || [];
+      if (envVars.length > 0) {
         const env: Record<string, string> = {};
-        values.envVars
+        envVars
           .filter((item: any) => item && item.key && item.value)
           .forEach((item: any) => {
             env[item.key] = item.value;
@@ -231,9 +243,10 @@ const DeployPage = () => {
         }
       }
 
-      // Add volume mounts if provided
-      if (values.volumeMounts && values.volumeMounts.length > 0) {
-        previewData.volumeMounts = values.volumeMounts
+      // Add volume mounts if provided (read from allValues to include collapsed sections)
+      const volumeMounts = allValues.volumeMounts || [];
+      if (volumeMounts.length > 0) {
+        previewData.volumeMounts = volumeMounts
           .filter((vm: any) => vm && vm.pvcName && vm.mountPath)
           .map((vm: any) => ({
             pvcName: vm.pvcName,
@@ -241,37 +254,38 @@ const DeployPage = () => {
           }));
       }
 
-      // Add autoscaler config if provided
-      if (values.autoscaler) {
-        if (values.autoscaler.minReplicas !== undefined) {
-          previewData.minReplicas = values.autoscaler.minReplicas;
+      // Add autoscaler config if provided (read from allValues to include collapsed sections)
+      const autoscaler = allValues.autoscaler || {};
+      if (Object.keys(autoscaler).length > 0) {
+        if (autoscaler.minReplicas !== undefined) {
+          previewData.minReplicas = autoscaler.minReplicas;
         }
-        if (values.autoscaler.maxReplicas !== undefined && values.autoscaler.maxReplicas > 0) {
-          previewData.maxReplicas = values.autoscaler.maxReplicas;
+        if (autoscaler.maxReplicas !== undefined && autoscaler.maxReplicas > 0) {
+          previewData.maxReplicas = autoscaler.maxReplicas;
         }
-        if (values.autoscaler.scaleUpThreshold !== undefined && values.autoscaler.scaleUpThreshold > 0) {
-          previewData.scaleUpThreshold = values.autoscaler.scaleUpThreshold;
+        if (autoscaler.scaleUpThreshold !== undefined && autoscaler.scaleUpThreshold > 0) {
+          previewData.scaleUpThreshold = autoscaler.scaleUpThreshold;
         }
-        if (values.autoscaler.scaleDownIdleTime !== undefined && values.autoscaler.scaleDownIdleTime > 0) {
-          previewData.scaleDownIdleTime = values.autoscaler.scaleDownIdleTime;
+        if (autoscaler.scaleDownIdleTime !== undefined && autoscaler.scaleDownIdleTime > 0) {
+          previewData.scaleDownIdleTime = autoscaler.scaleDownIdleTime;
         }
-        if (values.autoscaler.scaleUpCooldown !== undefined && values.autoscaler.scaleUpCooldown > 0) {
-          previewData.scaleUpCooldown = values.autoscaler.scaleUpCooldown;
+        if (autoscaler.scaleUpCooldown !== undefined && autoscaler.scaleUpCooldown > 0) {
+          previewData.scaleUpCooldown = autoscaler.scaleUpCooldown;
         }
-        if (values.autoscaler.scaleDownCooldown !== undefined && values.autoscaler.scaleDownCooldown > 0) {
-          previewData.scaleDownCooldown = values.autoscaler.scaleDownCooldown;
+        if (autoscaler.scaleDownCooldown !== undefined && autoscaler.scaleDownCooldown > 0) {
+          previewData.scaleDownCooldown = autoscaler.scaleDownCooldown;
         }
-        if (values.autoscaler.priority !== undefined && values.autoscaler.priority > 0) {
-          previewData.priority = values.autoscaler.priority;
+        if (autoscaler.priority !== undefined && autoscaler.priority > 0) {
+          previewData.priority = autoscaler.priority;
         }
-        if (values.autoscaler.enableDynamicPrio !== undefined) {
-          previewData.enableDynamicPrio = values.autoscaler.enableDynamicPrio;
+        if (autoscaler.enableDynamicPrio !== undefined) {
+          previewData.enableDynamicPrio = autoscaler.enableDynamicPrio;
         }
-        if (values.autoscaler.highLoadThreshold !== undefined && values.autoscaler.highLoadThreshold > 0) {
-          previewData.highLoadThreshold = values.autoscaler.highLoadThreshold;
+        if (autoscaler.highLoadThreshold !== undefined && autoscaler.highLoadThreshold > 0) {
+          previewData.highLoadThreshold = autoscaler.highLoadThreshold;
         }
-        if (values.autoscaler.priorityBoost !== undefined && values.autoscaler.priorityBoost > 0) {
-          previewData.priorityBoost = values.autoscaler.priorityBoost;
+        if (autoscaler.priorityBoost !== undefined && autoscaler.priorityBoost > 0) {
+          previewData.priorityBoost = autoscaler.priorityBoost;
         }
       }
 
@@ -352,6 +366,14 @@ const DeployPage = () => {
                   rules={[{ required: true, message: 'Please enter docker image' }]}
                 >
                   <Input placeholder="e.g., wavespeed/model-deploy:latest" />
+                </Form.Item>
+
+                <Form.Item
+                  name="imagePrefix"
+                  label="Image Prefix"
+                  tooltip="Optional prefix for automatic image update detection. E.g., 'wavespeed/model-deploy:wan_i2v-default-' for images like 'wavespeed/model-deploy:wan_i2v-default-202511051642'"
+                >
+                  <Input placeholder="e.g., wavespeed/model-deploy:wan_i2v-default-" />
                 </Form.Item>
 
                 <Row gutter={16}>

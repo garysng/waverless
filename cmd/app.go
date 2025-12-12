@@ -49,6 +49,7 @@ type Application struct {
 	statisticsHandler *handler.StatisticsHandler
 	gpuUsageHandler   *handler.GPUUsageHandler
 	specHandler       *handler.SpecHandler
+	imageHandler      *handler.ImageHandler
 
 	// Auto-scaler
 	autoscalerMgr *autoscaler.Manager
