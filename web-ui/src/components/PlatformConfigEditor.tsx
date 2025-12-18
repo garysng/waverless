@@ -473,6 +473,21 @@ const PlatformConfigEditor: React.FC<PlatformConfigEditorProps> = ({
     setJsonText(text);
     try {
       const parsed = JSON.parse(text);
+
+      // Normalize toleration values to strings (K8s requires strings, not booleans)
+      Object.keys(parsed).forEach(platformName => {
+        const platform = parsed[platformName];
+        if (platform.tolerations && Array.isArray(platform.tolerations)) {
+          platform.tolerations = platform.tolerations.map((tol: Toleration) => ({
+            ...tol,
+            // Convert value to string if it exists and is not already a string
+            value: tol.value !== undefined && tol.value !== null && tol.value !== ''
+              ? String(tol.value)
+              : tol.value
+          }));
+        }
+      });
+
       setJsonError(null);
       handlePlatformsChange(parsed);
     } catch (e) {
@@ -542,6 +557,21 @@ const PlatformConfigEditor: React.FC<PlatformConfigEditorProps> = ({
     setYamlText(text);
     try {
       const parsed = yaml.load(text) as PlatformConfigs;
+
+      // Normalize toleration values to strings (K8s requires strings, not booleans)
+      Object.keys(parsed).forEach(platformName => {
+        const platform = parsed[platformName];
+        if (platform.tolerations && Array.isArray(platform.tolerations)) {
+          platform.tolerations = platform.tolerations.map(tol => ({
+            ...tol,
+            // Convert value to string if it exists and is not already a string
+            value: tol.value !== undefined && tol.value !== null && tol.value !== ''
+              ? String(tol.value)
+              : tol.value
+          }));
+        }
+      });
+
       setYamlError(null);
       handlePlatformsChange(parsed);
     } catch (e) {
