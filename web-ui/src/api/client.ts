@@ -64,6 +64,10 @@ export const api = {
     workers: (name: string) => client.get<WorkerWithPodInfo[]>(`/endpoints/${name}/workers`),
     describePod: (endpoint: string, podName: string) =>
       client.get<PodDetail>(`/endpoints/${endpoint}/workers/${podName}/describe`),
+    getPodYaml: (endpoint: string, podName: string) =>
+      client.get<string>(`/endpoints/${endpoint}/workers/${podName}/yaml`, {
+        headers: { Accept: 'text/plain' },
+      }),
     previewYaml: (data: DeployRequest) =>
       client.post<string>('/endpoints/preview', data, {
         headers: { Accept: 'text/plain' },
@@ -149,6 +153,12 @@ export const api = {
       baseURL: window.location.origin,
     }),
     cancel: (taskId: string) => axios.post(`/v1/cancel/${taskId}`, {}, {
+      baseURL: window.location.origin,
+    }),
+    submit: (endpoint: string, input: any) => axios.post<{ id: string; status: string }>(`/v1/${endpoint}/run`, { input }, {
+      baseURL: window.location.origin,
+    }),
+    submitSync: (endpoint: string, input: any) => axios.post<Task>(`/v1/${endpoint}/runsync`, { input }, {
       baseURL: window.location.origin,
     }),
     getEvents: (taskId: string) => client.get<TaskEventsResponse>(`/tasks/${taskId}/events`),

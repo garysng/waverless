@@ -341,7 +341,18 @@ const SpecsPage = () => {
           <Form.Item
             name="name"
             label="Spec Name"
-            rules={[{ required: true, message: 'Please enter spec name' }]}
+            rules={[
+              { required: true, message: 'Please enter spec name' },
+              {
+                pattern: /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/,
+                message: 'Must be lowercase alphanumeric and hyphens, start/end with alphanumeric',
+              },
+              {
+                max: 63,
+                message: 'Maximum 63 characters',
+              },
+            ]}
+            tooltip="Kubernetes resource name format: lowercase letters, numbers, hyphens (-), max 63 chars"
           >
             <Input placeholder="e.g., h200-single" />
           </Form.Item>
@@ -411,7 +422,6 @@ const SpecsPage = () => {
           <Form.Item
             name="ephemeralStorage"
             label="Ephemeral Storage (GB)"
-            rules={[{ required: true, message: 'Please enter ephemeral storage' }]}
           >
             <Input placeholder="e.g., 300" />
           </Form.Item>
@@ -523,7 +533,6 @@ const SpecsPage = () => {
           <Form.Item
             name="ephemeralStorage"
             label="Ephemeral Storage (GB)"
-            rules={[{ required: true, message: 'Please enter ephemeral storage' }]}
           >
             <Input placeholder="e.g., 300" />
           </Form.Item>

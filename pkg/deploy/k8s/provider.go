@@ -412,6 +412,14 @@ func (p *K8sDeploymentProvider) DescribePod(ctx context.Context, endpoint string
 	return p.manager.DescribePod(ctx, endpoint, podName)
 }
 
+// GetPodYAML 获取 Pod 的 YAML（类似 kubectl get pod -o yaml）
+func (p *K8sDeploymentProvider) GetPodYAML(ctx context.Context, endpoint string, podName string) (string, error) {
+	if p.manager == nil {
+		return "", fmt.Errorf("k8s manager not initialized")
+	}
+	return p.manager.GetPodYAML(ctx, endpoint, podName)
+}
+
 // ListPVCs lists all PersistentVolumeClaims in the namespace
 func (p *K8sDeploymentProvider) ListPVCs(ctx context.Context) ([]*interfaces.PVCInfo, error) {
 	if p.manager == nil {

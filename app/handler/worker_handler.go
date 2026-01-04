@@ -355,3 +355,38 @@ func (h *WorkerHandler) DescribeWorker(c *gin.Context) {
 
 	c.JSON(http.StatusOK, podDetail)
 }
+
+// GetWorkerYAML gets worker Pod YAML
+// @Summary Get worker Pod YAML
+// @Description Get worker Pod YAML (similar to kubectl get pod -o yaml)
+// @Tags worker
+// @Produce plain
+// @Param name path string true "Endpoint name"
+// @Param pod_name path string true "Pod name"
+// @Success 200 {string} string "Pod YAML"
+// @Router /endpoints/:name/workers/:pod_name/yaml [get]
+func (h *WorkerHandler) GetWorkerYAML(c *gin.Context) {
+	ctx := c.Request.Context()
+	endpoint := c.Param("name")
+	podName := c.Param("pod_name")
+
+	if endpoint == "" || podName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "endpoint and pod_name are required"})
+		return
+	}
+
+	if h.deploymentProvider == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "deployment provider not available"})
+		return
+	}
+
+	yamlData, err := h.deploymentProvider.GetPodYAML(ctx, endpoint, podName)
+	if err != nil {
+		logger.ErrorCtx(ctx, "failed to get pod yaml %s: %v", podName, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.Header("Content-Type", "text/plain")
+	c.String(http.StatusOK, yamlData)
+}

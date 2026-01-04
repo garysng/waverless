@@ -54,6 +54,9 @@ type DeploymentProvider interface {
 	// DescribePod retrieves detailed Pod information (similar to kubectl describe)
 	DescribePod(ctx context.Context, endpoint string, podName string) (*PodDetail, error)
 
+	// GetPodYAML retrieves Pod YAML (similar to kubectl get pod -o yaml)
+	GetPodYAML(ctx context.Context, endpoint string, podName string) (string, error)
+
 	// ListPVCs lists all PersistentVolumeClaims in the namespace
 	ListPVCs(ctx context.Context) ([]*PVCInfo, error)
 

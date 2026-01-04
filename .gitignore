@@ -34,6 +34,8 @@ go.work
 # Config
 config/local.yaml
 *.log
+.version
+.version-web
 
 # Output
 output/
