@@ -15,6 +15,12 @@ mysql:
   user: wavespeed
   password: wavespeed&123!
   database: waverless
+  # Optional: Proxy configuration (uncomment to enable)
+  # proxy:
+  #   enabled: true
+  #   type: socks5      # http, https, or socks5
+  #   host: 127.0.0.1
+  #   port: 7890
 queue:
   concurrency: 10
   max_retry: 3

@@ -524,44 +524,82 @@ func (s *TaskService) CleanupOrphanedTasks(ctx context.Context) error {
 // requeueOrphanedTask re-queues an orphaned task for retry
 // Unlike timeout/failure, orphaned tasks are healthy but lost their worker (crash/scale-down)
 // They should be given another chance to execute
+//
+// OPTIMIZATION: Uses transaction to ensure atomicity and reduce database operations from 3 to 2
 func (s *TaskService) requeueOrphanedTask(ctx context.Context, task *mysql.Task, reason string) {
 	logger.InfoCtx(ctx, "re-queuing orphaned task, task_id: %s, endpoint: %s, reason: %s",
 		task.TaskID, task.Endpoint, reason)
 
-	// Reset task to PENDING status
 	now := time.Now()
+	oldStatus := task.Status
+
+	// Prepare status updates
 	task.Status = string(model.TaskStatusPending)
 	task.WorkerID = ""
 	task.StartedAt = nil
 	task.CompletedAt = nil
 	task.UpdatedAt = now
 
-	// Update task status
-	fieldUpdates := map[string]interface{}{
-		"status":       task.Status,
-		"worker_id":    task.WorkerID,
-		"started_at":   task.StartedAt,
-		"completed_at": task.CompletedAt,
-		"updated_at":   task.UpdatedAt,
-	}
+	// Update extend field for TASK_REQUEUED event (in-memory)
+	// Note: We use updateTaskExtend instead of recordTaskRequeued to avoid async goroutine
+	// which cannot be rolled back in transaction
+	s.updateTaskExtend(task, mysqlModel.EventTaskRequeued, "")
 
-	if err := s.taskRepo.UpdateFields(ctx, task.TaskID, fieldUpdates); err != nil {
-		logger.ErrorCtx(ctx, "failed to update orphaned task, task_id: %s, error: %v", task.TaskID, err)
+	// 🔒 Use transaction to execute all database operations atomically
+	err := s.taskRepo.ExecTx(ctx, func(txCtx context.Context) error {
+		// 1️⃣ Update all task fields in a single UPDATE (including extend)
+		// ⚠️ CRITICAL: Use CAS to prevent race condition with task completion
+		// Only update if task is still IN_PROGRESS (may have been completed by worker in the meantime)
+		fieldUpdates := map[string]interface{}{
+			"status":       task.Status,
+			"worker_id":    task.WorkerID,
+			"started_at":   task.StartedAt,
+			"completed_at": task.CompletedAt,
+			"updated_at":   task.UpdatedAt,
+			"extend":       task.Extend, // ✅ Merged: avoid second UPDATE
+		}
+
+		if err := s.taskRepo.UpdateFieldsWithStatus(txCtx, task.TaskID, "IN_PROGRESS", fieldUpdates); err != nil {
+			// Check if error is due to status change (task completed/cancelled by worker)
+			if strings.Contains(err.Error(), "status changed") {
+				logger.InfoCtx(txCtx, "⏭️  Task %s status changed during requeue (likely completed by worker), skipping requeue",
+					task.TaskID)
+				return nil // Not an error, just skip this task
+			}
+			return fmt.Errorf("failed to update orphaned task: %w", err)
+		}
+
+		// 2️⃣ Record TASK_REQUEUED event (synchronous, within transaction)
+		event := &mysqlModel.TaskEvent{
+			TaskID:       task.TaskID,
+			Endpoint:     task.Endpoint,
+			EventType:    string(mysqlModel.EventTaskRequeued),
+			EventTime:    now,
+			WorkerID:     "",
+			FromStatus:   oldStatus,
+			ErrorMessage: reason,
+		}
+
+		if err := s.taskEventRepo.RecordEvent(txCtx, event); err != nil {
+			return fmt.Errorf("failed to record task event: %w", err)
+		}
+
+		return nil // ✅ Commit transaction
+	})
+
+	if err != nil {
+		logger.ErrorCtx(ctx, "failed to requeue orphaned task (transaction rolled back), task_id: %s, error: %v",
+			task.TaskID, err)
 		return
 	}
 
-	// worker_id already cleared in MySQL, no additional Redis operations needed
-	// Record TASK_REQUEUED event (task status changed to PENDING, worker will automatically pull from MySQL database)
-	s.recordTaskRequeued(ctx, task, reason)
-
-	// Save updated extend field
-	if err := s.taskRepo.UpdateFields(ctx, task.TaskID, map[string]interface{}{
-		"extend": task.Extend,
-	}); err != nil {
-		logger.ErrorCtx(ctx, "failed to update task extend after requeue: %v", err)
+	// Asynchronously update statistics (non-critical, failure doesn't affect main flow)
+	if s.statisticsService != nil {
+		go s.statisticsService.UpdateStatisticsOnTaskStatusChange(
+			context.Background(), task.Endpoint, oldStatus, task.Status)
 	}
 
-	logger.InfoCtx(ctx, "orphaned task re-queued successfully, task_id: %s, endpoint: %s, status: PENDING",
+	logger.InfoCtx(ctx, "✅ orphaned task re-queued successfully, task_id: %s, endpoint: %s, status: PENDING",
 		task.TaskID, task.Endpoint)
 }
 

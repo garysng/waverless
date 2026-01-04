@@ -39,11 +39,20 @@ type RedisConfig struct {
 
 // MySQLConfig MySQL configuration
 type MySQLConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password"`
-	Database string `yaml:"database"`
+	Host     string       `yaml:"host"`
+	Port     int          `yaml:"port"`
+	User     string       `yaml:"user"`
+	Password string       `yaml:"password"`
+	Database string       `yaml:"database"`
+	Proxy    *ProxyConfig `yaml:"proxy,omitempty"` // Proxy configuration (optional)
+}
+
+// ProxyConfig Proxy configuration for network connections
+type ProxyConfig struct {
+	Enabled bool   `yaml:"enabled"` // Enable proxy
+	Type    string `yaml:"type"`    // Proxy type: http, https, socks5
+	Host    string `yaml:"host"`    // Proxy host
+	Port    int    `yaml:"port"`    // Proxy port
 }
 
 // QueueConfig queue configuration

@@ -41,7 +41,7 @@ func (app *Application) initJobs() error {
 	// Register background tasks with locks
 	manager.Register(newWorkerCleanupJob(workerInterval, app.workerService, workerCleanupLock))
 	manager.Register(newTaskTimeoutCleanupJob(5*time.Minute, app.taskService, taskTimeoutLock))
-	manager.Register(newOrphanedTaskCleanupJob(30*time.Second, app.taskService, orphanedTaskLock))
+	manager.Register(newOrphanedTaskCleanupJob(15*time.Second, app.taskService, orphanedTaskLock))
 
 	// Register GPU statistics aggregation tasks
 	if app.gpuUsageService != nil {

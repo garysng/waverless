@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -82,6 +83,7 @@ type Manager struct {
 	callbacksMu                   sync.RWMutex
 	replicaCallbacks              map[int64]interfaces.ReplicaCallback
 	podTerminatingCallbacks       map[int64]PodTerminatingCallback
+	spotInterruptionCallbacks     map[int64]SpotInterruptionCallback
 	deploymentSpecChangeCallbacks map[int64]DeploymentSpecChangeCallback
 	nextCallbackID                int64
 }
@@ -90,6 +92,9 @@ type Manager struct {
 // This allows the system to drain workers before pods are actually terminated
 type PodTerminatingCallback func(podName, endpoint string)
 
+// SpotInterruptionCallback is called when a spot interruption is detected
+type SpotInterruptionCallback func(podName, endpoint, reason string)
+
 // DeploymentSpecChangeCallback is called when a deployment's spec changes (image, resources, etc.)
 // This allows the system to optimize pod replacement during rolling updates
 type DeploymentSpecChangeCallback func(endpoint string)
@@ -97,15 +102,24 @@ type DeploymentSpecChangeCallback func(endpoint string)
 // NewManager creates a K8s manager
 func NewManager(namespace, platformName, configDir string) (*Manager, error) {
 	// Create K8s client
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		// If not in cluster, try to use kubeconfig
+	var config *rest.Config
+	var err error
+
+	// Check if running in cluster by looking for service account token
+	if _, err := os.Stat("/var/run/secrets/kubernetes.io/serviceaccount/token"); err == nil {
+		// Running in cluster, use InClusterConfig
+		config, err = rest.InClusterConfig()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get in-cluster config: %v", err)
+		}
+	} else {
+		// Running outside cluster, use kubeconfig
 		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 		configOverrides := &clientcmd.ConfigOverrides{}
 		kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
 		config, err = kubeConfig.ClientConfig()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get kubernetes config: %v", err)
+			return nil, fmt.Errorf("failed to get kubeconfig: %v", err)
 		}
 	}
 
@@ -153,6 +167,7 @@ func NewManager(namespace, platformName, configDir string) (*Manager, error) {
 		informerStopCh:                stopCh,
 		replicaCallbacks:              make(map[int64]interfaces.ReplicaCallback),
 		podTerminatingCallbacks:       make(map[int64]PodTerminatingCallback),
+		spotInterruptionCallbacks:     make(map[int64]SpotInterruptionCallback),
 		deploymentSpecChangeCallbacks: make(map[int64]DeploymentSpecChangeCallback),
 	}
 
@@ -721,6 +736,33 @@ func (m *Manager) UnregisterPodTerminatingCallback(id int64) {
 	m.callbacksMu.Unlock()
 }
 
+// RegisterSpotInterruptionCallback adds a new spot interruption listener and returns its id.
+func (m *Manager) RegisterSpotInterruptionCallback(cb SpotInterruptionCallback) int64 {
+	if cb == nil {
+		return 0
+	}
+	id := atomic.AddInt64(&m.nextCallbackID, 1)
+	m.callbacksMu.Lock()
+	if m.spotInterruptionCallbacks == nil {
+		m.spotInterruptionCallbacks = make(map[int64]SpotInterruptionCallback)
+	}
+	m.spotInterruptionCallbacks[id] = cb
+	m.callbacksMu.Unlock()
+	return id
+}
+
+// UnregisterSpotInterruptionCallback removes a previously registered spot interruption listener.
+func (m *Manager) UnregisterSpotInterruptionCallback(id int64) {
+	if id == 0 {
+		return
+	}
+	m.callbacksMu.Lock()
+	if m.spotInterruptionCallbacks != nil {
+		delete(m.spotInterruptionCallbacks, id)
+	}
+	m.callbacksMu.Unlock()
+}
+
 // RegisterDeploymentSpecChangeCallback adds a new deployment spec change listener and returns its id.
 // The callback is invoked when a deployment's spec changes (image, resources, env, etc).
 // This allows the system to optimize pod replacement during rolling updates.
@@ -782,26 +824,32 @@ func (m *Manager) handlePodUpdate(oldObj, newObj interface{}) {
 		return
 	}
 
-	// Detect when a pod is marked for deletion (DeletionTimestamp transitions from nil to non-nil)
+	// Extract pod info
+	podName := newPod.Name
+	endpoint := ""
+	managedBy := ""
+	if newPod.Labels != nil {
+		endpoint = newPod.Labels["app"]
+		managedBy = newPod.Labels["managed-by"]
+	}
+
+	// Only handle pods managed by waverless (worker pods)
+	if endpoint == "" || managedBy != "waverless" || endpoint == "waverless" {
+		return
+	}
+
+	// 1. Check for Spot interruption FIRST (before pod termination)
+	if detected, reason := m.detectSpotInterruption(newPod); detected {
+		logger.WarnCtx(context.Background(), "🚨 Spot interruption detected for pod %s (endpoint: %s): %s",
+			podName, endpoint, reason)
+		m.notifySpotInterruption(podName, endpoint, reason)
+	}
+
+	// 2. Detect when a pod is marked for deletion (existing logic)
 	if oldPod.DeletionTimestamp == nil && newPod.DeletionTimestamp != nil {
-		// Pod is now terminating
-		podName := newPod.Name
-
-		// Extract endpoint from pod labels
-		endpoint := ""
-		managedBy := ""
-		if newPod.Labels != nil {
-			endpoint = newPod.Labels["app"]
-			managedBy = newPod.Labels["managed-by"]
-		}
-
-		// Only handle pods managed by waverless (worker pods)
-		// Skip waverless service's own pods
-		if endpoint != "" && managedBy == "waverless" && endpoint != "waverless" {
-			logger.InfoCtx(context.Background(), "🔔 Pod %s (endpoint: %s) marked for deletion, notifying callbacks",
-				podName, endpoint)
-			m.notifyPodTerminating(podName, endpoint)
-		}
+		logger.InfoCtx(context.Background(), "🔔 Pod %s (endpoint: %s) marked for deletion, notifying callbacks",
+			podName, endpoint)
+		m.notifyPodTerminating(podName, endpoint)
 	}
 }
 
@@ -824,6 +872,37 @@ func (m *Manager) notifyPodTerminating(podName, endpoint string) {
 				}
 			}()
 			cb(podName, endpoint)
+		}()
+	}
+}
+
+// detectSpotInterruption checks if a pod is experiencing spot interruption
+func (m *Manager) detectSpotInterruption(pod *corev1.Pod) (bool, string) {
+	if m.platform == nil {
+		return false, ""
+	}
+	return m.platform.DetectSpotInterruption(pod)
+}
+
+// notifySpotInterruption notifies all registered callbacks about spot interruption
+func (m *Manager) notifySpotInterruption(podName, endpoint, reason string) {
+	m.callbacksMu.RLock()
+	callbacks := make([]SpotInterruptionCallback, 0, len(m.spotInterruptionCallbacks))
+	for _, cb := range m.spotInterruptionCallbacks {
+		callbacks = append(callbacks, cb)
+	}
+	m.callbacksMu.RUnlock()
+
+	// Fan out asynchronously
+	for _, cb := range callbacks {
+		cb := cb
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.ErrorCtx(context.Background(), "spot interruption callback panic: %v", r)
+				}
+			}()
+			cb(podName, endpoint, reason)
 		}()
 	}
 }

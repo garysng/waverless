@@ -43,6 +43,25 @@ func (r *TaskRepository) UpdateFields(ctx context.Context, taskID string, update
 		Updates(updates).Error
 }
 
+// UpdateFieldsWithStatus updates specific fields of a task with CAS (Compare-And-Swap) on status
+// This prevents concurrent updates by ensuring the task status matches expectedStatus before updating
+// Returns error if task not found or status doesn't match expectedStatus
+func (r *TaskRepository) UpdateFieldsWithStatus(ctx context.Context, taskID string, expectedStatus string, updates map[string]interface{}) error {
+	result := r.ds.DB(ctx).Model(&Task{}).
+		Where("task_id = ? AND status = ?", taskID, expectedStatus).
+		Updates(updates)
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to update task: %w", result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("task not found or status changed (expected: %s): task_id=%s", expectedStatus, taskID)
+	}
+
+	return nil
+}
+
 // UpdateStatus updates task status with atomic state transition (CAS - Compare And Swap)
 // This prevents concurrent updates and ensures valid state transitions
 // Returns error if task not found or current status doesn't match fromStatus
@@ -342,4 +361,10 @@ func (r *TaskRepository) AssignTasksToWorker(ctx context.Context, taskIDs []stri
 	}
 
 	return updatedTasks, nil
+}
+
+// ExecTx executes a function within a transaction
+// This allows multiple repository operations to be executed atomically
+func (r *TaskRepository) ExecTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	return r.ds.ExecTx(ctx, fn)
 }

@@ -1,5 +1,7 @@
 package mysql
 
+import "waverless/pkg/config"
+
 // Repository aggregates all MySQL repositories
 type Repository struct {
 	ds *Datastore
@@ -15,8 +17,8 @@ type Repository struct {
 }
 
 // NewRepository creates a new MySQL repository with all sub-repositories
-func NewRepository(dsn string) (*Repository, error) {
-	ds, err := NewDatastore(dsn)
+func NewRepository(dsn string, proxyConfig *config.ProxyConfig) (*Repository, error) {
+	ds, err := NewDatastore(dsn, proxyConfig)
 	if err != nil {
 		return nil, err
 	}

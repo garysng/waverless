@@ -52,7 +52,7 @@ func (app *Application) initMySQL() error {
 		app.config.MySQL.Database,
 	)
 
-	repo, err := mysqlstore.NewRepository(dsn)
+	repo, err := mysqlstore.NewRepository(dsn, app.config.MySQL.Proxy)
 	if err != nil {
 		return err
 	}
@@ -183,6 +183,12 @@ func (app *Application) initServices() error {
 		// Non-critical feature, continue startup
 	}
 
+	// Setup Spot interruption watcher (when K8s is enabled)
+	if err := app.setupSpotInterruptionWatcher(k8sDeployProvider); err != nil {
+		logger.WarnCtx(app.ctx, "Failed to setup spot interruption watcher: %v (non-critical, continuing)", err)
+		// Non-critical feature, continue startup
+	}
+
 	// Setup Deployment watcher for optimized rolling updates (when K8s is enabled)
 	if err := app.setupDeploymentWatcher(k8sDeployProvider); err != nil {
 		logger.WarnCtx(app.ctx, "Failed to setup deployment watcher: %v (non-critical, continuing)", err)
@@ -249,6 +255,58 @@ func (app *Application) setupPodWatcher(k8sProvider *k8s.K8sDeploymentProvider) 
 	}
 
 	logger.InfoCtx(app.ctx, "✅ Pod watcher registered successfully")
+	return nil
+}
+
+// setupSpotInterruptionWatcher sets up Spot interruption detection
+func (app *Application) setupSpotInterruptionWatcher(k8sProvider *k8s.K8sDeploymentProvider) error {
+	if k8sProvider == nil {
+		logger.InfoCtx(app.ctx, "K8s provider not available, skipping spot interruption watcher setup")
+		return nil
+	}
+
+	logger.InfoCtx(app.ctx, "Setting up spot interruption watcher...")
+
+	err := k8sProvider.WatchSpotInterruption(app.ctx, func(podName, endpoint, reason string) {
+		logger.WarnCtx(app.ctx, "🚨 SPOT INTERRUPTION detected for Pod %s (endpoint: %s), reason: %s",
+			podName, endpoint, reason)
+
+		// Find Worker by PodName
+		worker, err := app.workerService.GetWorkerByPodName(app.ctx, endpoint, podName)
+		if err != nil {
+			logger.WarnCtx(app.ctx, "Spot interruption detected but worker not found for pod %s: %v", podName, err)
+			return
+		}
+
+		// Immediately mark Worker as DRAINING (2-minute grace period starts now)
+		err = app.workerService.UpdateWorkerStatus(app.ctx, worker.ID, model.WorkerStatusDraining)
+		if err != nil {
+			logger.ErrorCtx(app.ctx, "Failed to mark worker %s as draining after spot interruption: %v", worker.ID, err)
+			return
+		}
+
+		logger.InfoCtx(app.ctx, "✅ Worker %s (Pod: %s) marked as DRAINING due to spot interruption - stopping new task acceptance",
+			worker.ID, podName)
+
+		// Log current jobs for monitoring
+		if len(worker.JobsInProgress) > 0 {
+			logger.InfoCtx(app.ctx, "📋 Worker %s has %d jobs in progress that will continue: %v",
+				worker.ID, len(worker.JobsInProgress), worker.JobsInProgress)
+		} else {
+			logger.InfoCtx(app.ctx, "📋 Worker %s has no jobs in progress - can terminate safely", worker.ID)
+		}
+
+		// Mark Pod as draining for observability
+		if err := k8sProvider.MarkPodDraining(app.ctx, podName); err != nil {
+			logger.WarnCtx(app.ctx, "Failed to mark pod %s as draining: %v", podName, err)
+		}
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to setup spot interruption watcher: %w", err)
+	}
+
+	logger.InfoCtx(app.ctx, "✅ Spot interruption watcher setup complete")
 	return nil
 }
 
