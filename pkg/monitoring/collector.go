@@ -38,9 +38,10 @@ func (c *Collector) CollectSnapshots(ctx context.Context) error {
 		}
 
 		snapshot := &model.WorkerResourceSnapshot{
-			WorkerID:   w.WorkerID,
-			SnapshotAt: now,
-			IsIdle:     currentTaskID == "",
+			WorkerID:      w.WorkerID,
+			Endpoint:      w.Endpoint, // 填充 endpoint 字段
+			SnapshotAt:    now,
+			IsIdle:        currentTaskID == "",
 			CurrentTaskID: currentTaskID,
 			// GPU/CPU metrics would come from K8s metrics API in production
 			// For now, we just track idle state

@@ -61,9 +61,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 			// Monitoring APIs
 			if r.monitoringHandler != nil {
 				endpoint.GET("/metrics/realtime", r.monitoringHandler.GetRealtimeMetrics)
-				endpoint.GET("/stats/minute", r.monitoringHandler.GetMinuteStats)
-				endpoint.GET("/stats/hourly", r.monitoringHandler.GetHourlyStats)
-				endpoint.GET("/stats/daily", r.monitoringHandler.GetDailyStats)
+				endpoint.GET("/metrics/stats", r.monitoringHandler.GetStats)
 			}
 		}
 	}

@@ -26,6 +26,22 @@ func toInt(v interface{}) int {
 	}
 }
 
+func toInt64(v interface{}) int64 {
+	if v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	case int:
+		return int64(n)
+	default:
+		return 0
+	}
+}
+
 func toFloat(v interface{}) float64 {
 	if v == nil {
 		return 0
@@ -133,12 +149,13 @@ func (r *MonitoringRepository) CleanupOldDailyStats(ctx context.Context, before 
 func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoint string, from, to time.Time) (*model.EndpointMinuteStat, error) {
 	stat := &model.EndpointMinuteStat{Endpoint: endpoint, StatMinute: from}
 
-	// Task stats from task_events
+	// Task stats from task_events (including retried)
 	var taskStats struct {
 		TasksSubmitted int     `gorm:"column:tasks_submitted"`
 		TasksCompleted int     `gorm:"column:tasks_completed"`
 		TasksFailed    int     `gorm:"column:tasks_failed"`
 		TasksTimeout   int     `gorm:"column:tasks_timeout"`
+		TasksRetried   int     `gorm:"column:tasks_retried"`
 		AvgQueueWaitMs float64 `gorm:"column:avg_queue_wait_ms"`
 		AvgExecutionMs float64 `gorm:"column:avg_execution_ms"`
 	}
@@ -148,6 +165,7 @@ func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoin
 			COUNT(CASE WHEN event_type = 'TASK_COMPLETED' THEN 1 END) as tasks_completed,
 			COUNT(CASE WHEN event_type = 'TASK_FAILED' THEN 1 END) as tasks_failed,
 			COUNT(CASE WHEN event_type = 'TASK_TIMEOUT' THEN 1 END) as tasks_timeout,
+			COUNT(CASE WHEN event_type = 'TASK_REQUEUED' THEN 1 END) as tasks_retried,
 			COALESCE(AVG(CASE WHEN event_type IN ('TASK_COMPLETED','TASK_FAILED','TASK_TIMEOUT') THEN queue_wait_ms END), 0) as avg_queue_wait_ms,
 			COALESCE(AVG(CASE WHEN event_type IN ('TASK_COMPLETED','TASK_FAILED','TASK_TIMEOUT') THEN execution_duration_ms END), 0) as avg_execution_ms
 		FROM task_events WHERE endpoint = ? AND event_time >= ? AND event_time < ?
@@ -156,40 +174,96 @@ func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoin
 	stat.TasksCompleted = taskStats.TasksCompleted
 	stat.TasksFailed = taskStats.TasksFailed
 	stat.TasksTimeout = taskStats.TasksTimeout
+	stat.TasksRetried = taskStats.TasksRetried
 	stat.AvgQueueWaitMs = taskStats.AvgQueueWaitMs
 	stat.AvgExecutionMs = taskStats.AvgExecutionMs
 
-	// P95 execution time (simple approximation: use max as P95 for small datasets)
-	var p95 float64
+	// P50 and P95 execution time using PERCENT_RANK
+	var percentiles struct {
+		P50 float64 `gorm:"column:p50"`
+		P95 float64 `gorm:"column:p95"`
+	}
 	r.ds.DB(ctx).Raw(`
-		SELECT COALESCE(MAX(execution_duration_ms), 0) FROM task_events 
-		WHERE endpoint = ? AND event_time >= ? AND event_time < ? 
-		AND event_type IN ('TASK_COMPLETED','TASK_FAILED','TASK_TIMEOUT') AND execution_duration_ms IS NOT NULL
-	`, endpoint, from, to).Scan(&p95)
-	stat.P95ExecutionMs = p95
+		SELECT 
+			COALESCE(MAX(CASE WHEN pct <= 0.50 THEN execution_duration_ms END), 0) as p50,
+			COALESCE(MAX(CASE WHEN pct <= 0.95 THEN execution_duration_ms END), 0) as p95
+		FROM (
+			SELECT execution_duration_ms, PERCENT_RANK() OVER (ORDER BY execution_duration_ms) as pct
+			FROM task_events 
+			WHERE endpoint = ? AND event_time >= ? AND event_time < ? 
+			AND event_type IN ('TASK_COMPLETED','TASK_FAILED','TASK_TIMEOUT') 
+			AND execution_duration_ms IS NOT NULL
+		) t
+	`, endpoint, from, to).Scan(&percentiles)
+	stat.P50ExecutionMs = percentiles.P50
+	stat.P95ExecutionMs = percentiles.P95
 
-	// Worker stats (no gpu_utilization in workers table)
+	// Worker stats with utilization
 	var workerStats struct {
-		ActiveWorkers int `gorm:"column:active_workers"`
-		IdleWorkers   int `gorm:"column:idle_workers"`
+		ActiveWorkers        int     `gorm:"column:active_workers"`
+		IdleWorkers          int     `gorm:"column:idle_workers"`
+		AvgWorkerUtilization float64 `gorm:"column:avg_worker_utilization"`
 	}
 	r.ds.DB(ctx).Raw(`
 		SELECT
 			COUNT(CASE WHEN status IN ('ONLINE', 'BUSY') THEN 1 END) as active_workers,
-			COUNT(CASE WHEN status = 'ONLINE' AND current_jobs = 0 THEN 1 END) as idle_workers
+			COUNT(CASE WHEN status = 'ONLINE' AND current_jobs = 0 THEN 1 END) as idle_workers,
+			COALESCE(AVG(CASE WHEN status IN ('ONLINE', 'BUSY') THEN 
+				CASE WHEN current_jobs > 0 THEN 100.0 ELSE 0.0 END 
+			END), 0) as avg_worker_utilization
 		FROM workers WHERE endpoint = ? AND last_heartbeat >= ?
 	`, endpoint, from).Scan(&workerStats)
 	stat.ActiveWorkers = workerStats.ActiveWorkers
 	stat.IdleWorkers = workerStats.IdleWorkers
+	stat.AvgWorkerUtilization = workerStats.AvgWorkerUtilization
 
-	// GPU utilization from snapshots
-	var avgGPU float64
+	// GPU utilization from snapshots (avg and max)
+	var gpuStats struct {
+		AvgGPU float64 `gorm:"column:avg_gpu"`
+		MaxGPU float64 `gorm:"column:max_gpu"`
+	}
 	r.ds.DB(ctx).Raw(`
-		SELECT COALESCE(AVG(gpu_utilization), 0) FROM worker_resource_snapshots s
-		JOIN workers w ON s.worker_id = w.worker_id
-		WHERE w.endpoint = ? AND s.snapshot_at >= ? AND s.snapshot_at < ?
-	`, endpoint, from, to).Scan(&avgGPU)
-	stat.AvgGPUUtilization = avgGPU
+		SELECT COALESCE(AVG(gpu_utilization), 0) as avg_gpu, COALESCE(MAX(gpu_utilization), 0) as max_gpu 
+		FROM worker_resource_snapshots 
+		WHERE endpoint = ? AND snapshot_at >= ? AND snapshot_at < ?
+	`, endpoint, from, to).Scan(&gpuStats)
+	stat.AvgGPUUtilization = gpuStats.AvgGPU
+	stat.MaxGPUUtilization = gpuStats.MaxGPU
+
+	// Worker idle time stats from snapshots
+	var idleStats struct {
+		AvgIdleSec   float64 `gorm:"column:avg_idle_sec"`
+		MaxIdleSec   int     `gorm:"column:max_idle_sec"`
+		TotalIdleSec int     `gorm:"column:total_idle_sec"`
+		IdleCount    int     `gorm:"column:idle_count"`
+	}
+	r.ds.DB(ctx).Raw(`
+		SELECT 
+			COALESCE(AVG(CASE WHEN is_idle THEN 60 END), 0) as avg_idle_sec,
+			COALESCE(MAX(CASE WHEN is_idle THEN 60 END), 0) as max_idle_sec,
+			COALESCE(SUM(CASE WHEN is_idle THEN 60 ELSE 0 END), 0) as total_idle_sec,
+			COUNT(CASE WHEN is_idle THEN 1 END) as idle_count
+		FROM worker_resource_snapshots 
+		WHERE endpoint = ? AND snapshot_at >= ? AND snapshot_at < ?
+	`, endpoint, from, to).Scan(&idleStats)
+	stat.AvgIdleDurationSec = idleStats.AvgIdleSec
+	stat.MaxIdleDurationSec = idleStats.MaxIdleSec
+	stat.TotalIdleTimeSec = idleStats.TotalIdleSec
+	stat.IdleCount = idleStats.IdleCount
+
+	// Worker lifecycle events (created/terminated)
+	var lifecycleStats struct {
+		Created    int `gorm:"column:created"`
+		Terminated int `gorm:"column:terminated"`
+	}
+	r.ds.DB(ctx).Raw(`
+		SELECT 
+			COUNT(CASE WHEN pod_created_at >= ? AND pod_created_at < ? THEN 1 END) as created,
+			COUNT(CASE WHEN status = 'OFFLINE' AND updated_at >= ? AND updated_at < ? THEN 1 END) as terminated
+		FROM workers WHERE endpoint = ?
+	`, from, to, from, to, endpoint).Scan(&lifecycleStats)
+	stat.WorkersCreated = lifecycleStats.Created
+	stat.WorkersTerminated = lifecycleStats.Terminated
 
 	// Cold start stats
 	var coldStats struct {
@@ -202,6 +276,20 @@ func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoin
 	`, endpoint, from, to).Scan(&coldStats)
 	stat.ColdStarts = coldStats.ColdStarts
 	stat.AvgColdStartMs = coldStats.AvgColdStartMs
+
+	// Webhook stats from tasks
+	var webhookStats struct {
+		Success int `gorm:"column:success"`
+		Failed  int `gorm:"column:failed"`
+	}
+	r.ds.DB(ctx).Raw(`
+		SELECT 
+			COUNT(CASE WHEN webhook_status = 'SUCCESS' THEN 1 END) as success,
+			COUNT(CASE WHEN webhook_status = 'FAILED' THEN 1 END) as failed
+		FROM tasks WHERE endpoint = ? AND updated_at >= ? AND updated_at < ? AND webhook_status IS NOT NULL
+	`, endpoint, from, to).Scan(&webhookStats)
+	stat.WebhookSuccess = webhookStats.Success
+	stat.WebhookFailed = webhookStats.Failed
 
 	return stat, nil
 }
@@ -218,38 +306,61 @@ func (r *MonitoringRepository) AggregateHourlyStats(ctx context.Context, endpoin
 		return stat, nil
 	}
 
-	// Use map to avoid field misalignment issues with Raw().Scan()
 	var result map[string]interface{}
 	r.ds.DB(ctx).Raw(`
 		SELECT
 			COALESCE(AVG(active_workers), 0) as active_workers,
 			COALESCE(AVG(idle_workers), 0) as idle_workers,
+			COALESCE(AVG(avg_worker_utilization), 0) as avg_worker_utilization,
 			COALESCE(SUM(tasks_submitted), 0) as tasks_submitted,
 			COALESCE(SUM(tasks_completed), 0) as tasks_completed,
 			COALESCE(SUM(tasks_failed), 0) as tasks_failed,
 			COALESCE(SUM(tasks_timeout), 0) as tasks_timeout,
+			COALESCE(SUM(tasks_retried), 0) as tasks_retried,
 			COALESCE(AVG(avg_queue_wait_ms), 0) as avg_queue_wait_ms,
 			COALESCE(AVG(avg_execution_ms), 0) as avg_execution_ms,
+			COALESCE(AVG(p50_execution_ms), 0) as p50_execution_ms,
 			COALESCE(MAX(p95_execution_ms), 0) as p95_execution_ms,
 			COALESCE(AVG(avg_gpu_utilization), 0) as avg_gpu_utilization,
+			COALESCE(MAX(max_gpu_utilization), 0) as max_gpu_utilization,
+			COALESCE(AVG(avg_idle_duration_sec), 0) as avg_idle_duration_sec,
+			COALESCE(MAX(max_idle_duration_sec), 0) as max_idle_duration_sec,
+			COALESCE(SUM(total_idle_time_sec), 0) as total_idle_time_sec,
+			COALESCE(SUM(idle_count), 0) as idle_count,
+			COALESCE(SUM(workers_created), 0) as workers_created,
+			COALESCE(SUM(workers_terminated), 0) as workers_terminated,
 			COALESCE(SUM(cold_starts), 0) as cold_starts,
-			COALESCE(AVG(avg_cold_start_ms), 0) as avg_cold_start_ms
+			COALESCE(AVG(avg_cold_start_ms), 0) as avg_cold_start_ms,
+			COALESCE(SUM(webhook_success), 0) as webhook_success,
+			COALESCE(SUM(webhook_failed), 0) as webhook_failed
 		FROM endpoint_minute_stats WHERE endpoint = ? AND stat_minute >= ? AND stat_minute < ?
 	`, endpoint, from, to).Scan(&result)
 
 	if result != nil {
 		stat.ActiveWorkers = toInt(result["active_workers"])
 		stat.IdleWorkers = toInt(result["idle_workers"])
+		stat.AvgWorkerUtilization = toFloat(result["avg_worker_utilization"])
 		stat.TasksSubmitted = toInt(result["tasks_submitted"])
 		stat.TasksCompleted = toInt(result["tasks_completed"])
 		stat.TasksFailed = toInt(result["tasks_failed"])
 		stat.TasksTimeout = toInt(result["tasks_timeout"])
+		stat.TasksRetried = toInt(result["tasks_retried"])
 		stat.AvgQueueWaitMs = toFloat(result["avg_queue_wait_ms"])
 		stat.AvgExecutionMs = toFloat(result["avg_execution_ms"])
+		stat.P50ExecutionMs = toFloat(result["p50_execution_ms"])
 		stat.P95ExecutionMs = toFloat(result["p95_execution_ms"])
 		stat.AvgGPUUtilization = toFloat(result["avg_gpu_utilization"])
+		stat.MaxGPUUtilization = toFloat(result["max_gpu_utilization"])
+		stat.AvgIdleDurationSec = toFloat(result["avg_idle_duration_sec"])
+		stat.MaxIdleDurationSec = toInt(result["max_idle_duration_sec"])
+		stat.TotalIdleTimeSec = toInt64(result["total_idle_time_sec"])
+		stat.IdleCount = toInt(result["idle_count"])
+		stat.WorkersCreated = toInt(result["workers_created"])
+		stat.WorkersTerminated = toInt(result["workers_terminated"])
 		stat.ColdStarts = toInt(result["cold_starts"])
 		stat.AvgColdStartMs = toFloat(result["avg_cold_start_ms"])
+		stat.WebhookSuccess = toInt(result["webhook_success"])
+		stat.WebhookFailed = toInt(result["webhook_failed"])
 	}
 
 	return stat, nil
@@ -272,32 +383,56 @@ func (r *MonitoringRepository) AggregateDailyStats(ctx context.Context, endpoint
 		SELECT
 			COALESCE(AVG(active_workers), 0) as active_workers,
 			COALESCE(AVG(idle_workers), 0) as idle_workers,
+			COALESCE(AVG(avg_worker_utilization), 0) as avg_worker_utilization,
 			COALESCE(SUM(tasks_submitted), 0) as tasks_submitted,
 			COALESCE(SUM(tasks_completed), 0) as tasks_completed,
 			COALESCE(SUM(tasks_failed), 0) as tasks_failed,
 			COALESCE(SUM(tasks_timeout), 0) as tasks_timeout,
+			COALESCE(SUM(tasks_retried), 0) as tasks_retried,
 			COALESCE(AVG(avg_queue_wait_ms), 0) as avg_queue_wait_ms,
 			COALESCE(AVG(avg_execution_ms), 0) as avg_execution_ms,
+			COALESCE(AVG(p50_execution_ms), 0) as p50_execution_ms,
 			COALESCE(MAX(p95_execution_ms), 0) as p95_execution_ms,
 			COALESCE(AVG(avg_gpu_utilization), 0) as avg_gpu_utilization,
+			COALESCE(MAX(max_gpu_utilization), 0) as max_gpu_utilization,
+			COALESCE(AVG(avg_idle_duration_sec), 0) as avg_idle_duration_sec,
+			COALESCE(MAX(max_idle_duration_sec), 0) as max_idle_duration_sec,
+			COALESCE(SUM(total_idle_time_sec), 0) as total_idle_time_sec,
+			COALESCE(SUM(idle_count), 0) as idle_count,
+			COALESCE(SUM(workers_created), 0) as workers_created,
+			COALESCE(SUM(workers_terminated), 0) as workers_terminated,
 			COALESCE(SUM(cold_starts), 0) as cold_starts,
-			COALESCE(AVG(avg_cold_start_ms), 0) as avg_cold_start_ms
+			COALESCE(AVG(avg_cold_start_ms), 0) as avg_cold_start_ms,
+			COALESCE(SUM(webhook_success), 0) as webhook_success,
+			COALESCE(SUM(webhook_failed), 0) as webhook_failed
 		FROM endpoint_hourly_stats WHERE endpoint = ? AND stat_hour >= ? AND stat_hour < ?
 	`, endpoint, from, to).Scan(&result)
 
 	if result != nil {
 		stat.ActiveWorkers = toInt(result["active_workers"])
 		stat.IdleWorkers = toInt(result["idle_workers"])
+		stat.AvgWorkerUtilization = toFloat(result["avg_worker_utilization"])
 		stat.TasksSubmitted = toInt(result["tasks_submitted"])
 		stat.TasksCompleted = toInt(result["tasks_completed"])
 		stat.TasksFailed = toInt(result["tasks_failed"])
 		stat.TasksTimeout = toInt(result["tasks_timeout"])
+		stat.TasksRetried = toInt(result["tasks_retried"])
 		stat.AvgQueueWaitMs = toFloat(result["avg_queue_wait_ms"])
 		stat.AvgExecutionMs = toFloat(result["avg_execution_ms"])
+		stat.P50ExecutionMs = toFloat(result["p50_execution_ms"])
 		stat.P95ExecutionMs = toFloat(result["p95_execution_ms"])
 		stat.AvgGPUUtilization = toFloat(result["avg_gpu_utilization"])
+		stat.MaxGPUUtilization = toFloat(result["max_gpu_utilization"])
+		stat.AvgIdleDurationSec = toFloat(result["avg_idle_duration_sec"])
+		stat.MaxIdleDurationSec = toInt(result["max_idle_duration_sec"])
+		stat.TotalIdleTimeSec = toInt64(result["total_idle_time_sec"])
+		stat.IdleCount = toInt(result["idle_count"])
+		stat.WorkersCreated = toInt(result["workers_created"])
+		stat.WorkersTerminated = toInt(result["workers_terminated"])
 		stat.ColdStarts = toInt(result["cold_starts"])
 		stat.AvgColdStartMs = toFloat(result["avg_cold_start_ms"])
+		stat.WebhookSuccess = toInt(result["webhook_success"])
+		stat.WebhookFailed = toInt(result["webhook_failed"])
 	}
 
 	return stat, nil

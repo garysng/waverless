@@ -397,7 +397,6 @@ const ChartCard = React.memo(({ chartRef, title, total, legend, hasData }: { cha
 ));
 
 const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
-  const [granularity, setGranularity] = useState<'minute' | 'hourly' | 'daily'>('hourly');
   const [dateRange, setDateRange] = useState<[Date, Date]>([new Date(Date.now() - 24 * 3600000), new Date()]);
   const requestsRef = useRef<HTMLDivElement>(null);
   const executionRef = useRef<HTMLDivElement>(null);
@@ -418,14 +417,17 @@ const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
     refetchInterval: 5000,
   });
 
-  const { data: statsData } = useQuery({
-    queryKey: ['endpoint-stats', endpoint.name, granularity, dateRange[0].toISOString(), dateRange[1].toISOString()],
+  const { data: statsResponse } = useQuery({
+    queryKey: ['endpoint-stats', endpoint.name, dateRange[0].toISOString(), dateRange[1].toISOString()],
     queryFn: async () => {
-      const res = await api.get(`/v1/${endpoint.name}/stats/${granularity}`, { params: { from: dateRange[0].toISOString(), to: dateRange[1].toISOString() } });
-      return res.data?.stats || [];
+      const res = await api.get(`/v1/${endpoint.name}/metrics/stats`, { params: { from: dateRange[0].toISOString(), to: dateRange[1].toISOString() } });
+      return res.data;
     },
     placeholderData: (prev) => prev,
   });
+
+  const statsData = statsResponse?.stats || [];
+  const granularity = statsResponse?.granularity || '1h';
 
   const setQuickRange = (hours: number) => setDateRange([new Date(Date.now() - hours * 3600000), new Date()]);
 
@@ -437,14 +439,14 @@ const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
     const sum = (key: string) => statsData?.reduce((a: number, s: any) => a + (s[key] || 0), 0) || 0;
     const avg = (key: string) => statsData?.length ? (sum(key) / statsData.length).toFixed(1) : '0';
     return {
-      totals: { completed: sum('tasks_completed'), failed: sum('tasks_failed'), retried: sum('tasks_retried'), coldStarts: sum('cold_starts'), webhook2xx: sum('webhook_2xx'), webhook0xx: sum('webhook_0xx'), idleCount: sum('idle_count'), created: sum('workers_created'), terminated: sum('workers_terminated') },
-      avgValues: { activeWorkers: avg('active_workers'), workerUtilization: avg('worker_utilization'), gpuUtilization: avg('avg_gpu_utilization') }
+      totals: { completed: sum('tasks_completed'), failed: sum('tasks_failed'), retried: sum('tasks_retried'), coldStarts: sum('cold_starts'), webhook2xx: sum('webhook_success'), webhook0xx: sum('webhook_failed'), idleCount: sum('idle_count'), created: sum('workers_created'), terminated: sum('workers_terminated') },
+      avgValues: { activeWorkers: avg('active_workers'), workerUtilization: avg('avg_worker_utilization'), gpuUtilization: avg('avg_gpu_utilization') }
     };
   }, [statsData]);
 
   const formatLabel = useCallback((ts: string) => {
     const d = new Date(ts);
-    return granularity === 'daily' ? d.toLocaleDateString('en', { month: 'short', day: 'numeric' }) : d.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit' });
+    return granularity === '1d' ? d.toLocaleDateString('en', { month: 'short', day: 'numeric' }) : d.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit' });
   }, [granularity]);
 
   useEffect(() => {
@@ -464,24 +466,25 @@ const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
     ]});
     init(executionRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel: { ...axisLabel, formatter: (v: number) => (v / 1000).toFixed(0) + 's' } }, series: [
       { name: 'P95', type: 'line', data: statsData.map((s: any) => s.p95_execution_ms || 0), smooth: true, symbol: 'none', lineStyle: { width: 1, color: '#f56565' }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(245,101,101,0.3)' }, { offset: 1, color: 'rgba(245,101,101,0.05)' }] } } },
-      { name: 'P50', type: 'line', data: statsData.map((s: any) => s.avg_execution_ms || 0), smooth: true, symbol: 'none', lineStyle: { width: 1, color: '#3b82f6' }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(59,130,246,0.3)' }, { offset: 1, color: 'rgba(59,130,246,0.05)' }] } } },
+      { name: 'P50', type: 'line', data: statsData.map((s: any) => s.p50_execution_ms || s.avg_execution_ms || 0), smooth: true, symbol: 'none', lineStyle: { width: 1, color: '#3b82f6' }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(59,130,246,0.3)' }, { offset: 1, color: 'rgba(59,130,246,0.05)' }] } } },
     ]});
-    init(delayRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel: { ...axisLabel, formatter: (v: number) => (v / 1000).toFixed(0) + 's' } }, series: [{ name: 'Delay', type: 'bar', data: statsData.map((s: any) => s.avg_delay_ms || 0), itemStyle: { color: '#f56565' }, barMaxWidth: 8 }] });
+    init(delayRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel: { ...axisLabel, formatter: (v: number) => (v / 1000).toFixed(0) + 's' } }, series: [{ name: 'Delay', type: 'bar', data: statsData.map((s: any) => s.avg_queue_wait_ms || 0), itemStyle: { color: '#f56565' }, barMaxWidth: 8 }] });
     init(coldStartCountRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel }, series: [{ name: 'Count', type: 'bar', data: statsData.map((s: any) => s.cold_starts || 0), itemStyle: { color: '#8b5cf6' }, barMaxWidth: 8 }] });
     init(coldStartTimeRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel: { ...axisLabel, formatter: (v: number) => v.toFixed(0) + 's' } }, series: [{ name: 'Time', type: 'bar', data: statsData.map((s: any) => (s.avg_cold_start_ms || 0) / 1000), itemStyle: { color: '#06b6d4' }, barMaxWidth: 8 }] });
     init(webhookRef, { grid, tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel }, series: [
-      { name: '2xx', type: 'bar', stack: 'total', data: statsData.map((s: any) => s.webhook_2xx || 0), itemStyle: { color: '#48bb78' }, barMaxWidth: 10 },
-      { name: '0xx', type: 'bar', stack: 'total', data: statsData.map((s: any) => s.webhook_0xx || 0), itemStyle: { color: '#a0aec0' }, barMaxWidth: 10 },
+      { name: '2xx', type: 'bar', stack: 'total', data: statsData.map((s: any) => s.webhook_success || 0), itemStyle: { color: '#48bb78' }, barMaxWidth: 10 },
+      { name: 'Failed', type: 'bar', stack: 'total', data: statsData.map((s: any) => s.webhook_failed || 0), itemStyle: { color: '#a0aec0' }, barMaxWidth: 10 },
     ]});
     init(workersRef, { grid, tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel }, series: [
       { name: 'Active', type: 'line', stack: 'total', data: statsData.map((s: any) => s.active_workers || 0), smooth: true, symbol: 'none', lineStyle: { width: 0 }, areaStyle: { color: '#3b82f6' } },
       { name: 'Idle', type: 'line', stack: 'total', data: statsData.map((s: any) => s.idle_workers || 0), smooth: true, symbol: 'none', lineStyle: { width: 0 }, areaStyle: { color: '#94a3b8' } },
     ]});
-    init(utilizationRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', max: 100, axisLabel: { ...axisLabel, formatter: (v: number) => v + '%' } }, series: [{ name: 'Utilization', type: 'line', data: statsData.map((s: any) => s.worker_utilization || 0), smooth: true, symbol: 'none', lineStyle: { width: 2, color: '#10b981' }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(16,185,129,0.3)' }, { offset: 1, color: 'rgba(16,185,129,0.05)' }] } } }] });
-    init(idleTimeRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel: { ...axisLabel, formatter: (v: number) => v.toFixed(0) + 's' } }, series: [{ name: 'Idle Time', type: 'bar', data: statsData.map((s: any) => s.avg_idle_time_s || 0), itemStyle: { color: '#f59e0b' }, barMaxWidth: 8 }] });
+    init(utilizationRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', max: 100, axisLabel: { ...axisLabel, formatter: (v: number) => v + '%' } }, series: [{ name: 'Utilization', type: 'line', data: statsData.map((s: any) => s.avg_worker_utilization || 0), smooth: true, symbol: 'none', lineStyle: { width: 2, color: '#10b981' }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(16,185,129,0.3)' }, { offset: 1, color: 'rgba(16,185,129,0.05)' }] } } }] });
+    init(idleTimeRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel: { ...axisLabel, formatter: (v: number) => v.toFixed(0) + 's' } }, series: [{ name: 'Idle Time', type: 'bar', data: statsData.map((s: any) => s.avg_idle_duration_sec || 0), itemStyle: { color: '#f59e0b' }, barMaxWidth: 8 }] });
     init(idleCountRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel }, series: [{ name: 'Count', type: 'bar', data: statsData.map((s: any) => s.idle_count || 0), itemStyle: { color: '#6366f1' }, barMaxWidth: 8 }] });
     init(gpuRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', max: 100, axisLabel: { ...axisLabel, formatter: (v: number) => v + '%' } }, series: [
       { name: 'Avg', type: 'line', data: statsData.map((s: any) => s.avg_gpu_utilization || 0), smooth: true, symbol: 'none', lineStyle: { width: 2, color: '#8b5cf6' }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(139,92,246,0.3)' }, { offset: 1, color: 'rgba(139,92,246,0.05)' }] } } },
+      { name: 'Max', type: 'line', data: statsData.map((s: any) => s.max_gpu_utilization || 0), smooth: true, symbol: 'none', lineStyle: { width: 1, color: '#f59e0b', type: 'dashed' } },
     ]});
     init(lifecycleRef, { grid, tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel }, series: [
       { name: 'Created', type: 'bar', data: statsData.map((s: any) => s.workers_created || 0), itemStyle: { color: '#48bb78' }, barMaxWidth: 10 },
@@ -490,6 +493,7 @@ const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
   }, [statsData, granularity, formatLabel, grid, axisLabel, dataZoom]);
 
   const hasData = statsData && statsData.length > 0;
+  const granularityLabel = granularity === '1m' ? 'Minute' : granularity === '1h' ? 'Hourly' : 'Daily';
 
   return (
     <>
@@ -505,9 +509,7 @@ const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
       {/* Controls */}
       <div className="flex justify-between items-center mb-4">
         <div className="filters">
-          <button className={`btn btn-sm ${granularity === 'minute' ? 'btn-blue' : 'btn-outline'}`} onClick={() => setGranularity('minute')}>Minute</button>
-          <button className={`btn btn-sm ${granularity === 'hourly' ? 'btn-blue' : 'btn-outline'}`} onClick={() => setGranularity('hourly')}>Hourly</button>
-          <button className={`btn btn-sm ${granularity === 'daily' ? 'btn-blue' : 'btn-outline'}`} onClick={() => setGranularity('daily')}>Daily</button>
+          <span className="text-sm text-gray-500">Granularity: <strong>{granularityLabel}</strong></span>
         </div>
         <div className="filters">
           <button className="btn btn-sm btn-outline" onClick={() => setQuickRange(1)}>1h</button>
@@ -520,10 +522,10 @@ const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
       <div className="charts-grid">
         <ChartCard chartRef={requestsRef} title="Requests" total={`Total: ${totals.completed + totals.failed}`} legend={[{ color: '#48bb78', label: `Completed: ${totals.completed}` }, { color: '#f56565', label: `Failed: ${totals.failed}` }, { color: '#ecc94b', label: `Retried: ${totals.retried}` }]} hasData={hasData} />
         <ChartCard chartRef={executionRef} title="Execution Time" legend={[{ color: '#3b82f6', label: 'P50' }, { color: '#f56565', label: 'P95' }]} hasData={hasData} />
-        <ChartCard chartRef={delayRef} title="Delay Time" hasData={hasData} />
+        <ChartCard chartRef={delayRef} title="Queue Wait Time" hasData={hasData} />
         <ChartCard chartRef={coldStartCountRef} title="Cold Start Count" total={`Total: ${totals.coldStarts}`} hasData={hasData} />
         <ChartCard chartRef={coldStartTimeRef} title="Cold Start Time" hasData={hasData} />
-        <ChartCard chartRef={webhookRef} title="Webhook Responses" total={`Total: ${totals.webhook2xx + totals.webhook0xx}`} legend={[{ color: '#48bb78', label: `2xx: ${totals.webhook2xx}` }, { color: '#a0aec0', label: `0xx: ${totals.webhook0xx}` }]} hasData={hasData} />
+        <ChartCard chartRef={webhookRef} title="Webhook Responses" total={`Total: ${totals.webhook2xx + totals.webhook0xx}`} legend={[{ color: '#48bb78', label: `Success: ${totals.webhook2xx}` }, { color: '#a0aec0', label: `Failed: ${totals.webhook0xx}` }]} hasData={hasData} />
         <ChartCard chartRef={workersRef} title="Worker Count" total={`Avg: ${avgValues.activeWorkers}`} legend={[{ color: '#3b82f6', label: 'Active' }, { color: '#94a3b8', label: 'Idle' }]} hasData={hasData} />
         <ChartCard chartRef={utilizationRef} title="Worker Utilization" total={`Avg: ${avgValues.workerUtilization}%`} hasData={hasData} />
         <ChartCard chartRef={idleTimeRef} title="Worker Idle Time (Avg)" hasData={hasData} />

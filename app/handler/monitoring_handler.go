@@ -43,50 +43,10 @@ func (h *MonitoringHandler) GetRealtimeMetrics(c *gin.Context) {
 	})
 }
 
-// GetMinuteStats returns minute-level statistics
-// GET /v1/endpoints/:endpoint/stats/minute
-func (h *MonitoringHandler) GetMinuteStats(c *gin.Context) {
-	endpoint := c.Param("endpoint")
-	if endpoint == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "endpoint is required"})
-		return
-	}
-
-	// Parse time range (default: last 1 hour)
-	to := time.Now()
-	from := to.Add(-time.Hour)
-
-	if fromStr := c.Query("from"); fromStr != "" {
-		if t, err := time.Parse(time.RFC3339, fromStr); err == nil {
-			from = t
-		}
-	}
-	if toStr := c.Query("to"); toStr != "" {
-		if t, err := time.Parse(time.RFC3339, toStr); err == nil {
-			to = t
-		}
-	}
-
-	stats, err := h.monitoringService.GetMinuteStats(c.Request.Context(), endpoint, from, to)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"endpoint": endpoint,
-		"time_range": gin.H{
-			"from": from,
-			"to":   to,
-		},
-		"interval": "1m",
-		"stats":    stats,
-	})
-}
-
-// GetHourlyStats returns hourly statistics
-// GET /v1/endpoints/:endpoint/stats/hourly
-func (h *MonitoringHandler) GetHourlyStats(c *gin.Context) {
+// GetStats returns statistics with auto-selected granularity based on time range
+// GET /v1/endpoints/:endpoint/metrics/stats?from=xxx&to=xxx
+// Granularity: ≤2h -> minute, ≤7d -> hourly, >7d -> daily
+func (h *MonitoringHandler) GetStats(c *gin.Context) {
 	endpoint := c.Param("endpoint")
 	if endpoint == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "endpoint is required"})
@@ -100,15 +60,37 @@ func (h *MonitoringHandler) GetHourlyStats(c *gin.Context) {
 	if fromStr := c.Query("from"); fromStr != "" {
 		if t, err := time.Parse(time.RFC3339, fromStr); err == nil {
 			from = t
+		} else if t, err := time.Parse("2006-01-02", fromStr); err == nil {
+			from = t
 		}
 	}
 	if toStr := c.Query("to"); toStr != "" {
 		if t, err := time.Parse(time.RFC3339, toStr); err == nil {
 			to = t
+		} else if t, err := time.Parse("2006-01-02", toStr); err == nil {
+			to = t.Add(24*time.Hour - time.Second)
 		}
 	}
 
-	stats, err := h.monitoringService.GetHourlyStats(c.Request.Context(), endpoint, from, to)
+	duration := to.Sub(from)
+	ctx := c.Request.Context()
+
+	var stats interface{}
+	var granularity string
+	var err error
+
+	switch {
+	case duration <= 2*time.Hour:
+		stats, err = h.monitoringService.GetMinuteStats(ctx, endpoint, from, to)
+		granularity = "1m"
+	case duration <= 7*24*time.Hour:
+		stats, err = h.monitoringService.GetHourlyStats(ctx, endpoint, from, to)
+		granularity = "1h"
+	default:
+		stats, err = h.monitoringService.GetDailyStats(ctx, endpoint, from, to)
+		granularity = "1d"
+	}
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -120,48 +102,7 @@ func (h *MonitoringHandler) GetHourlyStats(c *gin.Context) {
 			"from": from,
 			"to":   to,
 		},
-		"interval": "1h",
-		"stats":    stats,
-	})
-}
-
-// GetDailyStats returns daily statistics
-// GET /v1/endpoints/:endpoint/stats/daily
-func (h *MonitoringHandler) GetDailyStats(c *gin.Context) {
-	endpoint := c.Param("endpoint")
-	if endpoint == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "endpoint is required"})
-		return
-	}
-
-	// Parse time range (default: last 30 days)
-	to := time.Now()
-	from := to.AddDate(0, 0, -30)
-
-	if fromStr := c.Query("from"); fromStr != "" {
-		if t, err := time.Parse("2006-01-02", fromStr); err == nil {
-			from = t
-		}
-	}
-	if toStr := c.Query("to"); toStr != "" {
-		if t, err := time.Parse("2006-01-02", toStr); err == nil {
-			to = t
-		}
-	}
-
-	stats, err := h.monitoringService.GetDailyStats(c.Request.Context(), endpoint, from, to)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"endpoint": endpoint,
-		"time_range": gin.H{
-			"from": from.Format("2006-01-02"),
-			"to":   to.Format("2006-01-02"),
-		},
-		"interval": "1d",
-		"stats":    stats,
+		"granularity": granularity,
+		"stats":       stats,
 	})
 }
