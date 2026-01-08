@@ -280,17 +280,20 @@ func (r *TaskStatisticsRepository) RefreshAllEndpointStatistics(ctx context.Cont
 
 // IncrementStatistics atomically increments statistics for a specific status change
 // This is called when a task transitions from one status to another
-func (r *TaskStatisticsRepository) IncrementStatistics(ctx context.Context, endpoint string, fromStatus, toStatus string) error {
+func (r *TaskStatisticsRepository) IncrementStatistics(ctx context.Context, endpoint string, fromStatus, toStatus string, count int) error {
+	if count <= 0 {
+		count = 1
+	}
 	now := time.Now()
 
 	// Update global statistics
-	if err := r.updateStatisticsForStatusChange(ctx, "global", nil, fromStatus, toStatus, now); err != nil {
+	if err := r.updateStatisticsForStatusChange(ctx, "global", nil, fromStatus, toStatus, count, now); err != nil {
 		return fmt.Errorf("failed to update global statistics: %w", err)
 	}
 
 	// Update endpoint statistics (if endpoint is not empty)
 	if endpoint != "" {
-		if err := r.updateStatisticsForStatusChange(ctx, "endpoint", &endpoint, fromStatus, toStatus, now); err != nil {
+		if err := r.updateStatisticsForStatusChange(ctx, "endpoint", &endpoint, fromStatus, toStatus, count, now); err != nil {
 			return fmt.Errorf("failed to update endpoint statistics: %w", err)
 		}
 	}
@@ -299,7 +302,7 @@ func (r *TaskStatisticsRepository) IncrementStatistics(ctx context.Context, endp
 }
 
 // updateStatisticsForStatusChange updates statistics for a status transition
-func (r *TaskStatisticsRepository) updateStatisticsForStatusChange(ctx context.Context, scopeType string, scopeValue *string, fromStatus, toStatus string, now time.Time) error {
+func (r *TaskStatisticsRepository) updateStatisticsForStatusChange(ctx context.Context, scopeType string, scopeValue *string, fromStatus, toStatus string, count int, now time.Time) error {
 	// For global scope, always use "global" string instead of NULL
 	actualScopeValue := scopeValue
 	if scopeValue == nil {
@@ -311,33 +314,42 @@ func (r *TaskStatisticsRepository) updateStatisticsForStatusChange(ctx context.C
 	sql := `
 		INSERT INTO task_statistics (scope_type, scope_value, pending_count, in_progress_count, completed_count, failed_count, cancelled_count, total_count, updated_at)
 		VALUES (?, ?,
-			CASE WHEN ? = 'PENDING' THEN 1 ELSE 0 END,
-			CASE WHEN ? = 'IN_PROGRESS' THEN 1 ELSE 0 END,
-			CASE WHEN ? = 'COMPLETED' THEN 1 ELSE 0 END,
-			CASE WHEN ? = 'FAILED' THEN 1 ELSE 0 END,
-			CASE WHEN ? = 'CANCELLED' THEN 1 ELSE 0 END,
-			1, ?)
+			CASE WHEN ? = 'PENDING' THEN ? ELSE 0 END,
+			CASE WHEN ? = 'IN_PROGRESS' THEN ? ELSE 0 END,
+			CASE WHEN ? = 'COMPLETED' THEN ? ELSE 0 END,
+			CASE WHEN ? = 'FAILED' THEN ? ELSE 0 END,
+			CASE WHEN ? = 'CANCELLED' THEN ? ELSE 0 END,
+			?, ?)
 		ON DUPLICATE KEY UPDATE
-			pending_count = GREATEST(0, pending_count - CASE WHEN ? = 'PENDING' THEN 1 ELSE 0 END + CASE WHEN ? = 'PENDING' THEN 1 ELSE 0 END),
-			in_progress_count = GREATEST(0, in_progress_count - CASE WHEN ? = 'IN_PROGRESS' THEN 1 ELSE 0 END + CASE WHEN ? = 'IN_PROGRESS' THEN 1 ELSE 0 END),
-			completed_count = GREATEST(0, completed_count - CASE WHEN ? = 'COMPLETED' THEN 1 ELSE 0 END + CASE WHEN ? = 'COMPLETED' THEN 1 ELSE 0 END),
-			failed_count = GREATEST(0, failed_count - CASE WHEN ? = 'FAILED' THEN 1 ELSE 0 END + CASE WHEN ? = 'FAILED' THEN 1 ELSE 0 END),
-			cancelled_count = GREATEST(0, cancelled_count - CASE WHEN ? = 'CANCELLED' THEN 1 ELSE 0 END + CASE WHEN ? = 'CANCELLED' THEN 1 ELSE 0 END),
-			total_count = GREATEST(0, total_count + CASE WHEN ? = '' THEN 1 ELSE 0 END),
+			pending_count = GREATEST(0, pending_count - CASE WHEN ? = 'PENDING' THEN ? ELSE 0 END + CASE WHEN ? = 'PENDING' THEN ? ELSE 0 END),
+			in_progress_count = GREATEST(0, in_progress_count - CASE WHEN ? = 'IN_PROGRESS' THEN ? ELSE 0 END + CASE WHEN ? = 'IN_PROGRESS' THEN ? ELSE 0 END),
+			completed_count = GREATEST(0, completed_count - CASE WHEN ? = 'COMPLETED' THEN ? ELSE 0 END + CASE WHEN ? = 'COMPLETED' THEN ? ELSE 0 END),
+			failed_count = GREATEST(0, failed_count - CASE WHEN ? = 'FAILED' THEN ? ELSE 0 END + CASE WHEN ? = 'FAILED' THEN ? ELSE 0 END),
+			cancelled_count = GREATEST(0, cancelled_count - CASE WHEN ? = 'CANCELLED' THEN ? ELSE 0 END + CASE WHEN ? = 'CANCELLED' THEN ? ELSE 0 END),
+			total_count = GREATEST(0, total_count + CASE WHEN ? = '' THEN ? ELSE 0 END),
 			updated_at = ?
 	`
 	args := []interface{}{
 		scopeType, *actualScopeValue,
-		toStatus, toStatus, toStatus, toStatus, toStatus, // INSERT VALUES
-		now,
-		fromStatus, toStatus, // pending_count
-		fromStatus, toStatus, // in_progress_count
-		fromStatus, toStatus, // completed_count
-		fromStatus, toStatus, // failed_count
-		fromStatus, toStatus, // cancelled_count
-		fromStatus, // total_count (only increment if fromStatus is empty, meaning new task)
+		toStatus, count, toStatus, count, toStatus, count, toStatus, count, toStatus, count, // INSERT VALUES
+		count, now,
+		fromStatus, count, toStatus, count, // pending_count
+		fromStatus, count, toStatus, count, // in_progress_count
+		fromStatus, count, toStatus, count, // completed_count
+		fromStatus, count, toStatus, count, // failed_count
+		fromStatus, count, toStatus, count, // cancelled_count
+		fromStatus, count, // total_count (only increment if fromStatus is empty, meaning new task)
 		now,
 	}
 
-	return r.ds.DB(ctx).Exec(sql, args...).Error
+	result := r.ds.DB(ctx).Exec(sql, args...)
+	if result.Error != nil {
+		return result.Error
+	}
+
+	// Log for debugging
+	fmt.Printf("[STATS-SQL] scope=%s/%s, from=%s, to=%s, count=%d, rowsAffected=%d\n",
+		scopeType, *actualScopeValue, fromStatus, toStatus, count, result.RowsAffected)
+
+	return nil
 }

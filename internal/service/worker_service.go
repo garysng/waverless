@@ -137,10 +137,6 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 		// Record event
 		if s.taskService != nil {
 			s.taskService.recordTaskAssignedEventOnly(ctx, mysqlTask, req.WorkerID, worker.PodName)
-			if s.taskService.statisticsService != nil {
-				go s.taskService.statisticsService.UpdateStatisticsOnTaskStatusChange(
-					context.Background(), mysqlTask.Endpoint, "PENDING", "IN_PROGRESS")
-			}
 		}
 
 		task := mysql.ToTaskDomain(mysqlTask)
@@ -148,6 +144,12 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 			ID:    task.ID,
 			Input: task.Input,
 		})
+	}
+
+	// Batch update statistics (once for all tasks, not per task)
+	if s.taskService != nil && s.taskService.statisticsService != nil && len(assignedTasks) > 0 {
+		go s.taskService.statisticsService.UpdateStatisticsOnTaskStatusChangeBatch(
+			context.Background(), endpoint, "PENDING", "IN_PROGRESS", len(assignedTasks))
 	}
 
 	logger.InfoCtx(ctx, "jobs pulled, worker_id: %s, endpoint: %s, count: %d, task_ids: %v", req.WorkerID, endpoint, len(jobs), getTaskIDs(assignedTasks))
