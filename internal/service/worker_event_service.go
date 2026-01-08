@@ -19,8 +19,13 @@ func NewWorkerEventService(monitoringRepo *mysql.MonitoringRepository) *WorkerEv
 	return &WorkerEventService{monitoringRepo: monitoringRepo}
 }
 
-// RecordWorkerRegistered records when a worker becomes ready (first heartbeat)
+// RecordWorkerRegistered records when a worker becomes ready (first heartbeat, idempotent)
 func (s *WorkerEventService) RecordWorkerRegistered(ctx context.Context, workerID, endpoint, podName string, coldStartMs *int64) {
+	var count int64
+	s.monitoringRepo.CountWorkerEvents(ctx, workerID, string(model.EventWorkerRegistered), &count)
+	if count > 0 {
+		return
+	}
 	event := &model.WorkerEvent{
 		EventID:             uuid.New().String(),
 		WorkerID:            workerID,
@@ -58,8 +63,14 @@ func (s *WorkerEventService) RecordWorkerOffline(ctx context.Context, workerID, 
 	s.monitoringRepo.SaveWorkerEvent(ctx, event)
 }
 
-// RecordWorkerStarted records when a pod starts
+// RecordWorkerStarted records when a pod starts (idempotent - only records once per worker)
 func (s *WorkerEventService) RecordWorkerStarted(ctx context.Context, workerID, endpoint string) {
+	// Check if already recorded
+	var count int64
+	s.monitoringRepo.CountWorkerEvents(ctx, workerID, string(model.EventWorkerStarted), &count)
+	if count > 0 {
+		return
+	}
 	event := &model.WorkerEvent{
 		EventID:   uuid.New().String(),
 		WorkerID:  workerID,

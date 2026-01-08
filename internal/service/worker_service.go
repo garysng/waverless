@@ -140,9 +140,9 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 		batchSize = availableSlots
 	}
 
-	// Calculate idle duration before pulling tasks
+	// Calculate idle duration before pulling tasks (if worker was idle)
 	var idleDurationMs int64
-	if worker.LastTaskTime != nil && worker.CurrentJobs == 0 {
+	if worker.LastTaskTime != nil && len(req.JobsInProgress) == 0 {
 		idleDurationMs = time.Since(*worker.LastTaskTime).Milliseconds()
 	}
 
@@ -290,8 +290,8 @@ func (s *WorkerService) RecordTaskCompletion(ctx context.Context, workerID, endp
 	if err := s.workerRepo.IncrementTaskStats(ctx, workerID, completed, executionTimeMs); err != nil {
 		logger.WarnCtx(ctx, "failed to record task completion stats for worker %s: %v", workerID, err)
 	}
-	// Record WORKER_TASK_COMPLETED event
-	if completed && s.workerEventService != nil {
+	// Record WORKER_TASK_COMPLETED event (for both success and failure)
+	if s.workerEventService != nil {
 		s.workerEventService.RecordWorkerTaskCompleted(ctx, workerID, endpoint, taskID, executionTimeMs)
 	}
 }

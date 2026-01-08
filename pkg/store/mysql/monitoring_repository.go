@@ -464,6 +464,11 @@ func (r *MonitoringRepository) SaveWorkerEvent(ctx context.Context, event *model
 	return r.ds.DB(ctx).Create(event).Error
 }
 
+// CountWorkerEvents counts events for a worker by type
+func (r *MonitoringRepository) CountWorkerEvents(ctx context.Context, workerID, eventType string, count *int64) {
+	r.ds.DB(ctx).Model(&model.WorkerEvent{}).Where("worker_id = ? AND event_type = ?", workerID, eventType).Count(count)
+}
+
 // CleanupOldWorkerEvents removes worker events older than retention period
 func (r *MonitoringRepository) CleanupOldWorkerEvents(ctx context.Context, before time.Time) (int64, error) {
 	result := r.ds.DB(ctx).Where("event_time < ?", before).Delete(&model.WorkerEvent{})

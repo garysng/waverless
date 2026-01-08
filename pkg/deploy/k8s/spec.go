@@ -162,12 +162,19 @@ func (m *SpecManager) ListSpecsByCategory(category string) []*ResourceSpec {
 
 // GetPlatformConfig 获取平台特定配置
 func (s *ResourceSpec) GetPlatformConfig(platform string) PlatformConfig {
+	// 1. Try exact platform match
 	if config, exists := s.Platforms[platform]; exists {
 		return config
 	}
-	// Return generic config as default
+	// 2. Try generic config
 	if config, exists := s.Platforms["generic"]; exists {
 		return config
+	}
+	// 3. If only one platform config exists, use it as fallback
+	if len(s.Platforms) == 1 {
+		for _, config := range s.Platforms {
+			return config
+		}
 	}
 	return PlatformConfig{}
 }
