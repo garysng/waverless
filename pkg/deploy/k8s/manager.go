@@ -343,6 +343,12 @@ func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) 
 	// Get platform-specific configuration
 	platformConfig := spec.GetPlatformConfig(m.platform.GetName())
 
+	// Ensure NodeSelector is initialized (not nil) to avoid template rendering issues
+	nodeSelector := platformConfig.NodeSelector
+	if nodeSelector == nil {
+		nodeSelector = make(map[string]string)
+	}
+
 	// Build render context
 	ctx := &RenderContext{
 		Endpoint:      req.Endpoint,
@@ -359,7 +365,7 @@ func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) 
 		MemoryRequest: spec.Resources.Memory,
 
 		// K8s scheduling configuration (from Spec)
-		NodeSelector: platformConfig.NodeSelector,
+		NodeSelector: nodeSelector,
 		Tolerations:  platformConfig.Tolerations,
 		Labels:       platformConfig.Labels,
 		Annotations:  platformConfig.Annotations,
@@ -1607,7 +1613,12 @@ func (m *Manager) UpdateDeployment(ctx context.Context, endpoint string, specNam
 			deployment.Spec.Template.Spec.Tolerations = tolerations
 
 			// 2. Update NodeSelector (replace entirely)
-			deployment.Spec.Template.Spec.NodeSelector = platformConfig.NodeSelector
+			// Ensure NodeSelector is initialized (not nil) to avoid nil map assignment
+			nodeSelector := platformConfig.NodeSelector
+			if nodeSelector == nil {
+				nodeSelector = make(map[string]string)
+			}
+			deployment.Spec.Template.Spec.NodeSelector = nodeSelector
 
 			// 3. Update Pod Labels (smart merge: remove old platform labels, keep system labels, apply new platform labels)
 			if deployment.Spec.Template.Labels == nil {

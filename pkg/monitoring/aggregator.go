@@ -151,8 +151,6 @@ func convertMinuteStats(stats []*model.EndpointMinuteStat) []*MinuteStatResponse
 			AvgExecutionMs:       s.AvgExecutionMs,
 			P50ExecutionMs:       s.P50ExecutionMs,
 			P95ExecutionMs:       s.P95ExecutionMs,
-			AvgGPUUtilization:    s.AvgGPUUtilization,
-			MaxGPUUtilization:    s.MaxGPUUtilization,
 			AvgIdleDurationSec:   s.AvgIdleDurationSec,
 			MaxIdleDurationSec:   s.MaxIdleDurationSec,
 			TotalIdleTimeSec:     s.TotalIdleTimeSec,
@@ -161,8 +159,6 @@ func convertMinuteStats(stats []*model.EndpointMinuteStat) []*MinuteStatResponse
 			WorkersTerminated:    s.WorkersTerminated,
 			ColdStarts:           s.ColdStarts,
 			AvgColdStartMs:       s.AvgColdStartMs,
-			WebhookSuccess:       s.WebhookSuccess,
-			WebhookFailed:        s.WebhookFailed,
 		}
 	}
 	return result
@@ -185,8 +181,6 @@ func convertHourlyStats(stats []*model.EndpointHourlyStat) []*HourlyStatResponse
 			AvgExecutionMs:       s.AvgExecutionMs,
 			P50ExecutionMs:       s.P50ExecutionMs,
 			P95ExecutionMs:       s.P95ExecutionMs,
-			AvgGPUUtilization:    s.AvgGPUUtilization,
-			MaxGPUUtilization:    s.MaxGPUUtilization,
 			AvgIdleDurationSec:   s.AvgIdleDurationSec,
 			MaxIdleDurationSec:   s.MaxIdleDurationSec,
 			TotalIdleTimeSec:     s.TotalIdleTimeSec,
@@ -195,8 +189,6 @@ func convertHourlyStats(stats []*model.EndpointHourlyStat) []*HourlyStatResponse
 			WorkersTerminated:    s.WorkersTerminated,
 			ColdStarts:           s.ColdStarts,
 			AvgColdStartMs:       s.AvgColdStartMs,
-			WebhookSuccess:       s.WebhookSuccess,
-			WebhookFailed:        s.WebhookFailed,
 		}
 	}
 	return result
@@ -219,8 +211,6 @@ func convertDailyStats(stats []*model.EndpointDailyStat) []*DailyStatResponse {
 			AvgExecutionMs:       s.AvgExecutionMs,
 			P50ExecutionMs:       s.P50ExecutionMs,
 			P95ExecutionMs:       s.P95ExecutionMs,
-			AvgGPUUtilization:    s.AvgGPUUtilization,
-			MaxGPUUtilization:    s.MaxGPUUtilization,
 			AvgIdleDurationSec:   s.AvgIdleDurationSec,
 			MaxIdleDurationSec:   s.MaxIdleDurationSec,
 			TotalIdleTimeSec:     s.TotalIdleTimeSec,
@@ -229,8 +219,6 @@ func convertDailyStats(stats []*model.EndpointDailyStat) []*DailyStatResponse {
 			WorkersTerminated:    s.WorkersTerminated,
 			ColdStarts:           s.ColdStarts,
 			AvgColdStartMs:       s.AvgColdStartMs,
-			WebhookSuccess:       s.WebhookSuccess,
-			WebhookFailed:        s.WebhookFailed,
 		}
 	}
 	return result

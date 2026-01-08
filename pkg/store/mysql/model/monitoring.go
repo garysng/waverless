@@ -19,8 +19,6 @@ type EndpointMinuteStat struct {
 	AvgExecutionMs       float64   `gorm:"type:decimal(10,2);default:0"`
 	P50ExecutionMs       float64   `gorm:"type:decimal(10,2);default:0"`
 	P95ExecutionMs       float64   `gorm:"type:decimal(10,2);default:0"`
-	AvgGPUUtilization    float64   `gorm:"type:decimal(5,2);default:0"`
-	MaxGPUUtilization    float64   `gorm:"type:decimal(5,2);default:0"`
 	AvgIdleDurationSec   float64   `gorm:"type:decimal(10,2);default:0"`
 	MaxIdleDurationSec   int       `gorm:"default:0"`
 	TotalIdleTimeSec     int       `gorm:"default:0"`
@@ -29,8 +27,6 @@ type EndpointMinuteStat struct {
 	WorkersTerminated    int       `gorm:"default:0"`
 	ColdStarts           int       `gorm:"default:0"`
 	AvgColdStartMs       float64   `gorm:"type:decimal(10,2);default:0"`
-	WebhookSuccess       int       `gorm:"default:0"`
-	WebhookFailed        int       `gorm:"default:0"`
 	CreatedAt            time.Time `gorm:"autoCreateTime"`
 }
 
@@ -53,8 +49,6 @@ type EndpointHourlyStat struct {
 	AvgExecutionMs       float64   `gorm:"type:decimal(10,2);default:0"`
 	P50ExecutionMs       float64   `gorm:"type:decimal(10,2);default:0"`
 	P95ExecutionMs       float64   `gorm:"type:decimal(10,2);default:0"`
-	AvgGPUUtilization    float64   `gorm:"type:decimal(5,2);default:0"`
-	MaxGPUUtilization    float64   `gorm:"type:decimal(5,2);default:0"`
 	AvgIdleDurationSec   float64   `gorm:"type:decimal(10,2);default:0"`
 	MaxIdleDurationSec   int       `gorm:"default:0"`
 	TotalIdleTimeSec     int64     `gorm:"default:0"`
@@ -63,8 +57,6 @@ type EndpointHourlyStat struct {
 	WorkersTerminated    int       `gorm:"default:0"`
 	ColdStarts           int       `gorm:"default:0"`
 	AvgColdStartMs       float64   `gorm:"type:decimal(10,2);default:0"`
-	WebhookSuccess       int       `gorm:"default:0"`
-	WebhookFailed        int       `gorm:"default:0"`
 	CreatedAt            time.Time `gorm:"autoCreateTime"`
 }
 
@@ -87,8 +79,6 @@ type EndpointDailyStat struct {
 	AvgExecutionMs       float64   `gorm:"type:decimal(10,2);default:0"`
 	P50ExecutionMs       float64   `gorm:"type:decimal(10,2);default:0"`
 	P95ExecutionMs       float64   `gorm:"type:decimal(10,2);default:0"`
-	AvgGPUUtilization    float64   `gorm:"type:decimal(5,2);default:0"`
-	MaxGPUUtilization    float64   `gorm:"type:decimal(5,2);default:0"`
 	AvgIdleDurationSec   float64   `gorm:"type:decimal(10,2);default:0"`
 	MaxIdleDurationSec   int       `gorm:"default:0"`
 	TotalIdleTimeSec     int64     `gorm:"default:0"`
@@ -97,8 +87,6 @@ type EndpointDailyStat struct {
 	WorkersTerminated    int       `gorm:"default:0"`
 	ColdStarts           int       `gorm:"default:0"`
 	AvgColdStartMs       float64   `gorm:"type:decimal(10,2);default:0"`
-	WebhookSuccess       int       `gorm:"default:0"`
-	WebhookFailed        int       `gorm:"default:0"`
 	CreatedAt            time.Time `gorm:"autoCreateTime"`
 }
 

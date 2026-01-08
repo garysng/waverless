@@ -34,14 +34,17 @@ func (s *TaskService) recordTaskEvent(
 			ErrorMessage:  errorMsg,
 		}
 
-		// Fill duration fields for completion events
+		// Fill queue_wait_ms for TASK_ASSIGNED event
+		if eventType == mysqlModel.EventTaskAssigned {
+			queueMs := int(now.Sub(task.CreatedAt).Milliseconds())
+			event.QueueWaitMs = &queueMs
+		}
+
+		// Fill execution_duration_ms for completion events
 		if eventType == mysqlModel.EventTaskCompleted || eventType == mysqlModel.EventTaskFailed || eventType == mysqlModel.EventTaskTimeout {
 			if task.StartedAt != nil {
 				execMs := int(now.Sub(*task.StartedAt).Milliseconds())
 				event.ExecutionDurationMs = &execMs
-				// Queue wait = started - created
-				queueMs := int(task.StartedAt.Sub(task.CreatedAt).Milliseconds())
-				event.QueueWaitMs = &queueMs
 			}
 			totalMs := int(now.Sub(task.CreatedAt).Milliseconds())
 			event.TotalDurationMs = &totalMs

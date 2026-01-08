@@ -68,17 +68,6 @@ func NewMonitoringRepository(ds *Datastore) *MonitoringRepository {
 	return &MonitoringRepository{ds: ds}
 }
 
-// SaveResourceSnapshot saves a worker resource snapshot
-func (r *MonitoringRepository) SaveResourceSnapshot(ctx context.Context, snapshot *model.WorkerResourceSnapshot) error {
-	return r.ds.DB(ctx).Create(snapshot).Error
-}
-
-// CleanupOldSnapshots removes snapshots older than the given time
-func (r *MonitoringRepository) CleanupOldSnapshots(ctx context.Context, before time.Time) (int64, error) {
-	result := r.ds.DB(ctx).Where("snapshot_at < ?", before).Delete(&model.WorkerResourceSnapshot{})
-	return result.RowsAffected, result.Error
-}
-
 // UpsertMinuteStat creates or updates minute-level statistics
 func (r *MonitoringRepository) UpsertMinuteStat(ctx context.Context, stat *model.EndpointMinuteStat) error {
 	return r.ds.DB(ctx).Clauses(clause.OnConflict{
@@ -145,19 +134,17 @@ func (r *MonitoringRepository) CleanupOldDailyStats(ctx context.Context, before 
 	return result.RowsAffected, result.Error
 }
 
-// AggregateMinuteStats aggregates task events into minute-level statistics
+// AggregateMinuteStats aggregates task_events and worker_events into minute-level statistics
 func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoint string, from, to time.Time) (*model.EndpointMinuteStat, error) {
 	stat := &model.EndpointMinuteStat{Endpoint: endpoint, StatMinute: from}
 
-	// Task stats from task_events (including retried)
+	// 1. Task counts from task_events
 	var taskStats struct {
-		TasksSubmitted int     `gorm:"column:tasks_submitted"`
-		TasksCompleted int     `gorm:"column:tasks_completed"`
-		TasksFailed    int     `gorm:"column:tasks_failed"`
-		TasksTimeout   int     `gorm:"column:tasks_timeout"`
-		TasksRetried   int     `gorm:"column:tasks_retried"`
-		AvgQueueWaitMs float64 `gorm:"column:avg_queue_wait_ms"`
-		AvgExecutionMs float64 `gorm:"column:avg_execution_ms"`
+		TasksSubmitted int `gorm:"column:tasks_submitted"`
+		TasksCompleted int `gorm:"column:tasks_completed"`
+		TasksFailed    int `gorm:"column:tasks_failed"`
+		TasksTimeout   int `gorm:"column:tasks_timeout"`
+		TasksRetried   int `gorm:"column:tasks_retried"`
 	}
 	r.ds.DB(ctx).Raw(`
 		SELECT
@@ -165,9 +152,7 @@ func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoin
 			COUNT(CASE WHEN event_type = 'TASK_COMPLETED' THEN 1 END) as tasks_completed,
 			COUNT(CASE WHEN event_type = 'TASK_FAILED' THEN 1 END) as tasks_failed,
 			COUNT(CASE WHEN event_type = 'TASK_TIMEOUT' THEN 1 END) as tasks_timeout,
-			COUNT(CASE WHEN event_type = 'TASK_REQUEUED' THEN 1 END) as tasks_retried,
-			COALESCE(AVG(CASE WHEN event_type IN ('TASK_COMPLETED','TASK_FAILED','TASK_TIMEOUT') THEN queue_wait_ms END), 0) as avg_queue_wait_ms,
-			COALESCE(AVG(CASE WHEN event_type IN ('TASK_COMPLETED','TASK_FAILED','TASK_TIMEOUT') THEN execution_duration_ms END), 0) as avg_execution_ms
+			COUNT(CASE WHEN event_type = 'TASK_REQUEUED' THEN 1 END) as tasks_retried
 		FROM task_events WHERE endpoint = ? AND event_time >= ? AND event_time < ?
 	`, endpoint, from, to).Scan(&taskStats)
 	stat.TasksSubmitted = taskStats.TasksSubmitted
@@ -175,121 +160,108 @@ func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoin
 	stat.TasksFailed = taskStats.TasksFailed
 	stat.TasksTimeout = taskStats.TasksTimeout
 	stat.TasksRetried = taskStats.TasksRetried
-	stat.AvgQueueWaitMs = taskStats.AvgQueueWaitMs
-	stat.AvgExecutionMs = taskStats.AvgExecutionMs
 
-	// P50 and P95 execution time using PERCENT_RANK
-	var percentiles struct {
-		P50 float64 `gorm:"column:p50"`
-		P95 float64 `gorm:"column:p95"`
+	// 2. AvgQueueWaitMs from TASK_ASSIGNED events
+	var queueWait float64
+	r.ds.DB(ctx).Raw(`
+		SELECT COALESCE(AVG(queue_wait_ms), 0)
+		FROM task_events 
+		WHERE endpoint = ? AND event_time >= ? AND event_time < ? 
+		AND event_type = 'TASK_ASSIGNED' AND queue_wait_ms IS NOT NULL
+	`, endpoint, from, to).Scan(&queueWait)
+	stat.AvgQueueWaitMs = queueWait
+
+	// 3. Execution time stats from TASK_COMPLETED events
+	var execStats struct {
+		AvgMs float64 `gorm:"column:avg_ms"`
+		P50Ms float64 `gorm:"column:p50_ms"`
+		P95Ms float64 `gorm:"column:p95_ms"`
 	}
 	r.ds.DB(ctx).Raw(`
 		SELECT 
-			COALESCE(MAX(CASE WHEN pct <= 0.50 THEN execution_duration_ms END), 0) as p50,
-			COALESCE(MAX(CASE WHEN pct <= 0.95 THEN execution_duration_ms END), 0) as p95
+			COALESCE(AVG(execution_duration_ms), 0) as avg_ms,
+			COALESCE(MAX(CASE WHEN pct <= 0.50 THEN execution_duration_ms END), 0) as p50_ms,
+			COALESCE(MAX(CASE WHEN pct <= 0.95 THEN execution_duration_ms END), 0) as p95_ms
 		FROM (
 			SELECT execution_duration_ms, PERCENT_RANK() OVER (ORDER BY execution_duration_ms) as pct
 			FROM task_events 
 			WHERE endpoint = ? AND event_time >= ? AND event_time < ? 
-			AND event_type IN ('TASK_COMPLETED','TASK_FAILED','TASK_TIMEOUT') 
-			AND execution_duration_ms IS NOT NULL
+			AND event_type = 'TASK_COMPLETED' AND execution_duration_ms IS NOT NULL
 		) t
-	`, endpoint, from, to).Scan(&percentiles)
-	stat.P50ExecutionMs = percentiles.P50
-	stat.P95ExecutionMs = percentiles.P95
+	`, endpoint, from, to).Scan(&execStats)
+	stat.AvgExecutionMs = execStats.AvgMs
+	stat.P50ExecutionMs = execStats.P50Ms
+	stat.P95ExecutionMs = execStats.P95Ms
 
-	// Worker stats with utilization
+	// 4. Worker stats from workers table (current snapshot)
 	var workerStats struct {
-		ActiveWorkers        int     `gorm:"column:active_workers"`
-		IdleWorkers          int     `gorm:"column:idle_workers"`
-		AvgWorkerUtilization float64 `gorm:"column:avg_worker_utilization"`
+		ActiveWorkers int `gorm:"column:active_workers"`
+		IdleWorkers   int `gorm:"column:idle_workers"`
+		TotalWorkers  int `gorm:"column:total_workers"`
 	}
 	r.ds.DB(ctx).Raw(`
 		SELECT
-			COUNT(CASE WHEN status IN ('ONLINE', 'BUSY') THEN 1 END) as active_workers,
-			COUNT(CASE WHEN status = 'ONLINE' AND current_jobs = 0 THEN 1 END) as idle_workers,
-			COALESCE(AVG(CASE WHEN status IN ('ONLINE', 'BUSY') THEN 
-				CASE WHEN current_jobs > 0 THEN 100.0 ELSE 0.0 END 
-			END), 0) as avg_worker_utilization
-		FROM workers WHERE endpoint = ? AND last_heartbeat >= ?
+			COUNT(CASE WHEN current_jobs > 0 THEN 1 END) as active_workers,
+			COUNT(CASE WHEN current_jobs = 0 THEN 1 END) as idle_workers,
+			COUNT(*) as total_workers
+		FROM workers WHERE endpoint = ? AND status IN ('ONLINE', 'BUSY') AND last_heartbeat >= ?
 	`, endpoint, from).Scan(&workerStats)
 	stat.ActiveWorkers = workerStats.ActiveWorkers
 	stat.IdleWorkers = workerStats.IdleWorkers
-	stat.AvgWorkerUtilization = workerStats.AvgWorkerUtilization
-
-	// GPU utilization from snapshots (avg and max)
-	var gpuStats struct {
-		AvgGPU float64 `gorm:"column:avg_gpu"`
-		MaxGPU float64 `gorm:"column:max_gpu"`
+	if workerStats.TotalWorkers > 0 {
+		stat.AvgWorkerUtilization = float64(workerStats.ActiveWorkers) / float64(workerStats.TotalWorkers) * 100
 	}
-	r.ds.DB(ctx).Raw(`
-		SELECT COALESCE(AVG(gpu_utilization), 0) as avg_gpu, COALESCE(MAX(gpu_utilization), 0) as max_gpu 
-		FROM worker_resource_snapshots 
-		WHERE endpoint = ? AND snapshot_at >= ? AND snapshot_at < ?
-	`, endpoint, from, to).Scan(&gpuStats)
-	stat.AvgGPUUtilization = gpuStats.AvgGPU
-	stat.MaxGPUUtilization = gpuStats.MaxGPU
 
-	// Worker idle time stats from snapshots
+	// 5. Worker idle stats from worker_events (WORKER_TASK_PULLED has idle_duration_ms)
 	var idleStats struct {
-		AvgIdleSec   float64 `gorm:"column:avg_idle_sec"`
-		MaxIdleSec   int     `gorm:"column:max_idle_sec"`
-		TotalIdleSec int     `gorm:"column:total_idle_sec"`
-		IdleCount    int     `gorm:"column:idle_count"`
+		AvgIdleMs   float64 `gorm:"column:avg_idle_ms"`
+		MaxIdleMs   int64   `gorm:"column:max_idle_ms"`
+		TotalIdleMs int64   `gorm:"column:total_idle_ms"`
+		IdleCount   int     `gorm:"column:idle_count"`
 	}
 	r.ds.DB(ctx).Raw(`
 		SELECT 
-			COALESCE(AVG(CASE WHEN is_idle THEN 60 END), 0) as avg_idle_sec,
-			COALESCE(MAX(CASE WHEN is_idle THEN 60 END), 0) as max_idle_sec,
-			COALESCE(SUM(CASE WHEN is_idle THEN 60 ELSE 0 END), 0) as total_idle_sec,
-			COUNT(CASE WHEN is_idle THEN 1 END) as idle_count
-		FROM worker_resource_snapshots 
-		WHERE endpoint = ? AND snapshot_at >= ? AND snapshot_at < ?
+			COALESCE(AVG(idle_duration_ms), 0) as avg_idle_ms,
+			COALESCE(MAX(idle_duration_ms), 0) as max_idle_ms,
+			COALESCE(SUM(idle_duration_ms), 0) as total_idle_ms,
+			COUNT(*) as idle_count
+		FROM worker_events 
+		WHERE endpoint = ? AND event_time >= ? AND event_time < ? 
+		AND event_type = 'WORKER_TASK_PULLED' AND idle_duration_ms IS NOT NULL
 	`, endpoint, from, to).Scan(&idleStats)
-	stat.AvgIdleDurationSec = idleStats.AvgIdleSec
-	stat.MaxIdleDurationSec = idleStats.MaxIdleSec
-	stat.TotalIdleTimeSec = idleStats.TotalIdleSec
+	stat.AvgIdleDurationSec = idleStats.AvgIdleMs / 1000
+	stat.MaxIdleDurationSec = int(idleStats.MaxIdleMs / 1000)
+	stat.TotalIdleTimeSec = int(idleStats.TotalIdleMs / 1000)
 	stat.IdleCount = idleStats.IdleCount
 
-	// Worker lifecycle events (created/terminated)
+	// 6. Worker lifecycle from worker_events
 	var lifecycleStats struct {
 		Created    int `gorm:"column:created"`
 		Terminated int `gorm:"column:terminated"`
 	}
 	r.ds.DB(ctx).Raw(`
 		SELECT 
-			COUNT(CASE WHEN pod_created_at >= ? AND pod_created_at < ? THEN 1 END) as created,
-			COUNT(CASE WHEN status = 'OFFLINE' AND updated_at >= ? AND updated_at < ? THEN 1 END) as terminated
-		FROM workers WHERE endpoint = ?
-	`, from, to, from, to, endpoint).Scan(&lifecycleStats)
+			COUNT(CASE WHEN event_type = 'WORKER_REGISTERED' THEN 1 END) as created,
+			COUNT(CASE WHEN event_type = 'WORKER_OFFLINE' THEN 1 END) as terminated
+		FROM worker_events 
+		WHERE endpoint = ? AND event_time >= ? AND event_time < ?
+	`, endpoint, from, to).Scan(&lifecycleStats)
 	stat.WorkersCreated = lifecycleStats.Created
 	stat.WorkersTerminated = lifecycleStats.Terminated
 
-	// Cold start stats
+	// 7. Cold start stats from worker_events (WORKER_REGISTERED has cold_start_duration_ms)
 	var coldStats struct {
 		ColdStarts     int     `gorm:"column:cold_starts"`
 		AvgColdStartMs float64 `gorm:"column:avg_cold_start_ms"`
 	}
 	r.ds.DB(ctx).Raw(`
 		SELECT COUNT(*) as cold_starts, COALESCE(AVG(cold_start_duration_ms), 0) as avg_cold_start_ms
-		FROM workers WHERE endpoint = ? AND cold_start_duration_ms IS NOT NULL AND pod_started_at >= ? AND pod_started_at < ?
+		FROM worker_events 
+		WHERE endpoint = ? AND event_time >= ? AND event_time < ? 
+		AND event_type = 'WORKER_REGISTERED' AND cold_start_duration_ms IS NOT NULL
 	`, endpoint, from, to).Scan(&coldStats)
 	stat.ColdStarts = coldStats.ColdStarts
 	stat.AvgColdStartMs = coldStats.AvgColdStartMs
-
-	// Webhook stats from tasks
-	var webhookStats struct {
-		Success int `gorm:"column:success"`
-		Failed  int `gorm:"column:failed"`
-	}
-	r.ds.DB(ctx).Raw(`
-		SELECT 
-			COUNT(CASE WHEN webhook_status = 'SUCCESS' THEN 1 END) as success,
-			COUNT(CASE WHEN webhook_status = 'FAILED' THEN 1 END) as failed
-		FROM tasks WHERE endpoint = ? AND updated_at >= ? AND updated_at < ? AND webhook_status IS NOT NULL
-	`, endpoint, from, to).Scan(&webhookStats)
-	stat.WebhookSuccess = webhookStats.Success
-	stat.WebhookFailed = webhookStats.Failed
 
 	return stat, nil
 }
@@ -299,7 +271,6 @@ func (r *MonitoringRepository) AggregateHourlyStats(ctx context.Context, endpoin
 	stat := &model.EndpointHourlyStat{Endpoint: endpoint, StatHour: statHour}
 	from, to := statHour, statHour.Add(time.Hour)
 
-	// Check if there's any data first
 	var count int64
 	r.ds.DB(ctx).Model(&model.EndpointMinuteStat{}).Where("endpoint = ? AND stat_minute >= ? AND stat_minute < ?", endpoint, from, to).Count(&count)
 	if count == 0 {
@@ -321,8 +292,6 @@ func (r *MonitoringRepository) AggregateHourlyStats(ctx context.Context, endpoin
 			COALESCE(AVG(avg_execution_ms), 0) as avg_execution_ms,
 			COALESCE(AVG(p50_execution_ms), 0) as p50_execution_ms,
 			COALESCE(MAX(p95_execution_ms), 0) as p95_execution_ms,
-			COALESCE(AVG(avg_gpu_utilization), 0) as avg_gpu_utilization,
-			COALESCE(MAX(max_gpu_utilization), 0) as max_gpu_utilization,
 			COALESCE(AVG(avg_idle_duration_sec), 0) as avg_idle_duration_sec,
 			COALESCE(MAX(max_idle_duration_sec), 0) as max_idle_duration_sec,
 			COALESCE(SUM(total_idle_time_sec), 0) as total_idle_time_sec,
@@ -330,9 +299,7 @@ func (r *MonitoringRepository) AggregateHourlyStats(ctx context.Context, endpoin
 			COALESCE(SUM(workers_created), 0) as workers_created,
 			COALESCE(SUM(workers_terminated), 0) as workers_terminated,
 			COALESCE(SUM(cold_starts), 0) as cold_starts,
-			COALESCE(AVG(avg_cold_start_ms), 0) as avg_cold_start_ms,
-			COALESCE(SUM(webhook_success), 0) as webhook_success,
-			COALESCE(SUM(webhook_failed), 0) as webhook_failed
+			COALESCE(AVG(avg_cold_start_ms), 0) as avg_cold_start_ms
 		FROM endpoint_minute_stats WHERE endpoint = ? AND stat_minute >= ? AND stat_minute < ?
 	`, endpoint, from, to).Scan(&result)
 
@@ -349,8 +316,6 @@ func (r *MonitoringRepository) AggregateHourlyStats(ctx context.Context, endpoin
 		stat.AvgExecutionMs = toFloat(result["avg_execution_ms"])
 		stat.P50ExecutionMs = toFloat(result["p50_execution_ms"])
 		stat.P95ExecutionMs = toFloat(result["p95_execution_ms"])
-		stat.AvgGPUUtilization = toFloat(result["avg_gpu_utilization"])
-		stat.MaxGPUUtilization = toFloat(result["max_gpu_utilization"])
 		stat.AvgIdleDurationSec = toFloat(result["avg_idle_duration_sec"])
 		stat.MaxIdleDurationSec = toInt(result["max_idle_duration_sec"])
 		stat.TotalIdleTimeSec = toInt64(result["total_idle_time_sec"])
@@ -359,8 +324,6 @@ func (r *MonitoringRepository) AggregateHourlyStats(ctx context.Context, endpoin
 		stat.WorkersTerminated = toInt(result["workers_terminated"])
 		stat.ColdStarts = toInt(result["cold_starts"])
 		stat.AvgColdStartMs = toFloat(result["avg_cold_start_ms"])
-		stat.WebhookSuccess = toInt(result["webhook_success"])
-		stat.WebhookFailed = toInt(result["webhook_failed"])
 	}
 
 	return stat, nil
@@ -371,7 +334,6 @@ func (r *MonitoringRepository) AggregateDailyStats(ctx context.Context, endpoint
 	stat := &model.EndpointDailyStat{Endpoint: endpoint, StatDate: statDate}
 	from, to := statDate, statDate.AddDate(0, 0, 1)
 
-	// Check if there's any data first
 	var count int64
 	r.ds.DB(ctx).Model(&model.EndpointHourlyStat{}).Where("endpoint = ? AND stat_hour >= ? AND stat_hour < ?", endpoint, from, to).Count(&count)
 	if count == 0 {
@@ -393,8 +355,6 @@ func (r *MonitoringRepository) AggregateDailyStats(ctx context.Context, endpoint
 			COALESCE(AVG(avg_execution_ms), 0) as avg_execution_ms,
 			COALESCE(AVG(p50_execution_ms), 0) as p50_execution_ms,
 			COALESCE(MAX(p95_execution_ms), 0) as p95_execution_ms,
-			COALESCE(AVG(avg_gpu_utilization), 0) as avg_gpu_utilization,
-			COALESCE(MAX(max_gpu_utilization), 0) as max_gpu_utilization,
 			COALESCE(AVG(avg_idle_duration_sec), 0) as avg_idle_duration_sec,
 			COALESCE(MAX(max_idle_duration_sec), 0) as max_idle_duration_sec,
 			COALESCE(SUM(total_idle_time_sec), 0) as total_idle_time_sec,
@@ -402,9 +362,7 @@ func (r *MonitoringRepository) AggregateDailyStats(ctx context.Context, endpoint
 			COALESCE(SUM(workers_created), 0) as workers_created,
 			COALESCE(SUM(workers_terminated), 0) as workers_terminated,
 			COALESCE(SUM(cold_starts), 0) as cold_starts,
-			COALESCE(AVG(avg_cold_start_ms), 0) as avg_cold_start_ms,
-			COALESCE(SUM(webhook_success), 0) as webhook_success,
-			COALESCE(SUM(webhook_failed), 0) as webhook_failed
+			COALESCE(AVG(avg_cold_start_ms), 0) as avg_cold_start_ms
 		FROM endpoint_hourly_stats WHERE endpoint = ? AND stat_hour >= ? AND stat_hour < ?
 	`, endpoint, from, to).Scan(&result)
 
@@ -421,8 +379,6 @@ func (r *MonitoringRepository) AggregateDailyStats(ctx context.Context, endpoint
 		stat.AvgExecutionMs = toFloat(result["avg_execution_ms"])
 		stat.P50ExecutionMs = toFloat(result["p50_execution_ms"])
 		stat.P95ExecutionMs = toFloat(result["p95_execution_ms"])
-		stat.AvgGPUUtilization = toFloat(result["avg_gpu_utilization"])
-		stat.MaxGPUUtilization = toFloat(result["max_gpu_utilization"])
 		stat.AvgIdleDurationSec = toFloat(result["avg_idle_duration_sec"])
 		stat.MaxIdleDurationSec = toInt(result["max_idle_duration_sec"])
 		stat.TotalIdleTimeSec = toInt64(result["total_idle_time_sec"])
@@ -431,8 +387,6 @@ func (r *MonitoringRepository) AggregateDailyStats(ctx context.Context, endpoint
 		stat.WorkersTerminated = toInt(result["workers_terminated"])
 		stat.ColdStarts = toInt(result["cold_starts"])
 		stat.AvgColdStartMs = toFloat(result["avg_cold_start_ms"])
-		stat.WebhookSuccess = toInt(result["webhook_success"])
-		stat.WebhookFailed = toInt(result["webhook_failed"])
 	}
 
 	return stat, nil
@@ -461,9 +415,9 @@ func (r *MonitoringRepository) GetRealtimeMetrics(ctx context.Context, endpoint 
 
 	r.ds.DB(ctx).Raw(`
 		SELECT COUNT(*) as total,
-			COUNT(CASE WHEN status IN ('ONLINE', 'BUSY') THEN 1 END) as active,
-			COUNT(CASE WHEN status = 'ONLINE' AND current_jobs = 0 THEN 1 END) as idle
-		FROM workers WHERE endpoint = ? AND last_heartbeat > ?
+			COUNT(CASE WHEN current_jobs > 0 THEN 1 END) as active,
+			COUNT(CASE WHEN current_jobs = 0 THEN 1 END) as idle
+		FROM workers WHERE endpoint = ? AND status IN ('ONLINE', 'BUSY') AND last_heartbeat > ?
 	`, endpoint, threshold).Scan(&metrics.Workers)
 
 	lastMinute := time.Now().Add(-time.Minute)
@@ -479,7 +433,7 @@ func (r *MonitoringRepository) GetRealtimeMetrics(ctx context.Context, endpoint 
 		SELECT COALESCE(AVG(queue_wait_ms), 0) as avg_queue_wait_ms,
 			COALESCE(AVG(execution_duration_ms), 0) as avg_execution_ms,
 			COALESCE(AVG(total_duration_ms), 0) as avg_total_duration_ms
-		FROM task_events WHERE endpoint = ? AND event_type IN ('TASK_COMPLETED','TASK_FAILED') AND event_time >= ?
+		FROM task_events WHERE endpoint = ? AND event_type = 'TASK_COMPLETED' AND event_time >= ?
 	`, endpoint, last5Min).Scan(&metrics.Performance)
 
 	return metrics, nil
@@ -487,8 +441,8 @@ func (r *MonitoringRepository) GetRealtimeMetrics(ctx context.Context, endpoint 
 
 // RealtimeMetrics represents real-time metrics for an endpoint
 type RealtimeMetrics struct {
-	Endpoint    string `json:"endpoint"`
-	Workers     struct {
+	Endpoint string `json:"endpoint"`
+	Workers  struct {
 		Total  int `json:"total"`
 		Active int `json:"active"`
 		Idle   int `json:"idle"`
@@ -505,5 +459,13 @@ type RealtimeMetrics struct {
 	} `json:"performance"`
 }
 
+// SaveWorkerEvent saves a worker event
+func (r *MonitoringRepository) SaveWorkerEvent(ctx context.Context, event *model.WorkerEvent) error {
+	return r.ds.DB(ctx).Create(event).Error
+}
 
-
+// CleanupOldWorkerEvents removes worker events older than retention period
+func (r *MonitoringRepository) CleanupOldWorkerEvents(ctx context.Context, before time.Time) (int64, error) {
+	result := r.ds.DB(ctx).Where("event_time < ?", before).Delete(&model.WorkerEvent{})
+	return result.RowsAffected, result.Error
+}
