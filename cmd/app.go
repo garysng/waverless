@@ -33,12 +33,13 @@ type Application struct {
 	deploymentProvider interfaces.DeploymentProvider
 
 	// Service layer
-	endpointService    *endpointsvc.Service
-	taskService        *service.TaskService
-	workerService      *service.WorkerService
-	statisticsService  *service.StatisticsService
-	specService        *service.SpecService
-	monitoringService  *service.MonitoringService
+	endpointService      *endpointsvc.Service
+	taskService          *service.TaskService
+	workerService        *service.WorkerService
+	workerEventService   *service.WorkerEventService
+	statisticsService    *service.StatisticsService
+	specService          *service.SpecService
+	monitoringService    *service.MonitoringService
 
 	// Handler layer
 	taskHandler       *handler.TaskHandler

@@ -127,6 +127,10 @@ func (app *Application) initServices() error {
 		k8sDeployProvider,
 	)
 
+	// Initialize worker event service for monitoring
+	app.workerEventService = service.NewWorkerEventService(app.mysqlRepo.Monitoring)
+	app.workerService.SetWorkerEventService(app.workerEventService)
+
 	// Initialize endpoint service
 	app.endpointService = endpointsvc.NewService(
 		app.mysqlRepo.Endpoint,
@@ -519,9 +523,18 @@ func (app *Application) setupPodStatusWatcher(k8sProvider *k8s.K8sDeploymentProv
 			}
 		}
 
+		// Check if this is a new worker (for WORKER_STARTED event)
+		existingWorker, _ := app.mysqlRepo.Worker.GetByPodName(app.ctx, endpoint, podName)
+		isNewWorker := existingWorker == nil
+
 		// Create or update worker (status STARTING until heartbeat)
 		if err := app.mysqlRepo.Worker.UpsertFromPod(app.ctx, podName, endpoint, info.Phase, info.Status, info.Reason, info.Message, info.IP, info.NodeName, createdAt, startedAt); err != nil {
 			logger.WarnCtx(app.ctx, "Failed to upsert worker from pod %s: %v", podName, err)
+		}
+
+		// Record WORKER_STARTED event for new workers
+		if isNewWorker && app.workerEventService != nil {
+			app.workerEventService.RecordWorkerStarted(app.ctx, podName, endpoint)
 		}
 	})
 
@@ -531,6 +544,10 @@ func (app *Application) setupPodStatusWatcher(k8sProvider *k8s.K8sDeploymentProv
 
 	// Watch pod deletions to mark workers as OFFLINE
 	err = k8sProvider.WatchPodDelete(app.ctx, func(podName, endpoint string) {
+		// Record WORKER_OFFLINE event before marking offline
+		if app.workerEventService != nil {
+			app.workerEventService.RecordWorkerOffline(app.ctx, podName, endpoint, podName)
+		}
 		if err := app.mysqlRepo.Worker.MarkOfflineByPodName(app.ctx, podName); err != nil {
 			logger.WarnCtx(app.ctx, "Failed to mark worker offline for deleted pod %s: %v", podName, err)
 		}

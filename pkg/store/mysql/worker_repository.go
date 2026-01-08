@@ -242,6 +242,13 @@ func (r *WorkerRepository) MarkOffline(ctx context.Context, heartbeatThreshold t
 	return result.RowsAffected, result.Error
 }
 
+// GetStaleWorkers returns workers that will be marked offline
+func (r *WorkerRepository) GetStaleWorkers(ctx context.Context, threshold time.Time) ([]*model.Worker, error) {
+	var workers []*model.Worker
+	err := r.ds.DB(ctx).Where("last_heartbeat < ? AND status NOT IN ?", threshold, []string{constants.WorkerStatusOffline.String(), constants.WorkerStatusStarting.String()}).Find(&workers).Error
+	return workers, err
+}
+
 // MarkOfflineByPodName marks a specific worker as offline by pod name
 func (r *WorkerRepository) MarkOfflineByPodName(ctx context.Context, podName string) error {
 	return r.ds.DB(ctx).Model(&model.Worker{}).

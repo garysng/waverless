@@ -347,9 +347,5 @@ func (r *TaskStatisticsRepository) updateStatisticsForStatusChange(ctx context.C
 		return result.Error
 	}
 
-	// Log for debugging
-	fmt.Printf("[STATS-SQL] scope=%s/%s, from=%s, to=%s, count=%d, rowsAffected=%d\n",
-		scopeType, *actualScopeValue, fromStatus, toStatus, count, result.RowsAffected)
-
 	return nil
 }

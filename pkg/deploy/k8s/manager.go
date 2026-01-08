@@ -341,7 +341,12 @@ func (m *Manager) DeployApp(ctx context.Context, req *DeployAppRequest) error {
 // buildRenderContext builds render context (simplified version)
 func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) (*RenderContext, error) {
 	// Get platform-specific configuration
-	platformConfig := spec.GetPlatformConfig(m.platform.GetName())
+	platformName := m.platform.GetName()
+	platformConfig := spec.GetPlatformConfig(platformName)
+
+	// Debug logging
+	logger.InfoCtx(context.Background(), "[SPEC-CONVERT] buildRenderContext: platform=%s, spec.Platforms=%+v", platformName, spec.Platforms)
+	logger.InfoCtx(context.Background(), "[SPEC-CONVERT] platformConfig: NodeSelector=%+v, Tolerations=%+v", platformConfig.NodeSelector, platformConfig.Tolerations)
 
 	// Ensure NodeSelector is initialized (not nil) to avoid template rendering issues
 	nodeSelector := platformConfig.NodeSelector

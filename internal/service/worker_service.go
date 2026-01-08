@@ -17,10 +17,11 @@ import (
 
 // WorkerService Worker service (MySQL-based)
 type WorkerService struct {
-	workerRepo        *mysql.WorkerRepository
-	taskRepo          *mysql.TaskRepository
-	taskService       *TaskService
-	k8sDeployProvider *k8s.K8sDeploymentProvider
+	workerRepo         *mysql.WorkerRepository
+	taskRepo           *mysql.TaskRepository
+	taskService        *TaskService
+	workerEventService *WorkerEventService
+	k8sDeployProvider  *k8s.K8sDeploymentProvider
 }
 
 // NewWorkerService creates a new Worker service
@@ -30,6 +31,11 @@ func NewWorkerService(workerRepo *mysql.WorkerRepository, taskRepo *mysql.TaskRe
 		taskRepo:          taskRepo,
 		k8sDeployProvider: k8sDeployProvider,
 	}
+}
+
+// SetWorkerEventService sets the worker event service
+func (s *WorkerService) SetWorkerEventService(svc *WorkerEventService) {
+	s.workerEventService = svc
 }
 
 // SetTaskService sets the task service (for circular dependency resolution)
@@ -43,16 +49,29 @@ func (s *WorkerService) HandleHeartbeat(ctx context.Context, req *model.Heartbea
 		endpoint = "default"
 	}
 
-	// Get existing worker to check previous job count
+	// Get existing worker to check previous status and job count
 	existingWorker, _ := s.workerRepo.Get(ctx, req.WorkerID)
 	previousJobs := 0
+	wasStarting := false
+	var coldStartMs *int64
 	if existingWorker != nil {
 		previousJobs = existingWorker.CurrentJobs
+		wasStarting = existingWorker.Status == constants.WorkerStatusStarting.String()
+		coldStartMs = existingWorker.ColdStartDurationMs
 	}
 
 	// Update heartbeat in MySQL
 	if err := s.workerRepo.UpdateHeartbeat(ctx, req.WorkerID, endpoint, req.JobsInProgress, req.Version); err != nil {
 		return fmt.Errorf("failed to update heartbeat: %w", err)
+	}
+
+	// Record WORKER_REGISTERED event when worker transitions from STARTING to ONLINE
+	if wasStarting && s.workerEventService != nil {
+		podName := req.WorkerID
+		if existingWorker != nil {
+			podName = existingWorker.PodName
+		}
+		s.workerEventService.RecordWorkerRegistered(ctx, req.WorkerID, endpoint, podName, coldStartMs)
 	}
 
 	// Update LastTaskTime when worker becomes idle (completed all tasks)
@@ -121,6 +140,12 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 		batchSize = availableSlots
 	}
 
+	// Calculate idle duration before pulling tasks
+	var idleDurationMs int64
+	if worker.LastTaskTime != nil && worker.CurrentJobs == 0 {
+		idleDurationMs = time.Since(*worker.LastTaskTime).Milliseconds()
+	}
+
 	// Select and assign tasks atomically in one transaction
 	assignedTasks, err := s.taskRepo.SelectAndAssignTasks(ctx, endpoint, batchSize, req.WorkerID)
 	if err != nil {
@@ -129,6 +154,11 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 
 	if len(assignedTasks) == 0 {
 		return &model.JobPullResponse{Jobs: []model.JobInfo{}}, nil
+	}
+
+	// Record WORKER_TASK_PULLED event (once per pull, with first task ID)
+	if s.workerEventService != nil && idleDurationMs > 0 {
+		s.workerEventService.RecordWorkerTaskPulled(ctx, req.WorkerID, endpoint, worker.PodName, assignedTasks[0].TaskID, idleDurationMs)
 	}
 
 	// Convert to response
@@ -213,6 +243,13 @@ func (s *WorkerService) UpdateWorkerStatus(ctx context.Context, workerID string,
 // CleanupOfflineWorkers cleans up offline Workers and reclaims their tasks
 func (s *WorkerService) CleanupOfflineWorkers(ctx context.Context) error {
 	timeout := time.Duration(config.GlobalConfig.Worker.HeartbeatTimeout) * time.Second
+	threshold := time.Now().Add(-timeout)
+
+	// Get workers that will be marked offline (for event recording)
+	var staleWorkers []*mysqlModel.Worker
+	if s.workerEventService != nil {
+		staleWorkers, _ = s.workerRepo.GetStaleWorkers(ctx, threshold)
+	}
 
 	// Mark stale workers as offline
 	affected, err := s.workerRepo.MarkOffline(ctx, timeout)
@@ -221,6 +258,12 @@ func (s *WorkerService) CleanupOfflineWorkers(ctx context.Context) error {
 	}
 	if affected > 0 {
 		logger.InfoCtx(ctx, "marked %d stale workers as OFFLINE", affected)
+		// Record WORKER_OFFLINE events
+		if s.workerEventService != nil {
+			for _, w := range staleWorkers {
+				s.workerEventService.RecordWorkerOffline(ctx, w.WorkerID, w.Endpoint, w.PodName)
+			}
+		}
 	}
 
 	// Get all workers to check for task reclamation
@@ -243,9 +286,13 @@ func (s *WorkerService) CleanupOfflineWorkers(ctx context.Context) error {
 }
 
 // RecordTaskCompletion records task completion stats for a worker
-func (s *WorkerService) RecordTaskCompletion(ctx context.Context, workerID string, completed bool, executionTimeMs int64) {
+func (s *WorkerService) RecordTaskCompletion(ctx context.Context, workerID, endpoint, taskID string, completed bool, executionTimeMs int64) {
 	if err := s.workerRepo.IncrementTaskStats(ctx, workerID, completed, executionTimeMs); err != nil {
 		logger.WarnCtx(ctx, "failed to record task completion stats for worker %s: %v", workerID, err)
+	}
+	// Record WORKER_TASK_COMPLETED event
+	if completed && s.workerEventService != nil {
+		s.workerEventService.RecordWorkerTaskCompleted(ctx, workerID, endpoint, taskID, executionTimeMs)
 	}
 }
 

@@ -10,7 +10,6 @@ const (
 	EventWorkerRegistered    WorkerEventType = "WORKER_REGISTERED"     // Worker registered (ready to pull tasks)
 	EventWorkerTaskPulled    WorkerEventType = "WORKER_TASK_PULLED"    // Worker pulled a task
 	EventWorkerTaskCompleted WorkerEventType = "WORKER_TASK_COMPLETED" // Worker completed a task
-	EventWorkerIdle          WorkerEventType = "WORKER_IDLE"           // Worker became idle
 	EventWorkerOffline       WorkerEventType = "WORKER_OFFLINE"        // Worker went offline
 )
 

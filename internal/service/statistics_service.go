@@ -91,20 +91,14 @@ func (s *StatisticsService) RefreshAllStatistics(ctx context.Context) error {
 // UpdateStatisticsOnTaskStatusChange updates statistics when a task status changes
 // This should be called asynchronously after task status updates
 func (s *StatisticsService) UpdateStatisticsOnTaskStatusChange(ctx context.Context, endpoint string, fromStatus, toStatus string) {
-	logger.InfoCtx(ctx, "[STATS] updating: endpoint=%s, from=%s, to=%s, count=1", endpoint, fromStatus, toStatus)
 	if err := s.statsRepo.IncrementStatistics(ctx, endpoint, fromStatus, toStatus, 1); err != nil {
-		logger.ErrorCtx(ctx, "[STATS] failed: endpoint=%s, from=%s, to=%s, err=%v", endpoint, fromStatus, toStatus, err)
-	} else {
-		logger.InfoCtx(ctx, "[STATS] success: endpoint=%s, from=%s, to=%s", endpoint, fromStatus, toStatus)
+		logger.ErrorCtx(ctx, "failed to update statistics for status change (endpoint: %s, from: %s, to: %s): %v", endpoint, fromStatus, toStatus, err)
 	}
 }
 
 // UpdateStatisticsOnTaskStatusChangeBatch updates statistics for batch status changes
 func (s *StatisticsService) UpdateStatisticsOnTaskStatusChangeBatch(ctx context.Context, endpoint string, fromStatus, toStatus string, count int) {
-	logger.InfoCtx(ctx, "[STATS] batch updating: endpoint=%s, from=%s, to=%s, count=%d", endpoint, fromStatus, toStatus, count)
 	if err := s.statsRepo.IncrementStatistics(ctx, endpoint, fromStatus, toStatus, count); err != nil {
-		logger.ErrorCtx(ctx, "[STATS] batch failed: endpoint=%s, from=%s, to=%s, count=%d, err=%v", endpoint, fromStatus, toStatus, count, err)
-	} else {
-		logger.InfoCtx(ctx, "[STATS] batch success: endpoint=%s, from=%s, to=%s, count=%d", endpoint, fromStatus, toStatus, count)
+		logger.ErrorCtx(ctx, "failed to update statistics for batch status change (endpoint: %s, from: %s, to: %s, count: %d): %v", endpoint, fromStatus, toStatus, count, err)
 	}
 }
