@@ -284,7 +284,7 @@ func (s *TaskService) UpdateTaskResult(ctx context.Context, req *model.JobResult
 		if mysqlTask.StartedAt != nil {
 			executionMs = now.Sub(*mysqlTask.StartedAt).Milliseconds()
 		}
-		go s.workerService.RecordTaskCompletion(context.Background(), mysqlTask.WorkerID, mysqlTask.Endpoint, mysqlTask.TaskID, newStatus == "COMPLETED", executionMs)
+		go s.workerService.RecordTaskCompletion(context.Background(), mysqlTask.WorkerID, mysqlTask.Endpoint, mysqlTask.TaskID, newStatus == "COMPLETED", executionMs, now)
 	}
 
 	logger.InfoCtx(ctx, "task result updated, task_id: %s, status: %s", req.TaskID, updates["status"])

@@ -286,8 +286,8 @@ func (s *WorkerService) CleanupOfflineWorkers(ctx context.Context) error {
 }
 
 // RecordTaskCompletion records task completion stats for a worker
-func (s *WorkerService) RecordTaskCompletion(ctx context.Context, workerID, endpoint, taskID string, completed bool, executionTimeMs int64) {
-	if err := s.workerRepo.IncrementTaskStats(ctx, workerID, completed, executionTimeMs); err != nil {
+func (s *WorkerService) RecordTaskCompletion(ctx context.Context, workerID, endpoint, taskID string, completed bool, executionTimeMs int64, completedAt time.Time) {
+	if err := s.workerRepo.IncrementTaskStatsAt(ctx, workerID, completed, executionTimeMs, completedAt); err != nil {
 		logger.WarnCtx(ctx, "failed to record task completion stats for worker %s: %v", workerID, err)
 	}
 	// Record WORKER_TASK_COMPLETED event (for both success and failure)

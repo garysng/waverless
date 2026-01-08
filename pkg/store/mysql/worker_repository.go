@@ -182,10 +182,15 @@ func (r *WorkerRepository) UpdateStatus(ctx context.Context, workerID string, st
 
 // IncrementTaskStats increments task completion statistics
 func (r *WorkerRepository) IncrementTaskStats(ctx context.Context, workerID string, completed bool, executionTimeMs int64) error {
+	return r.IncrementTaskStatsAt(ctx, workerID, completed, executionTimeMs, time.Now())
+}
+
+// IncrementTaskStatsAt increments task completion statistics with specific time
+func (r *WorkerRepository) IncrementTaskStatsAt(ctx context.Context, workerID string, completed bool, executionTimeMs int64, completedAt time.Time) error {
 	updates := map[string]interface{}{
-		"last_task_time":          time.Now(),
+		"last_task_time":          completedAt,
 		"total_execution_time_ms": gorm.Expr("total_execution_time_ms + ?", executionTimeMs),
-		"updated_at":              time.Now(),
+		"updated_at":              completedAt,
 	}
 	if completed {
 		updates["total_tasks_completed"] = gorm.Expr("total_tasks_completed + 1")
