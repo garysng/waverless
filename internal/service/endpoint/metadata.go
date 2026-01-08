@@ -170,50 +170,6 @@ func (m *MetadataManager) Delete(ctx context.Context, name string) error {
 	return m.endpointRepo.Delete(ctx, name)
 }
 
-// GetStats aggregates worker/task metrics for the provided endpoint.
-func (m *MetadataManager) GetStats(ctx context.Context, name string) (*interfaces.EndpointStats, error) {
-	if m.taskRepo == nil || m.workerLister == nil {
-		return nil, fmt.Errorf("stats repositories not configured")
-	}
-
-	stats := &interfaces.EndpointStats{
-		Endpoint: name,
-		From:     time.Now().Add(-1 * time.Hour),
-		To:       time.Now(),
-	}
-
-	if count, err := m.taskRepo.CountByEndpointAndStatus(ctx, name, "PENDING"); err == nil {
-		stats.PendingTasks = int(count)
-	}
-	if count, err := m.taskRepo.CountByEndpointAndStatus(ctx, name, "IN_PROGRESS"); err == nil {
-		stats.RunningTasks = int(count)
-	}
-	if count, err := m.taskRepo.CountByEndpointAndStatus(ctx, name, "COMPLETED"); err == nil {
-		stats.CompletedTasks = int(count)
-	}
-	if count, err := m.taskRepo.CountByEndpointAndStatus(ctx, name, "FAILED"); err == nil {
-		stats.FailedTasks = int(count)
-	}
-
-	// Use workerLister to fetch workers for this endpoint
-	workers, err := m.workerLister.ListWorkers(ctx, name)
-	if err == nil {
-		for _, worker := range workers {
-			stats.TotalWorkers++
-			switch string(worker.Status) {
-			case "BUSY":
-				stats.BusyWorkers++
-			case "ONLINE":
-				stats.OnlineWorkers++
-			case "DRAINING":
-				// DRAINING workers are still counted as total but not online/busy
-			}
-		}
-	}
-
-	return stats, nil
-}
-
 func (m *MetadataManager) saveAutoscalerConfig(ctx context.Context, meta *interfaces.EndpointMetadata) error {
 	if meta == nil {
 		return fmt.Errorf("endpoint metadata is nil")

@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"strconv"
 
+	"waverless/internal/model"
 	"waverless/internal/service"
+	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -12,13 +14,15 @@ import (
 
 // StatisticsHandler handles statistics-related HTTP requests
 type StatisticsHandler struct {
-	statsService *service.StatisticsService
+	statsService  *service.StatisticsService
+	workerService *service.WorkerService
 }
 
 // NewStatisticsHandler creates a new statistics handler
-func NewStatisticsHandler(statsService *service.StatisticsService) *StatisticsHandler {
+func NewStatisticsHandler(statsService *service.StatisticsService, workerService *service.WorkerService) *StatisticsHandler {
 	return &StatisticsHandler{
-		statsService: statsService,
+		statsService:  statsService,
+		workerService: workerService,
 	}
 }
 
@@ -70,15 +74,28 @@ func (h *StatisticsHandler) GetEndpointStatistics(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"endpoint":    endpoint,
-		"total":       stats.TotalCount,
-		"pending":     stats.PendingCount,
-		"in_progress": stats.InProgressCount,
-		"completed":   stats.CompletedCount,
-		"failed":      stats.FailedCount,
-		"cancelled":   stats.CancelledCount,
-		"updated_at":  stats.UpdatedAt,
+	// Get worker statistics
+	workers, _ := h.workerService.ListWorkers(c.Request.Context(), endpoint)
+	onlineWorkers := 0
+	busyWorkers := 0
+	for _, w := range workers {
+		switch w.Status {
+		case model.WorkerStatusOnline, model.WorkerStatusDraining:
+			onlineWorkers++
+		case model.WorkerStatusBusy:
+			onlineWorkers++
+			busyWorkers++
+		}
+	}
+
+	c.JSON(http.StatusOK, interfaces.EndpointStats{
+		Endpoint:       endpoint,
+		PendingTasks:   stats.PendingCount,
+		RunningTasks:   stats.InProgressCount,
+		CompletedTasks: stats.CompletedCount,
+		FailedTasks:    stats.FailedCount,
+		OnlineWorkers:  onlineWorkers,
+		BusyWorkers:    busyWorkers,
 	})
 }
 

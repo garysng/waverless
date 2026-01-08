@@ -49,9 +49,9 @@ const EndpointDetailPage = () => {
 
   const { data: taskStats } = useQuery({
     queryKey: ['endpoint-task-stats', name],
-    queryFn: async () => (await api.get(`/api/v1/endpoints/${name}/task-stats`)).data,
+    queryFn: async () => (await api.get(`/api/v1/statistics/endpoints/${name}`)).data,
     enabled: !!name,
-    refetchInterval: 10000,
+    refetchInterval: 1000,
   });
 
   const { data: workers } = useQuery({

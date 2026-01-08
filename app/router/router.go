@@ -53,9 +53,9 @@ func (r *Router) Setup(engine *gin.Engine) {
 		{
 			endpoint.POST("/run", r.taskHandler.SubmitWithEndpoint)
 			endpoint.POST("/runsync", r.taskHandler.SubmitSyncWithEndpoint)
-			endpoint.GET("/status/:task_id", r.taskHandler.Status)  // Reuse existing
-			endpoint.POST("/cancel/:task_id", r.taskHandler.Cancel) // Reuse existing
-			endpoint.GET("/stats", r.taskHandler.GetEndpointStats)  // endpoint statistics
+			endpoint.GET("/status/:task_id", r.taskHandler.Status)       // Reuse existing
+			endpoint.POST("/cancel/:task_id", r.taskHandler.Cancel)      // Reuse existing
+			endpoint.GET("/stats", r.taskHandler.GetEndpointStats)       // endpoint statistics
 			endpoint.GET("/check", r.taskHandler.CheckSubmitEligibility) // check if task submission is recommended
 
 			// Monitoring APIs
@@ -93,7 +93,6 @@ func (r *Router) Setup(engine *gin.Engine) {
 				endpoints.POST("/preview", r.endpointHandler.PreviewDeploymentYAML)                // Preview YAML
 				endpoints.GET("", r.endpointHandler.ListEndpoints)                                 // List endpoints
 				endpoints.GET("/:name", r.endpointHandler.GetEndpoint)                             // Get endpoint detail
-				endpoints.GET("/:name/task-stats", r.endpointHandler.GetEndpointTaskStats)         // Task statistics
 				endpoints.PUT("/:name", r.endpointHandler.UpdateEndpoint)                          // Update metadata
 				endpoints.PATCH("/:name/deployment", r.endpointHandler.UpdateEndpointDeployment)   // Update deployment
 				endpoints.DELETE("/:name", r.endpointHandler.DeleteEndpoint)                       // Delete endpoint
@@ -105,8 +104,8 @@ func (r *Router) Setup(engine *gin.Engine) {
 
 				// Image update check
 				if r.imageHandler != nil {
-					endpoints.POST("/:name/check-image", r.imageHandler.CheckImageUpdate)     // Check image update for specific endpoint
-					endpoints.POST("/check-images", r.imageHandler.CheckAllImagesUpdate)      // Check image updates for all endpoints
+					endpoints.POST("/:name/check-image", r.imageHandler.CheckImageUpdate) // Check image update for specific endpoint
+					endpoints.POST("/check-images", r.imageHandler.CheckAllImagesUpdate)  // Check image updates for all endpoints
 				}
 			}
 

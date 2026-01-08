@@ -151,7 +151,7 @@ func (app *Application) initServices() error {
 	app.taskService.SetWorkerService(app.workerService)
 
 	// Initialize statistics service
-	app.statisticsService = service.NewStatisticsService(app.mysqlRepo.TaskStatistics)
+	app.statisticsService = service.NewStatisticsService(app.mysqlRepo.TaskStatistics, app.mysqlRepo.Worker)
 
 	// Set statistics service on task service (for incremental statistics updates)
 	app.taskService.SetStatisticsService(app.statisticsService)
@@ -422,7 +422,7 @@ func (app *Application) initHandlers() error {
 	// Initialize handlers
 	app.taskHandler = handler.NewTaskHandler(app.taskService, app.workerService)
 	app.workerHandler = handler.NewWorkerHandler(app.workerService, app.taskService, app.deploymentProvider)
-	app.statisticsHandler = handler.NewStatisticsHandler(app.statisticsService)
+	app.statisticsHandler = handler.NewStatisticsHandler(app.statisticsService, app.workerService)
 	app.monitoringHandler = handler.NewMonitoringHandler(app.monitoringService)
 
 	// Initialize K8s Handler (Endpoint Handler)
@@ -518,7 +518,7 @@ func (app *Application) setupPodStatusWatcher(k8sProvider *k8s.K8sDeploymentProv
 				startedAt = &t
 			}
 		}
-		
+
 		// Create or update worker (status STARTING until heartbeat)
 		if err := app.mysqlRepo.Worker.UpsertFromPod(app.ctx, podName, endpoint, info.Phase, info.Status, info.Reason, info.Message, info.IP, info.NodeName, createdAt, startedAt); err != nil {
 			logger.WarnCtx(app.ctx, "Failed to upsert worker from pod %s: %v", podName, err)

@@ -77,14 +77,6 @@ func (s *Service) DeleteEndpoint(ctx context.Context, name string) error {
 	return s.metadata.Delete(ctx, name)
 }
 
-// GetEndpointStats aggregates task and worker stats for an endpoint.
-func (s *Service) GetEndpointStats(ctx context.Context, name string) (*interfaces.EndpointStats, error) {
-	if s.metadata == nil {
-		return nil, fmt.Errorf("metadata manager not configured")
-	}
-	return s.metadata.GetStats(ctx, name)
-}
-
 // Deploy triggers a deployment through the provider and persists metadata.
 func (s *Service) Deploy(ctx context.Context, req *interfaces.DeployRequest, metadata *interfaces.EndpointMetadata) (*interfaces.DeployResponse, error) {
 	if s.deployment == nil {

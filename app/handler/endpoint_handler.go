@@ -164,30 +164,6 @@ func (h *EndpointHandler) GetEndpoint(c *gin.Context) {
 	c.JSON(http.StatusOK, metadata)
 }
 
-// GetEndpointTaskStats gets task statistics for an endpoint
-// @Summary Get endpoint task statistics
-// @Description Get pending/running/completed/failed task counts
-// @Tags endpoints
-// @Param name path string true "Endpoint name"
-// @Success 200 {object} interfaces.EndpointStats
-// @Router /api/v1/endpoints/{name}/task-stats [get]
-func (h *EndpointHandler) GetEndpointTaskStats(c *gin.Context) {
-	name := c.Param("name")
-
-	if h.endpointService == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service unavailable"})
-		return
-	}
-
-	stats, err := h.endpointService.GetEndpointStats(c.Request.Context(), name)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, stats)
-}
-
 // ListEndpoints lists all endpoints
 // @Summary List all endpoints (MySQL metadata primary)
 // @Description Get all endpoint metadata and enrich with K8s runtime status (if available)
