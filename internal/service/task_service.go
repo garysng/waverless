@@ -70,28 +70,34 @@ func (s *TaskService) SubmitTask(ctx context.Context, req *model.SubmitRequest) 
 		UpdatedAt:  time.Now(),
 	}
 
-	// Save task to MySQL
 	mysqlTask := mysql.FromTaskDomain(task)
-	if err := s.taskRepo.Create(ctx, mysqlTask); err != nil {
-		return nil, fmt.Errorf("failed to save task: %w", err)
-	}
 
-	// Record TASK_CREATED event (task is in MySQL with PENDING status, worker will pull directly from database)
-	s.recordTaskCreated(ctx, mysqlTask)
+	// Execute all operations in a single transaction
+	err := s.taskRepo.ExecTx(ctx, func(txCtx context.Context) error {
+		// 1. Create task
+		if err := s.taskRepo.Create(txCtx, mysqlTask); err != nil {
+			return fmt.Errorf("failed to save task: %w", err)
+		}
 
-	// Record TASK_QUEUED event
-	s.recordTaskQueued(ctx, mysqlTask)
+		// 2. Record events and update extend field
+		s.recordTaskCreated(txCtx, mysqlTask)
+		s.recordTaskQueued(txCtx, mysqlTask)
+		if err := s.taskRepo.UpdateFields(txCtx, mysqlTask.TaskID, map[string]interface{}{
+			"extend": mysqlTask.Extend,
+		}); err != nil {
+			return fmt.Errorf("failed to update task extend: %w", err)
+		}
 
-	// Save updated extend field
-	if err := s.taskRepo.UpdateFields(ctx, mysqlTask.TaskID, map[string]interface{}{
-		"extend": mysqlTask.Extend,
-	}); err != nil {
-		logger.ErrorCtx(ctx, "failed to update task extend: %v", err)
-	}
+		// 3. Update statistics
+		if s.statisticsService != nil {
+			s.statisticsService.UpdateStatisticsOnTaskStatusChange(txCtx, endpoint, "", "PENDING")
+		}
 
-	// Asynchronously update statistics (new task: fromStatus="", toStatus=PENDING)
-	if s.statisticsService != nil {
-		go s.statisticsService.UpdateStatisticsOnTaskStatusChange(context.Background(), endpoint, "", "PENDING")
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
 	}
 
 	logger.InfoCtx(ctx, "task submitted, task_id: %s, endpoint: %s", taskID, endpoint)
