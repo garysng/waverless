@@ -49,7 +49,29 @@ client.interceptors.response.use(
 );
 
 export const api = {
-  // Apps
+  // Generic get for custom endpoints
+  get: (url: string, config?: any) => axios.get(url, { ...config, baseURL: window.location.origin }),
+
+  // Endpoints (renamed from apps)
+  endpoints: {
+    list: () => client.get<{ endpoints: AppInfo[] }>('/endpoints'),
+    get: (name: string) => client.get<AppInfo>(`/endpoints/${name}`),
+    create: (data: DeployRequest) => client.post<DeployResponse>('/endpoints', data),
+    update: (name: string, data: UpdateDeploymentRequest) =>
+      client.patch<DeployResponse>(`/endpoints/${name}/deployment`, data),
+    updateDeployment: (name: string, data: UpdateDeploymentRequest) =>
+      client.patch<DeployResponse>(`/endpoints/${name}/deployment`, data),
+    updateMetadata: (name: string, data: UpdateEndpointConfigRequest) =>
+      client.put<{ message: string; name: string }>(`/endpoints/${name}`, data),
+    delete: (name: string) => client.delete(`/endpoints/${name}`),
+    logs: (name: string, lines: number = 100, podName?: string) =>
+      client.get<string>(`/endpoints/${name}/logs`, { params: { lines, pod_name: podName } }),
+    getWorkers: (name: string) => client.get<{ workers: WorkerWithPodInfo[] }>(`/endpoints/${name}/workers`),
+    describePod: (endpoint: string, podName: string) =>
+      client.get<PodDetail>(`/endpoints/${endpoint}/workers/${podName}/describe`),
+  },
+
+  // Apps (legacy alias)
   apps: {
     list: () => client.get<AppInfo[]>('/endpoints'),
     get: (name: string) => client.get<AppInfo>(`/endpoints/${name}`),

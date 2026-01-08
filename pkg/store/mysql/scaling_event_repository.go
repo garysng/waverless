@@ -41,6 +41,16 @@ func (r *ScalingEventRepository) ListByEndpoint(ctx context.Context, endpoint st
 	return events, nil
 }
 
+// GetLatestByEndpoint retrieves the most recent scaling event for an endpoint
+func (r *ScalingEventRepository) GetLatestByEndpoint(ctx context.Context, endpoint string) (*ScalingEvent, error) {
+	var event ScalingEvent
+	err := r.ds.DB(ctx).Where("endpoint = ?", endpoint).Order("timestamp DESC").First(&event).Error
+	if err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
 // ListRecent retrieves the most recent scaling events
 func (r *ScalingEventRepository) ListRecent(ctx context.Context, limit int) ([]*ScalingEvent, error) {
 	if limit <= 0 {

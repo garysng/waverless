@@ -15,7 +15,6 @@ import (
 	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
 	"waverless/pkg/store/mysql"
-	redisstore "waverless/pkg/store/redis"
 )
 
 // Manager 自动扩缩容管理器
@@ -39,9 +38,15 @@ type Manager struct {
 	scalingEventRepo   *mysql.ScalingEventRepository
 	lastRunTime        time.Time
 	specManager        *k8s.SpecManager
-	redisClient        *redis.Client   // Redis用于全局配置存储
-	configKey          string          // 全局配置key
-	distributedLock    DistributedLock // 分布式锁，防止多副本冲突
+	redisClient        *redis.Client            // Redis用于全局配置存储
+	configKey          string                   // 全局配置key
+	distributedLock    DistributedLock          // 分布式锁，防止多副本冲突
+	workerLister       interfaces.WorkerLister  // For worker queries
+
+	// 缓存集群资源状态，避免每次 API 调用都重新计算
+	cachedClusterMu        sync.RWMutex
+	cachedClusterResources *ClusterResources
+	cachedClusterTime      time.Time
 }
 
 // NewManager 创建自动扩缩容管理器
@@ -49,7 +54,7 @@ func NewManager(
 	config *Config,
 	deploymentProvider interfaces.DeploymentProvider,
 	endpointService *endpointsvc.Service,
-	workerRepo *redisstore.WorkerRepository,
+	workerLister interfaces.WorkerLister,
 	taskRepo *mysql.TaskRepository,
 	scalingEventRepo *mysql.ScalingEventRepository,
 	redisClient *redis.Client,
@@ -57,8 +62,8 @@ func NewManager(
 ) *Manager {
 	resourceCalculator := NewResourceCalculator(deploymentProvider, endpointService, specManager)
 	decisionEngine := NewDecisionEngine(config, resourceCalculator)
-	executor := NewExecutor(deploymentProvider, endpointService, scalingEventRepo, workerRepo, taskRepo) // 添加 workerRepo 和 taskRepo 参数
-	metricsCollector := NewMetricsCollector(deploymentProvider, endpointService, workerRepo, taskRepo)
+	executor := NewExecutor(deploymentProvider, endpointService, scalingEventRepo, workerLister, taskRepo)
+	metricsCollector := NewMetricsCollector(deploymentProvider, endpointService, workerLister, taskRepo)
 
 	// 创建分布式锁（如果 redisClient 为 nil，锁会自动降级为单实例模式）
 	distributedLock := NewRedisDistributedLock(redisClient, autoscalerLockKey)
@@ -78,6 +83,7 @@ func NewManager(
 		executor:           executor,
 		scalingEventRepo:   scalingEventRepo,
 		specManager:        specManager,
+		workerLister:       workerLister,
 		redisClient:        redisClient,
 		configKey:          "autoscaler:global-config",
 		distributedLock:    distributedLock,
@@ -323,6 +329,12 @@ func (m *Manager) runOnce(ctx context.Context) error {
 		return fmt.Errorf("failed to calculate cluster resources: %w", err)
 	}
 
+	// 更新缓存
+	m.cachedClusterMu.Lock()
+	m.cachedClusterResources = clusterResources
+	m.cachedClusterTime = time.Now()
+	m.cachedClusterMu.Unlock()
+
 	logger.DebugCtx(ctx, "cluster resources: total=%+v, used=%+v, available=%+v",
 		clusterResources.Total, clusterResources.Used, clusterResources.Available)
 
@@ -454,6 +466,48 @@ func (m *Manager) runForTargets(ctx context.Context, targets []string) error {
 func (m *Manager) TriggerScale(ctx context.Context, endpoint string) error {
 	logger.InfoCtx(ctx, "manually triggering scale for endpoint: %s", endpoint)
 	return m.runOnce(ctx)
+}
+
+// GetClusterResourcesOnly 获取集群资源状态（轻量接口，优先使用缓存）
+func (m *Manager) GetClusterResourcesOnly(ctx context.Context) (*ClusterResourcesStatus, error) {
+	m.mu.RLock()
+	enabled := m.enabled
+	running := m.running
+	lastRunTime := m.lastRunTime
+	m.mu.RUnlock()
+
+	m.cachedClusterMu.RLock()
+	cached := m.cachedClusterResources
+	m.cachedClusterMu.RUnlock()
+
+	// 如果没有缓存，实时计算一次
+	if cached == nil {
+		endpoints, err := m.metricsCollector.CollectEndpointMetrics(ctx)
+		if err != nil {
+			return nil, err
+		}
+		maxResources := &Resources{
+			GPUCount: m.config.MaxGPUCount,
+			CPUCores: float64(m.config.MaxCPUCores),
+			MemoryGB: float64(m.config.MaxMemoryGB),
+		}
+		cached, err = m.resourceCalculator.CalculateClusterResources(ctx, endpoints, maxResources)
+		if err != nil {
+			return nil, err
+		}
+		// 更新缓存
+		m.cachedClusterMu.Lock()
+		m.cachedClusterResources = cached
+		m.cachedClusterTime = time.Now()
+		m.cachedClusterMu.Unlock()
+	}
+
+	return &ClusterResourcesStatus{
+		Enabled:          enabled,
+		Running:          running,
+		LastRunTime:      lastRunTime,
+		ClusterResources: *cached,
+	}, nil
 }
 
 // GetStatus 获取自动扩缩容状态
@@ -738,7 +792,7 @@ func (m *Manager) checkAndScaleDownIdleWorkers(ctx context.Context, endpoints []
 	// Check each endpoint for long-idle workers
 	for _, ep := range endpoints {
 		// Get workers for this endpoint only (optimized query)
-		workers, err := m.executor.workerRepo.GetByEndpoint(ctx, ep.Name)
+		workers, err := m.workerLister.ListWorkers(ctx, ep.Name)
 		if err != nil {
 			logger.ErrorCtx(ctx, "failed to get workers for endpoint %s: %v", ep.Name, err)
 			continue

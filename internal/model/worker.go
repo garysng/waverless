@@ -8,6 +8,7 @@ import (
 type WorkerStatus string
 
 const (
+	WorkerStatusStarting WorkerStatus = "STARTING" // Starting - pod created, waiting for heartbeat
 	WorkerStatusOnline   WorkerStatus = "ONLINE"   // Online - normal operation
 	WorkerStatusOffline  WorkerStatus = "OFFLINE"  // Offline - disconnected
 	WorkerStatusBusy     WorkerStatus = "BUSY"     // Busy - processing tasks

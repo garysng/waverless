@@ -7,7 +7,6 @@ import (
 
 	"waverless/pkg/interfaces"
 	"waverless/pkg/store/mysql"
-	redisstore "waverless/pkg/store/redis"
 )
 
 // Service coordinates endpoint metadata, deployment, and scaling responsibilities.
@@ -23,10 +22,10 @@ func NewService(
 	endpointRepo *mysql.EndpointRepository,
 	autoscalerConfigRepo *mysql.AutoscalerConfigRepository,
 	taskRepo *mysql.TaskRepository,
-	workerRepo *redisstore.WorkerRepository,
+	workerLister workerLister,
 	deploymentProvider interfaces.DeploymentProvider,
 ) *Service {
-	metadata := NewMetadataManager(endpointRepo, autoscalerConfigRepo, taskRepo, workerRepo)
+	metadata := NewMetadataManager(endpointRepo, autoscalerConfigRepo, taskRepo, workerLister)
 	deployment := NewDeploymentManager(deploymentProvider, metadata)
 	scaler := NewScalerManager(deploymentProvider, endpointRepo, autoscalerConfigRepo)
 

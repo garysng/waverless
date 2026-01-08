@@ -15,7 +15,7 @@ import (
 	"waverless/pkg/config"
 	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
-	"waverless/pkg/queue/asynq"
+	"waverless/pkg/monitoring"
 	mysqlstore "waverless/pkg/store/mysql"
 	redisstore "waverless/pkg/store/redis"
 
@@ -28,18 +28,17 @@ type Application struct {
 	config      *config.Config
 	mysqlRepo   *mysqlstore.Repository
 	redisClient *redisstore.RedisClient
-	queueMgr    *asynq.Manager
 
 	// Business providers
 	deploymentProvider interfaces.DeploymentProvider
 
 	// Service layer
-	endpointService   *endpointsvc.Service
-	taskService       *service.TaskService
-	workerService     *service.WorkerService
-	statisticsService *service.StatisticsService
-	gpuUsageService   *service.GPUUsageService
-	specService       *service.SpecService
+	endpointService    *endpointsvc.Service
+	taskService        *service.TaskService
+	workerService      *service.WorkerService
+	statisticsService  *service.StatisticsService
+	specService        *service.SpecService
+	monitoringService  *service.MonitoringService
 
 	// Handler layer
 	taskHandler       *handler.TaskHandler
@@ -47,9 +46,12 @@ type Application struct {
 	endpointHandler   *handler.EndpointHandler
 	autoscalerHandler *handler.AutoScalerHandler
 	statisticsHandler *handler.StatisticsHandler
-	gpuUsageHandler   *handler.GPUUsageHandler
 	specHandler       *handler.SpecHandler
 	imageHandler      *handler.ImageHandler
+	monitoringHandler *handler.MonitoringHandler
+
+	// Monitoring
+	monitoringCollector *monitoring.Collector
 
 	// Auto-scaler
 	autoscalerMgr *autoscaler.Manager
@@ -94,7 +96,6 @@ func (app *Application) Initialize() error {
 		{"MySQL", app.initMySQL},
 		{"Redis", app.initRedis},
 		{"Business Providers", app.initProviders},
-		{"Queue Manager", app.initQueue},
 		{"Service Layer", app.initServices},
 		{"Background Tasks", app.initJobs},
 		{"Handler Layer", app.initHandlers},

@@ -14,22 +14,22 @@ type Router struct {
 	endpointHandler   *handler.EndpointHandler
 	autoscalerHandler *handler.AutoScalerHandler
 	statisticsHandler *handler.StatisticsHandler
-	gpuUsageHandler   *handler.GPUUsageHandler
 	specHandler       *handler.SpecHandler
 	imageHandler      *handler.ImageHandler
+	monitoringHandler *handler.MonitoringHandler
 }
 
 // NewRouter creates a new Router
-func NewRouter(taskHandler *handler.TaskHandler, workerHandler *handler.WorkerHandler, endpointHandler *handler.EndpointHandler, autoscalerHandler *handler.AutoScalerHandler, statisticsHandler *handler.StatisticsHandler, gpuUsageHandler *handler.GPUUsageHandler, specHandler *handler.SpecHandler, imageHandler *handler.ImageHandler) *Router {
+func NewRouter(taskHandler *handler.TaskHandler, workerHandler *handler.WorkerHandler, endpointHandler *handler.EndpointHandler, autoscalerHandler *handler.AutoScalerHandler, statisticsHandler *handler.StatisticsHandler, specHandler *handler.SpecHandler, imageHandler *handler.ImageHandler, monitoringHandler *handler.MonitoringHandler) *Router {
 	return &Router{
 		taskHandler:       taskHandler,
 		workerHandler:     workerHandler,
 		endpointHandler:   endpointHandler,
 		autoscalerHandler: autoscalerHandler,
 		statisticsHandler: statisticsHandler,
-		gpuUsageHandler:   gpuUsageHandler,
 		specHandler:       specHandler,
 		imageHandler:      imageHandler,
+		monitoringHandler: monitoringHandler,
 	}
 }
 
@@ -57,6 +57,14 @@ func (r *Router) Setup(engine *gin.Engine) {
 			endpoint.POST("/cancel/:task_id", r.taskHandler.Cancel) // Reuse existing
 			endpoint.GET("/stats", r.taskHandler.GetEndpointStats)  // endpoint statistics
 			endpoint.GET("/check", r.taskHandler.CheckSubmitEligibility) // check if task submission is recommended
+
+			// Monitoring APIs
+			if r.monitoringHandler != nil {
+				endpoint.GET("/metrics/realtime", r.monitoringHandler.GetRealtimeMetrics)
+				endpoint.GET("/stats/minute", r.monitoringHandler.GetMinuteStats)
+				endpoint.GET("/stats/hourly", r.monitoringHandler.GetHourlyStats)
+				endpoint.GET("/stats/daily", r.monitoringHandler.GetDailyStats)
+			}
 		}
 	}
 
@@ -87,6 +95,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 				endpoints.POST("/preview", r.endpointHandler.PreviewDeploymentYAML)                // Preview YAML
 				endpoints.GET("", r.endpointHandler.ListEndpoints)                                 // List endpoints
 				endpoints.GET("/:name", r.endpointHandler.GetEndpoint)                             // Get endpoint detail
+				endpoints.GET("/:name/task-stats", r.endpointHandler.GetEndpointTaskStats)         // Task statistics
 				endpoints.PUT("/:name", r.endpointHandler.UpdateEndpoint)                          // Update metadata
 				endpoints.PATCH("/:name/deployment", r.endpointHandler.UpdateEndpointDeployment)   // Update deployment
 				endpoints.DELETE("/:name", r.endpointHandler.DeleteEndpoint)                       // Delete endpoint
@@ -179,18 +188,6 @@ func (r *Router) Setup(engine *gin.Engine) {
 					statistics.GET("/overview", r.statisticsHandler.GetOverview)                      // Global statistics
 					statistics.GET("/endpoints", r.statisticsHandler.GetTopEndpoints)                 // Top endpoints by task volume
 					statistics.GET("/endpoints/:endpoint", r.statisticsHandler.GetEndpointStatistics) // Specific endpoint statistics
-				}
-			}
-
-			// GPU Usage APIs
-			if r.gpuUsageHandler != nil {
-				gpuUsage := api.Group("/gpu-usage")
-				{
-					gpuUsage.GET("/minute", r.gpuUsageHandler.GetMinuteStatistics)       // Minute-level statistics
-					gpuUsage.GET("/hourly", r.gpuUsageHandler.GetHourlyStatistics)       // Hourly statistics
-					gpuUsage.GET("/daily", r.gpuUsageHandler.GetDailyStatistics)         // Daily statistics
-					gpuUsage.POST("/aggregate", r.gpuUsageHandler.TriggerAggregation)    // Manual aggregation trigger
-					gpuUsage.POST("/backfill", r.gpuUsageHandler.BackfillHistoricalData) // Backfill historical data
 				}
 			}
 		}

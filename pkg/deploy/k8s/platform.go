@@ -112,11 +112,7 @@ func (p *AWSEKSPlatform) GetNasDriver() string {
 
 func (p *AWSEKSPlatform) DetectSpotInterruption(pod *corev1.Pod) (bool, string) {
 	// AWS Karpenter spot interruption detection
-	if pod.Annotations != nil {
-		if detected, exists := pod.Annotations["spot.io/interruption-detected"]; exists && detected == "true" {
-			return true, "AWS Spot Interruption"
-		}
-	}
+	// aws not spot interruption events
 	return false, ""
 }
 

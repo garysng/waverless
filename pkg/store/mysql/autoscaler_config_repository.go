@@ -45,6 +45,16 @@ func (r *AutoscalerConfigRepository) Delete(ctx context.Context, endpoint string
 	return r.ds.DB(ctx).Where("endpoint = ?", endpoint).Delete(&AutoscalerConfig{}).Error
 }
 
+// ListByEndpoints retrieves autoscaler configurations for specified endpoints
+func (r *AutoscalerConfigRepository) ListByEndpoints(ctx context.Context, endpoints []string) ([]*AutoscalerConfig, error) {
+	if len(endpoints) == 0 {
+		return nil, nil
+	}
+	var configs []*AutoscalerConfig
+	err := r.ds.DB(ctx).Where("endpoint IN ?", endpoints).Find(&configs).Error
+	return configs, err
+}
+
 // List retrieves all autoscaler configurations
 func (r *AutoscalerConfigRepository) List(ctx context.Context) ([]*AutoscalerConfig, error) {
 	var configs []*AutoscalerConfig

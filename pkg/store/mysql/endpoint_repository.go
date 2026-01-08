@@ -110,6 +110,30 @@ func (r *EndpointRepository) UpdateStatus(ctx context.Context, endpointName stri
 		}).Error
 }
 
+// UpdateRuntimeState updates endpoint status and runtime state from K8s (merges with existing)
+func (r *EndpointRepository) UpdateRuntimeState(ctx context.Context, endpointName, status string, runtimeState map[string]interface{}) error {
+	// First get existing runtime_state to merge
+	var endpoint Endpoint
+	if err := r.ds.DB(ctx).Where("endpoint = ?", endpointName).First(&endpoint).Error; err == nil {
+		// Merge: existing values are preserved if not in new runtimeState
+		if endpoint.RuntimeState != nil {
+			for k, v := range endpoint.RuntimeState {
+				if _, exists := runtimeState[k]; !exists {
+					runtimeState[k] = v
+				}
+			}
+		}
+	}
+
+	return r.ds.DB(ctx).Model(&Endpoint{}).
+		Where("endpoint = ?", endpointName).
+		Updates(map[string]interface{}{
+			"status":        status,
+			"runtime_state": JSONMap(runtimeState),
+			"updated_at":    gorm.Expr("CURRENT_TIMESTAMP(3)"),
+		}).Error
+}
+
 // GetBySpecName queries endpoints by Spec name
 func (r *EndpointRepository) GetBySpecName(ctx context.Context, specName string) ([]*Endpoint, error) {
 	var endpoints []*Endpoint

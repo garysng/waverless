@@ -2,27 +2,29 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"waverless/internal/model"
 	"waverless/pkg/config"
+	"waverless/pkg/constants"
 	"waverless/pkg/deploy/k8s"
 	"waverless/pkg/logger"
 	"waverless/pkg/store/mysql"
-	redisstore "waverless/pkg/store/redis"
+	mysqlModel "waverless/pkg/store/mysql/model"
 )
 
-// WorkerService Worker service
+// WorkerService Worker service (MySQL-based)
 type WorkerService struct {
-	workerRepo        *redisstore.WorkerRepository
+	workerRepo        *mysql.WorkerRepository
 	taskRepo          *mysql.TaskRepository
-	taskService       *TaskService               // For task event recording
-	k8sDeployProvider *k8s.K8sDeploymentProvider // For draining check
+	taskService       *TaskService
+	k8sDeployProvider *k8s.K8sDeploymentProvider
 }
 
 // NewWorkerService creates a new Worker service
-func NewWorkerService(workerRepo *redisstore.WorkerRepository, taskRepo *mysql.TaskRepository, k8sDeployProvider *k8s.K8sDeploymentProvider) *WorkerService {
+func NewWorkerService(workerRepo *mysql.WorkerRepository, taskRepo *mysql.TaskRepository, k8sDeployProvider *k8s.K8sDeploymentProvider) *WorkerService {
 	return &WorkerService{
 		workerRepo:        workerRepo,
 		taskRepo:          taskRepo,
@@ -37,24 +39,41 @@ func (s *WorkerService) SetTaskService(taskService *TaskService) {
 
 // HandleHeartbeat handles heartbeat requests
 func (s *WorkerService) HandleHeartbeat(ctx context.Context, req *model.HeartbeatRequest, endpoint string) error {
+	if endpoint == "" {
+		endpoint = "default"
+	}
+
+	// Get existing worker to check previous job count
+	existingWorker, _ := s.workerRepo.Get(ctx, req.WorkerID)
+	previousJobs := 0
+	if existingWorker != nil {
+		previousJobs = existingWorker.CurrentJobs
+	}
+
+	// Update heartbeat in MySQL
 	if err := s.workerRepo.UpdateHeartbeat(ctx, req.WorkerID, endpoint, req.JobsInProgress, req.Version); err != nil {
 		return fmt.Errorf("failed to update heartbeat: %w", err)
 	}
 
+	// Update LastTaskTime when worker becomes idle (completed all tasks)
+	currentJobs := len(req.JobsInProgress)
+	if previousJobs > 0 && currentJobs == 0 {
+		s.workerRepo.UpdateLastTaskTime(ctx, req.WorkerID)
+	}
+
 	logger.DebugCtx(ctx, "heartbeat received, worker_id: %s, endpoint: %s, jobs_count: %d, version: %s",
-		req.WorkerID, endpoint, len(req.JobsInProgress), req.Version)
+		req.WorkerID, endpoint, currentJobs, req.Version)
 
 	return nil
 }
 
 // PullJobs pulls tasks (by endpoint)
 func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest, endpoint string) (*model.JobPullResponse, error) {
-	// Process endpoint
 	if endpoint == "" {
 		endpoint = "default"
 	}
 
-	// Update heartbeat (no version in job pull request)
+	// Update heartbeat (preserve existing version since PullJobs doesn't have version)
 	if err := s.workerRepo.UpdateHeartbeat(ctx, req.WorkerID, endpoint, req.JobsInProgress, ""); err != nil {
 		logger.ErrorCtx(ctx, "failed to update heartbeat: %v", err)
 	}
@@ -62,73 +81,39 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 	// Get worker information
 	worker, err := s.workerRepo.Get(ctx, req.WorkerID)
 	if err != nil {
-		// Worker doesn't exist, create default worker
-		worker = &model.Worker{
-			ID:             req.WorkerID,
-			Endpoint:       endpoint,
-			Status:         model.WorkerStatusOnline,
-			Concurrency:    config.GlobalConfig.Worker.DefaultConcurrency,
-			JobsInProgress: req.JobsInProgress,
-			RegisteredAt:   time.Now(),
-			LastHeartbeat:  time.Now(),
-			LastTaskTime:   time.Now(),   // new worker, last task time is now
-			PodName:        req.WorkerID, // Worker ID == Pod Name (from RUNPOD_POD_ID env)
-		}
-		if err := s.workerRepo.Save(ctx, worker); err != nil {
-			return nil, fmt.Errorf("failed to save worker: %w", err)
-		}
+		// Worker should exist after heartbeat update
+		return nil, fmt.Errorf("failed to get worker: %w", err)
 	}
 
-	// Use Worker's endpoint (allow dynamic update)
-	if worker.Endpoint == "" {
-		worker.Endpoint = endpoint
-	}
-
-	// Ensure PodName is set (for existing workers registered before this fix)
-	if worker.PodName == "" {
-		worker.PodName = req.WorkerID // Worker ID == Pod Name
-		if err := s.workerRepo.Save(ctx, worker); err != nil {
-			logger.WarnCtx(ctx, "failed to update worker pod name: %v", err)
-		}
-	}
-
-	// Check if worker is draining (pod marked for deletion)
-	// When a pod is marked for deletion, server marks the worker as draining
-	// Draining workers should not receive new tasks
-	if worker.Status == model.WorkerStatusDraining {
-		logger.InfoCtx(ctx, "⛔ Worker is draining, not pulling new tasks, worker_id: %s, endpoint: %s",
-			req.WorkerID, worker.Endpoint)
+	// Check if worker is draining
+	if worker.Status == constants.WorkerStatusDraining.String() {
+		logger.InfoCtx(ctx, "⛔ Worker is draining, not pulling new tasks, worker_id: %s", req.WorkerID)
 		return &model.JobPullResponse{Jobs: []model.JobInfo{}}, nil
 	}
 
-	// 🛡️ Safety Net: Check Pod status in real-time (in case Pod Watcher callback failed)
-	// This prevents Terminating pods from pulling tasks even if Worker.Status is not updated
-	if s.k8sDeployProvider != nil && worker.PodName != "" {
+	// Safety check: verify pod is not terminating
+	if s.k8sDeployProvider != nil {
 		isTerminating, err := s.k8sDeployProvider.IsPodTerminating(ctx, worker.PodName)
-		if err != nil {
-			logger.WarnCtx(ctx, "Failed to check pod status for worker %s: %v", req.WorkerID, err)
-			// Continue anyway - don't block task pulling on K8s API errors
-		} else if isTerminating {
-			// Pod is terminating but Worker status not updated yet - mark it now and reject task
-			logger.WarnCtx(ctx, "🛡️ Safety Net: Pod %s is terminating but Worker status is %s, marking as DRAINING now",
-				worker.PodName, worker.Status)
-			if err := s.UpdateWorkerStatus(ctx, worker.ID, model.WorkerStatusDraining); err != nil {
-				logger.ErrorCtx(ctx, "Failed to mark worker %s as draining: %v", worker.ID, err)
-			}
+		if err == nil && isTerminating {
+			logger.WarnCtx(ctx, "🛡️ Pod %s is terminating, marking as DRAINING", worker.PodName)
+			s.workerRepo.UpdateStatus(ctx, worker.WorkerID, constants.WorkerStatusDraining.String())
 			return &model.JobPullResponse{Jobs: []model.JobInfo{}}, nil
 		}
 	}
 
-	// Calculate number of tasks that can be pulled
+	// Calculate available slots
 	batchSize := req.BatchSize
 	if batchSize <= 0 {
 		batchSize = 1
 	}
 
-	availableSlots := worker.Concurrency - len(req.JobsInProgress)
+	concurrency := worker.Concurrency
+	if concurrency <= 0 {
+		concurrency = config.GlobalConfig.Worker.DefaultConcurrency
+	}
+
+	availableSlots := concurrency - len(req.JobsInProgress)
 	if availableSlots <= 0 {
-		logger.DebugCtx(ctx, "worker busy, no available slots, worker_id: %s, endpoint: %s, concurrency: %d, current_jobs: %d",
-			req.WorkerID, worker.Endpoint, worker.Concurrency, len(req.JobsInProgress))
 		return &model.JobPullResponse{Jobs: []model.JobInfo{}}, nil
 	}
 
@@ -136,157 +121,118 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 		batchSize = availableSlots
 	}
 
-	// Step 1: Query and lock PENDING tasks (without updating status)
-	logger.DebugCtx(ctx, "🔍 Step 1: Selecting PENDING tasks from MySQL, worker_id: %s, endpoint: %s, batch_size: %d",
-		req.WorkerID, worker.Endpoint, batchSize)
-
-	taskIDs, err := s.taskRepo.SelectPendingTasksForUpdate(ctx, worker.Endpoint, batchSize)
+	// Select and assign tasks atomically in one transaction
+	assignedTasks, err := s.taskRepo.SelectAndAssignTasks(ctx, endpoint, batchSize, req.WorkerID)
 	if err != nil {
-		logger.ErrorCtx(ctx, "❌ Failed to select pending tasks: %v", err)
-		return nil, fmt.Errorf("failed to select pending tasks: %w", err)
+		return nil, fmt.Errorf("failed to select and assign tasks: %w", err)
 	}
-
-	logger.DebugCtx(ctx, "📦 Selected and locked %d candidate tasks", len(taskIDs))
-
-	if len(taskIDs) == 0 {
-		logger.DebugCtx(ctx, "⚠️  No pending tasks available, worker_id: %s, endpoint: %s",
-			req.WorkerID, worker.Endpoint)
-		return &model.JobPullResponse{Jobs: []model.JobInfo{}}, nil
-	}
-
-	// Step 2: CRITICAL - Double-check worker status BEFORE updating tasks
-	// This prevents assigning tasks to DRAINING workers (avoid rollback after task assignment)
-	logger.InfoCtx(ctx, "🔍 Step 2: Double-checking worker status before assignment")
-	workerBeforeAssignment, err := s.workerRepo.Get(ctx, req.WorkerID)
-	if err == nil && workerBeforeAssignment.Status == model.WorkerStatusDraining {
-		logger.WarnCtx(ctx, "🔴 Worker %s is DRAINING, skipping task assignment for %d tasks",
-			req.WorkerID, len(taskIDs))
-		// Tasks remain in PENDING status, no need to revert
-		return &model.JobPullResponse{Jobs: []model.JobInfo{}}, nil
-	}
-
-	// Step 3: Use CAS atomic update for task status (only PENDING status will be updated)
-	logger.InfoCtx(ctx, "🔄 Step 3: Assigning %d tasks to worker using CAS update", len(taskIDs))
-
-	assignedTasks, err := s.taskRepo.AssignTasksToWorker(ctx, taskIDs, req.WorkerID)
-	if err != nil {
-		logger.ErrorCtx(ctx, "❌ Failed to assign tasks to worker: %v", err)
-		return nil, fmt.Errorf("failed to assign tasks: %w", err)
-	}
-
-	logger.InfoCtx(ctx, "✅ Successfully assigned %d/%d tasks to worker (CAS succeeded)",
-		len(assignedTasks), len(taskIDs))
 
 	if len(assignedTasks) == 0 {
-		logger.InfoCtx(ctx, "⚠️  No tasks were assigned (all CAS failed), worker_id: %s", req.WorkerID)
 		return &model.JobPullResponse{Jobs: []model.JobInfo{}}, nil
 	}
 
-	// Step 4: Convert to domain model and return
-	logger.InfoCtx(ctx, "🔄 Step 4: Converting %d assigned tasks to job responses", len(assignedTasks))
+	// Convert to response
 	jobs := make([]model.JobInfo, 0, len(assignedTasks))
-
-	for i, mysqlTask := range assignedTasks {
-		taskID := mysqlTask.TaskID
-		logger.InfoCtx(ctx, "📝 Processing task %d/%d: %s", i+1, len(assignedTasks), taskID)
-
-		// AssignTasksToWorker has completed all database updates:
-		// - status: PENDING -> IN_PROGRESS (CAS)
-		// - worker_id: set to current worker
-		// - started_at: set to current time
-		// - extend: added new ExecutionRecord
-
-		// Asynchronously record TASK_ASSIGNED event to task_events table (without updating extend)
+	for _, mysqlTask := range assignedTasks {
+		// Record event
 		if s.taskService != nil {
 			s.taskService.recordTaskAssignedEventOnly(ctx, mysqlTask, req.WorkerID, worker.PodName)
-
-			// Update statistics: PENDING -> IN_PROGRESS
 			if s.taskService.statisticsService != nil {
 				go s.taskService.statisticsService.UpdateStatisticsOnTaskStatusChange(
 					context.Background(), mysqlTask.Endpoint, "PENDING", "IN_PROGRESS")
 			}
 		}
 
-		// Convert to domain model
 		task := mysql.ToTaskDomain(mysqlTask)
-
 		jobs = append(jobs, model.JobInfo{
 			ID:    task.ID,
 			Input: task.Input,
 		})
-
-		logger.InfoCtx(ctx, "✅ Task assigned successfully, task_id: %s", taskID)
 	}
 
-	logger.InfoCtx(ctx, "jobs pulled, worker_id: %s, endpoint: %s, count: %d",
-		req.WorkerID, worker.Endpoint, len(jobs))
-
+	logger.InfoCtx(ctx, "jobs pulled, worker_id: %s, endpoint: %s, count: %d, task_ids: %v", req.WorkerID, endpoint, len(jobs), getTaskIDs(assignedTasks))
 	return &model.JobPullResponse{Jobs: jobs}, nil
 }
 
 // ListWorkers lists all workers (optionally filtered by endpoint)
 func (s *WorkerService) ListWorkers(ctx context.Context, endpoint string) ([]*model.Worker, error) {
-	// If endpoint is specified, use GetByEndpoint for optimized query
+	var mysqlWorkers []*mysqlModel.Worker
+	var err error
+
+	if endpoint != "" {
+		mysqlWorkers, err = s.workerRepo.GetByEndpoint(ctx, endpoint)
+	} else {
+		mysqlWorkers, err = s.workerRepo.GetAll(ctx)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to domain model
+	workers := make([]*model.Worker, 0, len(mysqlWorkers))
+	for _, mw := range mysqlWorkers {
+		workers = append(workers, s.toDomainWorker(mw))
+	}
+	return workers, nil
+}
+
+// ListWorkersWithPodInfo returns workers with pod runtime info (for API responses)
+func (s *WorkerService) ListWorkersWithPodInfo(ctx context.Context, endpoint string) ([]*mysqlModel.Worker, error) {
 	if endpoint != "" {
 		return s.workerRepo.GetByEndpoint(ctx, endpoint)
 	}
-
-	// Otherwise return all workers
 	return s.workerRepo.GetAll(ctx)
 }
 
-// GetWorkerByPodName finds a worker by its pod name for a given endpoint
-// This is used to identify workers when pods are marked for deletion
-func (s *WorkerService) GetWorkerByPodName(ctx context.Context, endpoint, podName string) (*model.Worker, error) {
-	workers, err := s.workerRepo.GetByEndpoint(ctx, endpoint)
+// GetWorker gets a worker by worker ID
+func (s *WorkerService) GetWorker(ctx context.Context, workerID string) (*model.Worker, error) {
+	mw, err := s.workerRepo.Get(ctx, workerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get workers for endpoint: %w", err)
+		return nil, err
 	}
+	return s.toDomainWorker(mw), nil
+}
 
-	for _, w := range workers {
-		if w.PodName == podName {
-			return w, nil
-		}
+// GetWorkerByPodName finds a worker by its pod name
+func (s *WorkerService) GetWorkerByPodName(ctx context.Context, endpoint, podName string) (*model.Worker, error) {
+	mw, err := s.workerRepo.GetByPodName(ctx, endpoint, podName)
+	if err != nil {
+		return nil, err
 	}
-
-	return nil, fmt.Errorf("worker not found for pod %s in endpoint %s", podName, endpoint)
+	return s.toDomainWorker(mw), nil
 }
 
 // UpdateWorkerStatus updates the status of a worker
-// This is used to mark workers as draining when their pods are terminating
 func (s *WorkerService) UpdateWorkerStatus(ctx context.Context, workerID string, status model.WorkerStatus) error {
-	worker, err := s.workerRepo.Get(ctx, workerID)
-	if err != nil {
-		return fmt.Errorf("failed to get worker: %w", err)
-	}
-
-	worker.Status = status
-	return s.workerRepo.Save(ctx, worker)
+	return s.workerRepo.UpdateStatus(ctx, workerID, string(status))
 }
 
 // CleanupOfflineWorkers cleans up offline Workers and reclaims their tasks
 func (s *WorkerService) CleanupOfflineWorkers(ctx context.Context) error {
+	timeout := time.Duration(config.GlobalConfig.Worker.HeartbeatTimeout) * time.Second
+
+	// Mark stale workers as offline
+	affected, err := s.workerRepo.MarkOffline(ctx, timeout)
+	if err != nil {
+		return err
+	}
+	if affected > 0 {
+		logger.InfoCtx(ctx, "marked %d stale workers as OFFLINE", affected)
+	}
+
+	// Get all workers to check for task reclamation
 	workers, err := s.workerRepo.GetAll(ctx)
 	if err != nil {
 		return err
 	}
 
-	timeout := time.Duration(config.GlobalConfig.Worker.HeartbeatTimeout) * time.Second
 	now := time.Now()
-
-	for _, worker := range workers {
-		if now.Sub(worker.LastHeartbeat) > timeout {
-			logger.InfoCtx(ctx, "detected offline worker, worker_id: %s, endpoint: %s, last_heartbeat: %v ago",
-				worker.ID, worker.Endpoint, now.Sub(worker.LastHeartbeat))
-
-			// Reclaim tasks assigned to this worker
+	for _, mw := range workers {
+		if now.Sub(mw.LastHeartbeat) > timeout {
+			worker := s.toDomainWorker(mw)
 			if err := s.reclaimWorkerTasks(ctx, worker); err != nil {
-				logger.ErrorCtx(ctx, "failed to reclaim tasks for worker, worker_id: %s, error: %v", worker.ID, err)
-			}
-
-			// Delete the worker
-			if err := s.workerRepo.Delete(ctx, worker.ID); err != nil {
-				logger.ErrorCtx(ctx, "failed to delete worker, worker_id: %s, error: %v", worker.ID, err)
+				logger.ErrorCtx(ctx, "failed to reclaim tasks for worker %s: %v", mw.WorkerID, err)
 			}
 		}
 	}
@@ -294,80 +240,103 @@ func (s *WorkerService) CleanupOfflineWorkers(ctx context.Context) error {
 	return nil
 }
 
+// RecordTaskCompletion records task completion stats for a worker
+func (s *WorkerService) RecordTaskCompletion(ctx context.Context, workerID string, completed bool, executionTimeMs int64) {
+	if err := s.workerRepo.IncrementTaskStats(ctx, workerID, completed, executionTimeMs); err != nil {
+		logger.WarnCtx(ctx, "failed to record task completion stats for worker %s: %v", workerID, err)
+	}
+}
+
+// toDomainWorker converts MySQL model to domain model
+func (s *WorkerService) toDomainWorker(mw *mysqlModel.Worker) *model.Worker {
+	var jobsInProgress []string
+	if mw.JobsInProgress != "" {
+		json.Unmarshal([]byte(mw.JobsInProgress), &jobsInProgress)
+	}
+
+	var lastTaskTime time.Time
+	if mw.LastTaskTime != nil {
+		lastTaskTime = *mw.LastTaskTime
+	}
+
+	return &model.Worker{
+		ID:             mw.WorkerID,
+		Endpoint:       mw.Endpoint,
+		Status:         model.WorkerStatus(mw.Status),
+		Concurrency:    mw.Concurrency,
+		CurrentJobs:    mw.CurrentJobs,
+		JobsInProgress: jobsInProgress,
+		LastHeartbeat:  mw.LastHeartbeat,
+		LastTaskTime:   lastTaskTime,
+		Version:        mw.Version,
+		RegisteredAt:   mw.CreatedAt,
+		PodName:        mw.PodName,
+	}
+}
+
 // reclaimWorkerTasks reclaims all tasks assigned to an offline worker
 func (s *WorkerService) reclaimWorkerTasks(ctx context.Context, worker *model.Worker) error {
-	// Get all IN_PROGRESS tasks assigned to this worker from MySQL
 	tasks, err := s.taskRepo.GetTasksByWorker(ctx, worker.ID)
 	if err != nil {
-		return fmt.Errorf("failed to get assigned tasks from MySQL: %w", err)
+		return fmt.Errorf("failed to get assigned tasks: %w", err)
 	}
 
 	if len(tasks) == 0 {
 		return nil
 	}
 
-	logger.InfoCtx(ctx, "reclaiming tasks from offline worker, worker_id: %s, task_count: %d",
-		worker.ID, len(tasks))
+	logger.InfoCtx(ctx, "reclaiming tasks from offline worker, worker_id: %s, task_count: %d", worker.ID, len(tasks))
 
-	reclaimedCount := 0
-	// Grace period: 2x heartbeat timeout to avoid premature reclamation
-	// This prevents reclaiming tasks from workers that are slow but still alive
 	gracePeriod := time.Duration(config.GlobalConfig.Worker.HeartbeatTimeout*2) * time.Second
 	now := time.Now()
+	reclaimedCount := 0
 
 	for _, mysqlTask := range tasks {
-		taskID := mysqlTask.TaskID
-
-		// Only reclaim tasks that are IN_PROGRESS (query already filtered this)
 		if mysqlTask.Status != string(model.TaskStatusInProgress) {
 			continue
 		}
 
-		// Grace period check: Only reclaim if task has been running longer than grace period
-		// This prevents reclaiming tasks from workers experiencing temporary network issues
+		// Grace period check
 		if mysqlTask.StartedAt != nil {
-			taskRunningTime := now.Sub(*mysqlTask.StartedAt)
-			if taskRunningTime < gracePeriod {
-				logger.InfoCtx(ctx, "skipping task reclaim (within grace period), task_id: %s, running_time: %v, grace_period: %v",
-					taskID, taskRunningTime, gracePeriod)
+			if now.Sub(*mysqlTask.StartedAt) < gracePeriod {
 				continue
 			}
-			logger.InfoCtx(ctx, "reclaiming task (exceeded grace period), task_id: %s, running_time: %v, grace_period: %v",
-				taskID, taskRunningTime, gracePeriod)
 		}
 
-		// Reset task status to pending
-		now := time.Now()
-		mysqlTask.Status = string(model.TaskStatusPending)
-		mysqlTask.WorkerID = ""
-		mysqlTask.StartedAt = nil
-		mysqlTask.CompletedAt = nil
-		mysqlTask.UpdatedAt = now
-
+		// Reset task to pending
 		if err := s.taskRepo.UpdateFields(ctx, mysqlTask.TaskID, map[string]interface{}{
-			"status":       mysqlTask.Status,
-			"worker_id":    mysqlTask.WorkerID,
-			"started_at":   mysqlTask.StartedAt,
-			"completed_at": mysqlTask.CompletedAt,
-			"updated_at":   mysqlTask.UpdatedAt,
+			"status":       string(model.TaskStatusPending),
+			"worker_id":    "",
+			"started_at":   nil,
+			"completed_at": nil,
+			"updated_at":   now,
 		}); err != nil {
-			logger.ErrorCtx(ctx, "failed to update task status during reclaim, task_id: %s, error: %v", taskID, err)
+			logger.ErrorCtx(ctx, "failed to reclaim task %s: %v", mysqlTask.TaskID, err)
 			continue
 		}
 
-		// Update statistics: IN_PROGRESS -> PENDING
 		if s.taskService != nil && s.taskService.statisticsService != nil {
 			go s.taskService.statisticsService.UpdateStatisticsOnTaskStatusChange(
 				context.Background(), mysqlTask.Endpoint, "IN_PROGRESS", "PENDING")
 		}
 
-		// Task status changed to PENDING, worker_id cleared, worker will automatically pull from MySQL
 		reclaimedCount++
-		logger.InfoCtx(ctx, "task reclaimed to PENDING status, task_id: %s, endpoint: %s", taskID, mysqlTask.Endpoint)
+		logger.InfoCtx(ctx, "task reclaimed, task_id: %s", mysqlTask.TaskID)
 	}
 
-	logger.InfoCtx(ctx, "task reclamation completed, worker_id: %s, reclaimed: %d, total: %d",
-		worker.ID, reclaimedCount, len(tasks))
-
+	logger.InfoCtx(ctx, "task reclamation completed, worker_id: %s, reclaimed: %d", worker.ID, reclaimedCount)
 	return nil
+}
+
+// GetAllWorkers returns all active workers
+func (s *WorkerService) GetAllWorkers(ctx context.Context) ([]*mysqlModel.Worker, error) {
+	return s.workerRepo.GetAll(ctx)
+}
+
+func getTaskIDs(tasks []*mysql.Task) []string {
+	ids := make([]string, len(tasks))
+	for i, t := range tasks {
+		ids[i] = t.TaskID
+	}
+	return ids
 }

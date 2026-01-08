@@ -1,14 +1,19 @@
 # Stage 1: Build React App
 FROM --platform=linux/amd64 node:20-alpine AS builder
 
+# Proxy args
+ARG http_proxy
+ARG https_proxy
+
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
 COPY pnpm-lock.yaml* ./
 
-# Install pnpm and dependencies
-RUN npm install -g pnpm && pnpm install --frozen-lockfile
+# Install pnpm and dependencies (unset proxy to avoid npm trying to use it)
+RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && \
+    npm install -g pnpm && pnpm install --frozen-lockfile
 
 # Copy source code
 COPY . .
@@ -26,9 +31,6 @@ RUN pnpm run build
 
 # Stage 2: Serve with Nginx
 FROM --platform=linux/amd64 nginx:alpine
-
-# Install gettext for envsubst
-RUN apk add --no-cache gettext
 
 # Copy built files to nginx
 COPY --from=builder /app/dist /usr/share/nginx/html

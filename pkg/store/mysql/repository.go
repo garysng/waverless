@@ -12,8 +12,9 @@ type Repository struct {
 	TaskStatistics   *TaskStatisticsRepository
 	ScalingEvent     *ScalingEventRepository
 	AutoscalerConfig *AutoscalerConfigRepository
-	GPUUsage         *GPUUsageRepository
 	Spec             *SpecRepository
+	Worker           *WorkerRepository
+	Monitoring       *MonitoringRepository
 }
 
 // NewRepository creates a new MySQL repository with all sub-repositories
@@ -31,8 +32,9 @@ func NewRepository(dsn string, proxyConfig *config.ProxyConfig) (*Repository, er
 		TaskStatistics:   NewTaskStatisticsRepository(ds),
 		ScalingEvent:     NewScalingEventRepository(ds),
 		AutoscalerConfig: NewAutoscalerConfigRepository(ds),
-		GPUUsage:         NewGPUUsageRepository(ds),
 		Spec:             NewSpecRepository(ds),
+		Worker:           NewWorkerRepository(ds),
+		Monitoring:       NewMonitoringRepository(ds),
 	}, nil
 }
 

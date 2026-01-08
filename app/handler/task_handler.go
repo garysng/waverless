@@ -200,9 +200,9 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"tasks": tasks,
-		"total": total,
-		"limit": limit,
+		"tasks":  tasks,
+		"total":  total,
+		"limit":  limit,
 		"offset": offset,
 	})
 }

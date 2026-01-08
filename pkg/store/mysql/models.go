@@ -7,11 +7,12 @@ import "waverless/pkg/store/mysql/model"
 
 type (
 	// Database models
-	Endpoint         = model.Endpoint
-	Task             = model.Task
-	TaskEvent        = model.TaskEvent
-	AutoscalerConfig = model.AutoscalerConfig
-	ScalingEvent     = model.ScalingEvent
+	Endpoint               = model.Endpoint
+	Task                   = model.Task
+	TaskEvent              = model.TaskEvent
+	AutoscalerConfig       = model.AutoscalerConfig
+	ScalingEvent           = model.ScalingEvent
+	WorkerResourceSnapshot = model.WorkerResourceSnapshot
 
 	// Custom JSON types
 	JSONMap         = model.JSONMap

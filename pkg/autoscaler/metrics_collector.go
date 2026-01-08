@@ -7,17 +7,17 @@ import (
 	"time"
 
 	endpointsvc "waverless/internal/service/endpoint"
+	"waverless/pkg/constants"
 	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
 	"waverless/pkg/store/mysql"
-	redisstore "waverless/pkg/store/redis"
 )
 
 // MetricsCollector 指标收集器
 type MetricsCollector struct {
 	deploymentProvider interfaces.DeploymentProvider
 	endpointService    *endpointsvc.Service
-	workerRepo         *redisstore.WorkerRepository
+	workerLister       interfaces.WorkerLister
 	taskRepo           *mysql.TaskRepository
 
 	replicaMu        sync.RWMutex
@@ -36,13 +36,13 @@ type replicaSnapshot struct {
 func NewMetricsCollector(
 	deploymentProvider interfaces.DeploymentProvider,
 	endpointService *endpointsvc.Service,
-	workerRepo *redisstore.WorkerRepository,
+	workerLister interfaces.WorkerLister,
 	taskRepo *mysql.TaskRepository,
 ) *MetricsCollector {
 	return &MetricsCollector{
 		deploymentProvider: deploymentProvider,
 		endpointService:    endpointService,
-		workerRepo:         workerRepo,
+		workerLister:       workerLister,
 		taskRepo:           taskRepo,
 		replicaSnapshots:   make(map[string]replicaSnapshot),
 	}
@@ -126,6 +126,10 @@ func (c *MetricsCollector) collectSingleEndpoint(ctx context.Context, ep *interf
 		LastScaleTime:     ep.LastScaleTime,
 		LastTaskTime:      ep.LastTaskTime,
 		FirstPendingTime:  ep.FirstPendingTime,
+
+		// 直接使用数据库中的副本状态，不再调用 K8s API
+		ActualReplicas:    ep.ReadyReplicas,
+		AvailableReplicas: ep.AvailableReplicas,
 	}
 
 	// WARNING: Check for invalid autoscaling configuration
@@ -133,28 +137,15 @@ func (c *MetricsCollector) collectSingleEndpoint(ctx context.Context, ep *interf
 		logger.WarnCtx(ctx, "endpoint %s: maxReplicas is 0, autoscaling will NOT work! Please configure maxReplicas > 0", ep.Name)
 	}
 
-	// 获取最近的副本状态（优先使用 informer 快照）
+	// 优先使用 informer 快照（如果有更新的数据）
 	if snapshot, ok := c.getReplicaSnapshot(ep.Name); ok {
 		config.ActualReplicas = snapshot.Ready
 		config.AvailableReplicas = snapshot.Available
 		config.Conditions = snapshot.Conditions
-	} else {
-		actualReplicas, availableReplicas, drainingReplicas, conditions, err := c.getReplicaStats(ctx, ep.Name)
-		if err != nil {
-			logger.WarnCtx(ctx, "failed to get actual replicas for %s: %v", ep.Name, err)
-			actualReplicas = 0
-			availableReplicas = 0
-			drainingReplicas = 0
-			conditions = nil
-		}
-		config.ActualReplicas = actualReplicas
-		config.AvailableReplicas = availableReplicas
-		config.DrainingReplicas = drainingReplicas
-		config.Conditions = conditions
 	}
 
 	// 获取排队任务数（从MySQL统计）
-	pendingCount, err := c.taskRepo.CountByEndpointAndStatus(ctx, ep.Name, "PENDING")
+	pendingCount, err := c.taskRepo.CountByEndpointAndStatus(ctx, ep.Name, constants.TaskStatusPending.String())
 	if err != nil {
 		logger.WarnCtx(ctx, "failed to get pending task count for %s: %v", ep.Name, err)
 		pendingCount = 0
@@ -190,12 +181,11 @@ func (c *MetricsCollector) getReplicaStats(ctx context.Context, endpoint string)
 	available = int(app.AvailableReplicas)
 
 	// Count draining workers - workers whose pods are marked for deletion
-	// These workers are still running and completing tasks, but won't receive new ones
 	drainingCount := 0
-	workers, err := c.workerRepo.GetByEndpoint(ctx, endpoint)
+	workers, err := c.workerLister.ListWorkers(ctx, endpoint)
 	if err == nil {
 		for _, worker := range workers {
-			if worker.Status == "DRAINING" { // model.WorkerStatusDraining
+			if string(worker.Status) == constants.WorkerStatusDraining.String() {
 				drainingCount++
 			}
 		}

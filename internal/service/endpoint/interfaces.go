@@ -5,7 +5,6 @@ import (
 
 	"waverless/internal/model"
 	"waverless/pkg/store/mysql"
-	redisstore "waverless/pkg/store/redis"
 )
 
 type endpointRepository interface {
@@ -18,6 +17,7 @@ type endpointRepository interface {
 
 type autoscalerConfigRepository interface {
 	Get(ctx context.Context, endpoint string) (*mysql.AutoscalerConfig, error)
+	ListByEndpoints(ctx context.Context, endpoints []string) ([]*mysql.AutoscalerConfig, error)
 	CreateOrUpdate(ctx context.Context, cfg *mysql.AutoscalerConfig) error
 }
 
@@ -27,9 +27,8 @@ type taskRepository interface {
 	Get(ctx context.Context, taskID string) (*mysql.Task, error)
 }
 
-type workerRepository interface {
-	GetAll(ctx context.Context) ([]*model.Worker, error)
-	GetByEndpoint(ctx context.Context, endpoint string) ([]*model.Worker, error)
+type workerLister interface {
+	ListWorkers(ctx context.Context, endpoint string) ([]*model.Worker, error)
 }
 
 // compile-time assertions
@@ -38,5 +37,4 @@ var (
 	_ endpointRepository         = (*mysql.EndpointRepository)(nil)
 	_ autoscalerConfigRepository = (*mysql.AutoscalerConfigRepository)(nil)
 	_ taskRepository             = (*mysql.TaskRepository)(nil)
-	_ workerRepository           = (*redisstore.WorkerRepository)(nil)
 )

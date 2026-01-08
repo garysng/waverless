@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"waverless/internal/model"
 	"waverless/pkg/interfaces"
 	"waverless/pkg/store/mysql"
 
@@ -17,7 +16,7 @@ type MetadataManager struct {
 	endpointRepo         endpointRepository
 	autoscalerConfigRepo autoscalerConfigRepository
 	taskRepo             taskRepository
-	workerRepo           workerRepository
+	workerLister         workerLister
 }
 
 // NewMetadataManager creates a new metadata manager.
@@ -25,13 +24,13 @@ func NewMetadataManager(
 	endpointRepo endpointRepository,
 	autoscalerConfigRepo autoscalerConfigRepository,
 	taskRepo taskRepository,
-	workerRepo workerRepository,
+	workerLister workerLister,
 ) *MetadataManager {
 	return &MetadataManager{
 		endpointRepo:         endpointRepo,
 		autoscalerConfigRepo: autoscalerConfigRepo,
 		taskRepo:             taskRepo,
-		workerRepo:           workerRepo,
+		workerLister:         workerLister,
 	}
 }
 
@@ -64,9 +63,22 @@ func (m *MetadataManager) Save(ctx context.Context, endpoint *interfaces.Endpoin
 			return fmt.Errorf("failed to create endpoint: %w", err)
 		}
 	} else {
-		mysqlEndpoint.ID = existing.ID
-		mysqlEndpoint.CreatedAt = existing.CreatedAt
-		if err := m.endpointRepo.Update(ctx, mysqlEndpoint); err != nil {
+		// Update existing record - only modify fields from mysqlEndpoint, preserve others
+		existing.SpecName = mysqlEndpoint.SpecName
+		existing.Description = mysqlEndpoint.Description
+		existing.Image = mysqlEndpoint.Image
+		existing.ImagePrefix = mysqlEndpoint.ImagePrefix
+		existing.ImageDigest = mysqlEndpoint.ImageDigest
+		existing.ImageLastChecked = mysqlEndpoint.ImageLastChecked
+		existing.LatestImage = mysqlEndpoint.LatestImage
+		existing.Replicas = mysqlEndpoint.Replicas
+		existing.TaskTimeout = mysqlEndpoint.TaskTimeout
+		existing.EnablePtrace = mysqlEndpoint.EnablePtrace
+		existing.Env = mysqlEndpoint.Env
+		existing.Labels = mysqlEndpoint.Labels
+		existing.Status = mysqlEndpoint.Status
+		existing.UpdatedAt = mysqlEndpoint.UpdatedAt
+		if err := m.endpointRepo.Update(ctx, existing); err != nil {
 			return fmt.Errorf("failed to update endpoint: %w", err)
 		}
 	}
@@ -123,17 +135,27 @@ func (m *MetadataManager) List(ctx context.Context) ([]*interfaces.EndpointMetad
 		return nil, err
 	}
 
+	// Batch load autoscaler configs for these endpoints only
+	configMap := make(map[string]*mysql.AutoscalerConfig)
+	if m.autoscalerConfigRepo != nil && len(mysqlEndpoints) > 0 {
+		endpoints := make([]string, len(mysqlEndpoints))
+		for i, ep := range mysqlEndpoints {
+			endpoints[i] = ep.Endpoint
+		}
+		configs, err := m.autoscalerConfigRepo.ListByEndpoints(ctx, endpoints)
+		if err == nil {
+			for _, cfg := range configs {
+				configMap[cfg.Endpoint] = cfg
+			}
+		}
+	}
+
 	results := make([]*interfaces.EndpointMetadata, 0, len(mysqlEndpoints))
 	for _, item := range mysqlEndpoints {
 		meta := fromMySQLEndpoint(item)
-
-		if m.autoscalerConfigRepo != nil {
-			cfg, err := m.autoscalerConfigRepo.Get(ctx, item.Endpoint)
-			if err == nil && cfg != nil {
-				mergeAutoscalerConfig(meta, cfg)
-			}
+		if cfg, ok := configMap[item.Endpoint]; ok {
+			mergeAutoscalerConfig(meta, cfg)
 		}
-
 		results = append(results, meta)
 	}
 
@@ -150,7 +172,7 @@ func (m *MetadataManager) Delete(ctx context.Context, name string) error {
 
 // GetStats aggregates worker/task metrics for the provided endpoint.
 func (m *MetadataManager) GetStats(ctx context.Context, name string) (*interfaces.EndpointStats, error) {
-	if m.taskRepo == nil || m.workerRepo == nil {
+	if m.taskRepo == nil || m.workerLister == nil {
 		return nil, fmt.Errorf("stats repositories not configured")
 	}
 
@@ -160,41 +182,31 @@ func (m *MetadataManager) GetStats(ctx context.Context, name string) (*interface
 		To:       time.Now(),
 	}
 
-	if count, err := m.taskRepo.CountByEndpointAndStatus(ctx, name, string(model.TaskStatusPending)); err == nil {
+	if count, err := m.taskRepo.CountByEndpointAndStatus(ctx, name, "PENDING"); err == nil {
 		stats.PendingTasks = int(count)
 	}
-	if count, err := m.taskRepo.CountByEndpointAndStatus(ctx, name, string(model.TaskStatusInProgress)); err == nil {
+	if count, err := m.taskRepo.CountByEndpointAndStatus(ctx, name, "IN_PROGRESS"); err == nil {
 		stats.RunningTasks = int(count)
 	}
-	if count, err := m.taskRepo.CountByEndpointAndStatus(ctx, name, string(model.TaskStatusCompleted)); err == nil {
+	if count, err := m.taskRepo.CountByEndpointAndStatus(ctx, name, "COMPLETED"); err == nil {
 		stats.CompletedTasks = int(count)
 	}
-	if count, err := m.taskRepo.CountByEndpointAndStatus(ctx, name, string(model.TaskStatusFailed)); err == nil {
+	if count, err := m.taskRepo.CountByEndpointAndStatus(ctx, name, "FAILED"); err == nil {
 		stats.FailedTasks = int(count)
 	}
 
-	// Use GetByEndpoint to directly fetch workers for this endpoint (avoids full scan)
-	workers, err := m.workerRepo.GetByEndpoint(ctx, name)
+	// Use workerLister to fetch workers for this endpoint
+	workers, err := m.workerLister.ListWorkers(ctx, name)
 	if err == nil {
 		for _, worker := range workers {
 			stats.TotalWorkers++
-			switch worker.Status {
-			case model.WorkerStatusBusy:
+			switch string(worker.Status) {
+			case "BUSY":
 				stats.BusyWorkers++
-			case model.WorkerStatusOnline:
+			case "ONLINE":
 				stats.OnlineWorkers++
-			case model.WorkerStatusDraining:
+			case "DRAINING":
 				// DRAINING workers are still counted as total but not online/busy
-				// They are finishing existing tasks but won't receive new ones
-				// This prevents autoscaler from counting them as available capacity
-			default:
-				// Legacy string-based status support
-				if worker.Status == "online" {
-					stats.OnlineWorkers++
-				}
-				if worker.Status == "busy" {
-					stats.BusyWorkers++
-				}
 			}
 		}
 	}
@@ -274,7 +286,7 @@ func toMySQLEndpoint(endpoint *interfaces.EndpointMetadata) *mysql.Endpoint {
 }
 
 func fromMySQLEndpoint(endpoint *mysql.Endpoint) *interfaces.EndpointMetadata {
-	return &interfaces.EndpointMetadata{
+	meta := &interfaces.EndpointMetadata{
 		Name:             endpoint.Endpoint,
 		SpecName:         endpoint.SpecName,
 		Description:      endpoint.Description,
@@ -293,6 +305,32 @@ func fromMySQLEndpoint(endpoint *mysql.Endpoint) *interfaces.EndpointMetadata {
 		CreatedAt:        endpoint.CreatedAt,
 		UpdatedAt:        endpoint.UpdatedAt,
 	}
+	// Parse RuntimeState
+	if endpoint.RuntimeState != nil {
+		if ns, ok := endpoint.RuntimeState["namespace"].(string); ok {
+			meta.Namespace = ns
+		}
+		if rr, ok := endpoint.RuntimeState["readyReplicas"].(float64); ok {
+			meta.ReadyReplicas = int(rr)
+		}
+		if ar, ok := endpoint.RuntimeState["availableReplicas"].(float64); ok {
+			meta.AvailableReplicas = int(ar)
+		}
+		if shm, ok := endpoint.RuntimeState["shmSize"].(string); ok {
+			meta.ShmSize = shm
+		}
+		if vm, ok := endpoint.RuntimeState["volumeMounts"].([]interface{}); ok {
+			for _, v := range vm {
+				if m, ok := v.(map[string]interface{}); ok {
+					meta.VolumeMounts = append(meta.VolumeMounts, interfaces.VolumeMount{
+						PVCName:   m["pvcName"].(string),
+						MountPath: m["mountPath"].(string),
+					})
+				}
+			}
+		}
+	}
+	return meta
 }
 
 func mergeAutoscalerConfig(meta *interfaces.EndpointMetadata, cfg *mysql.AutoscalerConfig) {

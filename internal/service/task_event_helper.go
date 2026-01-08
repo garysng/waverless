@@ -22,15 +22,29 @@ func (s *TaskService) recordTaskEvent(
 ) {
 	// 1. Record detailed event to task_events table (async, non-blocking)
 	go func() {
+		now := time.Now()
 		event := &mysqlModel.TaskEvent{
 			TaskID:        task.TaskID,
 			Endpoint:      task.Endpoint,
 			EventType:     string(eventType),
-			EventTime:     time.Now(),
+			EventTime:     now,
 			WorkerID:      workerID,
 			WorkerPodName: workerPodName,
 			FromStatus:    task.Status,
 			ErrorMessage:  errorMsg,
+		}
+
+		// Fill duration fields for completion events
+		if eventType == mysqlModel.EventTaskCompleted || eventType == mysqlModel.EventTaskFailed || eventType == mysqlModel.EventTaskTimeout {
+			if task.StartedAt != nil {
+				execMs := int(now.Sub(*task.StartedAt).Milliseconds())
+				event.ExecutionDurationMs = &execMs
+				// Queue wait = started - created
+				queueMs := int(task.StartedAt.Sub(task.CreatedAt).Milliseconds())
+				event.QueueWaitMs = &queueMs
+			}
+			totalMs := int(now.Sub(task.CreatedAt).Milliseconds())
+			event.TotalDurationMs = &totalMs
 		}
 
 		if err := s.taskEventRepo.RecordEvent(context.Background(), event); err != nil {
