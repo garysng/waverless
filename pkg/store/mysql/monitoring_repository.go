@@ -244,17 +244,27 @@ func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoin
 		AND COALESCE(last_task_time, created_at) < ?
 	`, from, to, endpoint, to).Scan(&currentIdleMs)
 
-	// Part 3: WORKER_TASK_PULLED at boundary [to, to+1s) - their idle time belongs to this window
-	var boundaryIdleMs int64
+	// Part 3: WORKER_TASK_PULLED events after window [to, to+2min) - their idle started before window end
+	// Calculate how much of their idle time falls within [from, to)
 	windowMs := to.Sub(from).Milliseconds()
+	var futureIdleMs int64
 	r.ds.DB(ctx).Raw(`
-		SELECT COALESCE(SUM(LEAST(idle_duration_ms, ?)), 0)
+		SELECT COALESCE(CAST(SUM(
+			LEAST(
+				TIMESTAMPDIFF(MICROSECOND, ?, event_time) / 1000,
+				LEAST(idle_duration_ms, TIMESTAMPDIFF(MICROSECOND, ?, event_time) / 1000)
+			)
+		) AS SIGNED), 0)
 		FROM worker_events 
 		WHERE endpoint = ? AND event_time >= ? AND event_time < ?
 		AND event_type = 'WORKER_TASK_PULLED' AND idle_duration_ms IS NOT NULL
-	`, windowMs, endpoint, to, to.Add(time.Second)).Scan(&boundaryIdleMs)
+		AND TIMESTAMPDIFF(MICROSECOND, event_time, ?) / 1000 + idle_duration_ms > 0
+	`, from, from, endpoint, to, to.Add(2*time.Minute), to).Scan(&futureIdleMs)
 
-	totalIdleMs := eventIdleStats.SumIdleMs + currentIdleMs + boundaryIdleMs
+	totalIdleMs := eventIdleStats.SumIdleMs + currentIdleMs + futureIdleMs
+	if totalIdleMs > windowMs*int64(workerStats.TotalWorkers) && workerStats.TotalWorkers > 0 {
+		totalIdleMs = windowMs * int64(workerStats.TotalWorkers) // Cap at max possible
+	}
 
 	var maxIdleMs int64 = eventIdleStats.MaxIdleMs
 	if currentIdleMs > maxIdleMs {
