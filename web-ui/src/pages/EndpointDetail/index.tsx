@@ -397,7 +397,9 @@ const ChartCard = React.memo(({ chartRef, title, total, legend, hasData }: { cha
 ));
 
 const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
-  const [dateRange, setDateRange] = useState<[Date, Date]>([new Date(Date.now() - 24 * 3600000), new Date()]);
+  const [timeRange, setTimeRange] = useState('1h');
+  const [liveMode, setLiveMode] = useState(true);
+  const [showRangeDropdown, setShowRangeDropdown] = useState(false);
   const requestsRef = useRef<HTMLDivElement>(null);
   const executionRef = useRef<HTMLDivElement>(null);
   const delayRef = useRef<HTMLDivElement>(null);
@@ -407,25 +409,28 @@ const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
   const utilizationRef = useRef<HTMLDivElement>(null);
   const idleTimeRef = useRef<HTMLDivElement>(null);
 
+  const rangeMs: Record<string, number> = { '1h': 3600000, '6h': 6 * 3600000, '24h': 24 * 3600000, '7d': 7 * 24 * 3600000, '30d': 30 * 24 * 3600000 };
+  const rangeLabels: Record<string, string> = { '1h': 'Last 1 hour', '6h': 'Last 6 hours', '24h': 'Last 24 hours', '7d': 'Last 7 days', '30d': 'Last 30 days' };
+
   const { data: realtimeData } = useQuery({
     queryKey: ['endpoint-realtime', endpoint.name],
     queryFn: async () => (await api.get(`/v1/${endpoint.name}/metrics/realtime`)).data,
-    refetchInterval: 5000,
+    refetchInterval: liveMode ? 5000 : false,
   });
 
   const { data: statsResponse } = useQuery({
-    queryKey: ['endpoint-stats', endpoint.name, dateRange[0].toISOString(), dateRange[1].toISOString()],
+    queryKey: ['endpoint-stats', endpoint.name, timeRange, liveMode ? Math.floor(Date.now() / 60000) : 'static'],
     queryFn: async () => {
-      const res = await api.get(`/v1/${endpoint.name}/metrics/stats`, { params: { from: dateRange[0].toISOString(), to: dateRange[1].toISOString() } });
+      const [from, to] = [new Date(Date.now() - rangeMs[timeRange]), new Date()];
+      const res = await api.get(`/v1/${endpoint.name}/metrics/stats`, { params: { from: from.toISOString(), to: to.toISOString() } });
       return res.data;
     },
     placeholderData: (prev) => prev,
+    refetchInterval: liveMode ? 60000 : false,
   });
 
   const statsData = statsResponse?.stats || [];
   const granularity = statsResponse?.granularity || '1h';
-
-  const setQuickRange = (hours: number) => setDateRange([new Date(Date.now() - hours * 3600000), new Date()]);
 
   const grid = useMemo(() => ({ left: 50, right: 20, top: 20, bottom: 50 }), []);
   const axisLabel = useMemo(() => ({ fontSize: 11, color: '#6b7280' }), []);
@@ -476,7 +481,6 @@ const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
   }, [statsData, granularity, formatLabel, grid, axisLabel, dataZoom]);
 
   const hasData = statsData && statsData.length > 0;
-  const granularityLabel = granularity === '1m' ? 'Minute' : granularity === '1h' ? 'Hourly' : 'Daily';
 
   return (
     <>
@@ -485,22 +489,43 @@ const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
         <div className="stats-grid mb-4" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
           <div className="stat-card"><div className="stat-content"><div className="stat-label">Active Workers</div><div className="stat-value">{realtimeData.workers?.active || 0}</div><div className="stat-change">{realtimeData.workers?.idle || 0} idle</div></div></div>
           <div className="stat-card"><div className="stat-content"><div className="stat-label">Tasks/min</div><div className="stat-value">{realtimeData.tasks?.completed_last_minute || 0}</div><div className="stat-change">{realtimeData.tasks?.running || 0} running</div></div></div>
-          <div className="stat-card"><div className="stat-content"><div className="stat-label">Avg Execution</div><div className="stat-value">{Math.round(realtimeData.performance?.avg_execution_ms || 0)}ms</div></div></div>
+          <div className="stat-card"><div className="stat-content"><div className="stat-label">Avg Execution</div><div className="stat-value">{((realtimeData.performance?.avg_execution_ms || 0) / 1000).toFixed(1)}s</div></div></div>
           <div className="stat-card"><div className="stat-content"><div className="stat-label">Queue Wait</div><div className="stat-value">{Math.round(realtimeData.performance?.avg_queue_wait_ms || 0)}ms</div></div></div>
         </div>
       )}
       {/* Controls */}
-      <div className="flex justify-between items-center mb-4">
-        <div className="filters">
-          <span className="text-sm text-gray-500">Granularity: <strong>{granularityLabel}</strong></span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, padding: '12px 16px', background: '#fff', borderRadius: 8, border: '1px solid #e5e7eb' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          {/* Time Range Dropdown */}
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={() => setShowRangeDropdown(!showRangeDropdown)}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', cursor: 'pointer', fontSize: 14, color: '#374151' }}
+            >
+              <span>📅</span>
+              <span>{rangeLabels[timeRange]}</span>
+              <span style={{ marginLeft: 4 }}>▼</span>
+            </button>
+            {showRangeDropdown && (
+              <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: '#fff', border: '1px solid #d1d5db', borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.15)', padding: 8, zIndex: 100, minWidth: 160 }}>
+                {Object.entries(rangeLabels).map(([key, label]) => (
+                  <div key={key} onClick={() => { setTimeRange(key); setShowRangeDropdown(false); }} style={{ padding: '10px 16px', cursor: 'pointer', borderRadius: 4, fontSize: 14, color: '#374151', background: timeRange === key ? '#f3f4f6' : 'transparent' }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = '#f3f4f6')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = timeRange === key ? '#f3f4f6' : 'transparent')}
+                  >{label}</div>
+                ))}
+              </div>
+            )}
+          </div>
+          {/* Granularity */}
+          <span style={{ fontSize: 14, color: '#6b7280' }}>Granularity: <strong>{granularity === '1m' ? 'Minute' : granularity === '1h' ? 'Hourly' : 'Daily'}</strong></span>
         </div>
-        <div className="filters">
-          <button className="btn btn-sm btn-outline" onClick={() => setQuickRange(1)}>1h</button>
-          <button className="btn btn-sm btn-outline" onClick={() => setQuickRange(6)}>6h</button>
-          <button className="btn btn-sm btn-outline" onClick={() => setQuickRange(24)}>24h</button>
-          <button className="btn btn-sm btn-outline" onClick={() => setQuickRange(168)}>7d</button>
-          <button className="btn btn-sm btn-outline" onClick={() => setQuickRange(720)}>30d</button>
-        </div>
+        {/* Live Data Toggle */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, color: '#374151', cursor: 'pointer' }}>
+          <input type="checkbox" checked={liveMode} onChange={(e) => setLiveMode(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: liveMode ? '#48bb78' : '#d1d5db' }} />
+          <span>View live data</span>
+        </label>
       </div>
       <div className="charts-grid">
         <ChartCard chartRef={requestsRef} title="Requests" total={`Total: ${totals.completed + totals.failed}`} legend={[{ color: '#48bb78', label: `Completed: ${totals.completed}` }, { color: '#f56565', label: `Failed: ${totals.failed}` }, { color: '#ecc94b', label: `Retried: ${totals.retried}` }]} hasData={hasData} />

@@ -193,7 +193,7 @@ func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoin
 	stat.P50ExecutionMs = execStats.P50Ms
 	stat.P95ExecutionMs = execStats.P95Ms
 
-	// 4. Worker stats - count active workers by status
+	// 4. Worker stats - count active workers by status (current snapshot)
 	var workerStats struct {
 		ActiveWorkers int `gorm:"column:active_workers"`
 		IdleWorkers   int `gorm:"column:idle_workers"`
@@ -208,9 +208,7 @@ func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoin
 	`, endpoint).Scan(&workerStats)
 	stat.ActiveWorkers = workerStats.ActiveWorkers
 	stat.IdleWorkers = workerStats.IdleWorkers
-	if workerStats.TotalWorkers > 0 {
-		stat.AvgWorkerUtilization = float64(workerStats.ActiveWorkers) / float64(workerStats.TotalWorkers) * 100
-	}
+	// Utilization will be calculated after idle time is computed
 
 	// 5. Worker idle stats - combine WORKER_TASK_PULLED events + current idle time
 	// Handle boundary crossing: only count idle time within [from, to) window
@@ -273,6 +271,16 @@ func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoin
 	stat.MaxIdleDurationSec = int(maxIdleMs / 1000)
 	stat.TotalIdleTimeSec = int(totalIdleMs / 1000)
 	stat.IdleCount = workerStats.IdleWorkers
+
+	// Calculate utilization based on idle time: utilization = (total_time - idle_time) / total_time
+	if workerStats.TotalWorkers > 0 && windowMs > 0 {
+		totalWorkerTimeMs := int64(workerStats.TotalWorkers) * windowMs
+		activeTimeMs := totalWorkerTimeMs - totalIdleMs
+		if activeTimeMs < 0 {
+			activeTimeMs = 0
+		}
+		stat.AvgWorkerUtilization = float64(activeTimeMs) / float64(totalWorkerTimeMs) * 100
+	}
 
 	// 6. Worker lifecycle from worker_events
 	var lifecycleStats struct {
