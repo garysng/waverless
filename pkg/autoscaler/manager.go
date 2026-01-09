@@ -478,10 +478,11 @@ func (m *Manager) GetClusterResourcesOnly(ctx context.Context) (*ClusterResource
 
 	m.cachedClusterMu.RLock()
 	cached := m.cachedClusterResources
+	cachedTime := m.cachedClusterTime
 	m.cachedClusterMu.RUnlock()
 
-	// 如果没有缓存，实时计算一次
-	if cached == nil {
+	// 如果没有缓存或缓存过期（超过30秒），实时计算一次
+	if cached == nil || time.Since(cachedTime) > 30*time.Second {
 		endpoints, err := m.metricsCollector.CollectEndpointMetrics(ctx)
 		if err != nil {
 			return nil, err

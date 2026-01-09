@@ -13,6 +13,7 @@ import (
 	"waverless/pkg/deploy/k8s"
 	"waverless/pkg/logger"
 	"waverless/pkg/monitoring"
+	mysqlstore "waverless/pkg/store/mysql"
 )
 
 func (app *Application) initJobs() error {
@@ -56,11 +57,13 @@ func (app *Application) initJobs() error {
 		hourlyAggLock := autoscaler.NewRedisDistributedLock(redisClient, "monitoring:hourly-agg-lock")
 		dailyAggLock := autoscaler.NewRedisDistributedLock(redisClient, "monitoring:daily-agg-lock")
 		snapshotLock := autoscaler.NewRedisDistributedLock(redisClient, "monitoring:snapshot-lock")
+		dataCleanupLock := autoscaler.NewRedisDistributedLock(redisClient, "cleanup:data-retention-lock")
 
 		manager.Register(newMinuteAggregationJob(time.Minute, app.monitoringService, minuteAggLock))
 		manager.Register(newHourlyAggregationJob(time.Hour, app.monitoringService, hourlyAggLock))
 		manager.Register(newDailyAggregationJob(24*time.Hour, app.monitoringService, dailyAggLock))
 		manager.Register(newSnapshotCollectionJob(time.Minute, app.monitoringCollector, snapshotLock))
+		manager.Register(newDataRetentionCleanupJob(24*time.Hour, app.mysqlRepo, dataCleanupLock))
 	}
 
 	app.jobsManager = manager
@@ -460,4 +463,56 @@ func (j *snapshotCollectionJob) Run(ctx context.Context) error {
 		defer j.distributedLock.Unlock(ctx)
 	}
 	return j.collector.CollectSnapshots(ctx)
+}
+
+
+// dataRetentionCleanupJob cleans up old data (tasks, task_events, worker_events) daily
+type dataRetentionCleanupJob struct {
+	interval        time.Duration
+	repo            *mysqlstore.Repository
+	distributedLock autoscaler.DistributedLock
+}
+
+func newDataRetentionCleanupJob(interval time.Duration, repo *mysqlstore.Repository, lock autoscaler.DistributedLock) jobs.Job {
+	return &dataRetentionCleanupJob{interval: interval, repo: repo, distributedLock: lock}
+}
+
+func (j *dataRetentionCleanupJob) Name() string { return "data-retention-cleanup" }
+
+func (j *dataRetentionCleanupJob) Interval() time.Duration { return j.interval }
+
+func (j *dataRetentionCleanupJob) Run(ctx context.Context) error {
+	if j.repo == nil {
+		return nil
+	}
+	if j.distributedLock != nil {
+		acquired, err := j.distributedLock.TryLock(ctx)
+		if err != nil || !acquired {
+			return nil
+		}
+		defer j.distributedLock.Unlock(ctx)
+	}
+
+	retentionDays := 10
+	before := time.Now().AddDate(0, 0, -retentionDays)
+	
+	// Clean old completed/failed tasks
+	taskRows, _ := j.repo.Task.CleanupOldTasks(ctx, before)
+	if taskRows > 0 {
+		logger.InfoCtx(ctx, "cleaned up %d old tasks (older than %d days)", taskRows, retentionDays)
+	}
+
+	// Clean old task events
+	eventRows, _ := j.repo.TaskEvent.CleanupOldEvents(ctx, before)
+	if eventRows > 0 {
+		logger.InfoCtx(ctx, "cleaned up %d old task events (older than %d days)", eventRows, retentionDays)
+	}
+
+	// Clean old worker events
+	workerEventRows, _ := j.repo.Monitoring.CleanupOldWorkerEvents(ctx, before)
+	if workerEventRows > 0 {
+		logger.InfoCtx(ctx, "cleaned up %d old worker events (older than %d days)", workerEventRows, retentionDays)
+	}
+
+	return nil
 }

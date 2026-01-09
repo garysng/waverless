@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -423,4 +424,11 @@ func (r *TaskRepository) AssignTasksToWorker(ctx context.Context, taskIDs []stri
 // This allows multiple repository operations to be executed atomically
 func (r *TaskRepository) ExecTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	return r.ds.ExecTx(ctx, fn)
+}
+
+
+// CleanupOldTasks removes completed/failed tasks older than the given time
+func (r *TaskRepository) CleanupOldTasks(ctx context.Context, before time.Time) (int64, error) {
+	result := r.ds.DB(ctx).Where("status IN (?, ?, ?) AND updated_at < ?", "COMPLETED", "FAILED", "TIMEOUT", before).Delete(&Task{})
+	return result.RowsAffected, result.Error
 }

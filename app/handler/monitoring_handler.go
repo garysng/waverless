@@ -2,9 +2,11 @@ package handler
 
 import (
 	"net/http"
+	"sort"
 	"time"
 
 	"waverless/internal/service"
+	"waverless/pkg/monitoring"
 
 	"github.com/gin-gonic/gin"
 )
@@ -80,15 +82,18 @@ func (h *MonitoringHandler) GetStats(c *gin.Context) {
 	var err error
 
 	switch {
-	case duration <= 2*time.Hour:
+	case duration <= 12*time.Hour:
 		stats, err = h.monitoringService.GetMinuteStats(ctx, endpoint, from, to)
 		granularity = "1m"
+		stats = fillMissingMinutes(stats, from, to)
 	case duration <= 7*24*time.Hour:
 		stats, err = h.monitoringService.GetHourlyStats(ctx, endpoint, from, to)
 		granularity = "1h"
+		stats = fillMissingHours(stats, from, to)
 	default:
 		stats, err = h.monitoringService.GetDailyStats(ctx, endpoint, from, to)
 		granularity = "1d"
+		stats = fillMissingDays(stats, from, to)
 	}
 
 	if err != nil {
@@ -105,4 +110,83 @@ func (h *MonitoringHandler) GetStats(c *gin.Context) {
 		"granularity": granularity,
 		"stats":       stats,
 	})
+}
+
+// fillMissingMinutes fills gaps with zero-value entries
+func fillMissingMinutes(data interface{}, from, to time.Time) interface{} {
+	stats, ok := data.([]*monitoring.MinuteStatResponse)
+	if !ok || stats == nil {
+		stats = []*monitoring.MinuteStatResponse{}
+	}
+
+	existing := make(map[int64]bool)
+	for _, s := range stats {
+		existing[s.Timestamp.Unix()] = true
+	}
+
+	from = from.Truncate(time.Minute)
+	to = to.Truncate(time.Minute)
+	for t := from; t.Before(to); t = t.Add(time.Minute) {
+		if !existing[t.Unix()] {
+			stats = append(stats, &monitoring.MinuteStatResponse{Timestamp: t})
+		}
+	}
+
+	// Sort by timestamp
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].Timestamp.Before(stats[j].Timestamp)
+	})
+	return stats
+}
+
+// fillMissingHours fills gaps with zero-value entries
+func fillMissingHours(data interface{}, from, to time.Time) interface{} {
+	stats, ok := data.([]*monitoring.HourlyStatResponse)
+	if !ok || stats == nil {
+		stats = []*monitoring.HourlyStatResponse{}
+	}
+
+	existing := make(map[int64]bool)
+	for _, s := range stats {
+		existing[s.Timestamp.Unix()] = true
+	}
+
+	from = from.Truncate(time.Hour)
+	to = to.Truncate(time.Hour)
+	for t := from; t.Before(to); t = t.Add(time.Hour) {
+		if !existing[t.Unix()] {
+			stats = append(stats, &monitoring.HourlyStatResponse{Timestamp: t})
+		}
+	}
+
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].Timestamp.Before(stats[j].Timestamp)
+	})
+	return stats
+}
+
+// fillMissingDays fills gaps with zero-value entries
+func fillMissingDays(data interface{}, from, to time.Time) interface{} {
+	stats, ok := data.([]*monitoring.DailyStatResponse)
+	if !ok || stats == nil {
+		stats = []*monitoring.DailyStatResponse{}
+	}
+
+	existing := make(map[int64]bool)
+	for _, s := range stats {
+		existing[s.Date.Unix()] = true
+	}
+
+	from = time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, from.Location())
+	to = time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, to.Location())
+	for t := from; !t.After(to); t = t.AddDate(0, 0, 1) {
+		if !existing[t.Unix()] {
+			stats = append(stats, &monitoring.DailyStatResponse{Date: t})
+		}
+	}
+
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].Date.Before(stats[j].Date)
+	})
+	return stats
 }

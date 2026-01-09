@@ -75,3 +75,10 @@ func (r *TaskEventRepository) DeleteOldEvents(ctx context.Context, olderThan tim
 func generateEventID() string {
 	return uuid.New().String()
 }
+
+
+// CleanupOldEvents removes task events older than the given time
+func (r *TaskEventRepository) CleanupOldEvents(ctx context.Context, before time.Time) (int64, error) {
+	result := r.ds.DB(ctx).Where("event_time < ?", before).Delete(&TaskEvent{})
+	return result.RowsAffected, result.Error
+}

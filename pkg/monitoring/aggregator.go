@@ -2,6 +2,7 @@ package monitoring
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"waverless/pkg/logger"
@@ -11,7 +12,8 @@ import (
 
 // Aggregator handles monitoring data aggregation
 type Aggregator struct {
-	repo *mysql.MonitoringRepository
+	repo             *mysql.MonitoringRepository
+	lastMinuteAggAt  time.Time // 上次分钟统计的结束时间点
 }
 
 // NewAggregator creates a new aggregator
@@ -19,19 +21,39 @@ func NewAggregator(repo *mysql.MonitoringRepository) *Aggregator {
 	return &Aggregator{repo: repo}
 }
 
-// AggregateMinuteStats aggregates statistics for the last minute
+// AggregateMinuteStats aggregates statistics for pending minutes (catches up if behind)
 func (a *Aggregator) AggregateMinuteStats(ctx context.Context) error {
 	now := time.Now().Truncate(time.Minute)
-	from, to := now.Add(-time.Minute), now
-
-	endpoints := a.getAllEndpoints(ctx, from, to)
-	for endpoint := range endpoints {
-		stat, err := a.repo.AggregateMinuteStats(ctx, endpoint, from, to)
-		if err != nil {
-			logger.ErrorCtx(ctx, "failed to aggregate minute stats for %s: %v", endpoint, err)
-			continue
+	
+	// 初始化：从 2 分钟前开始（确保数据完整）
+	if a.lastMinuteAggAt.IsZero() {
+		a.lastMinuteAggAt = now.Add(-2 * time.Minute)
+	}
+	
+	// 追赶所有缺失的分钟
+	for a.lastMinuteAggAt.Before(now.Add(-time.Minute)) {
+		from := a.lastMinuteAggAt
+		to := from.Add(time.Minute)
+		
+		endpoints := a.getAllEndpoints(ctx, from, to)
+		
+		var wg sync.WaitGroup
+		for endpoint := range endpoints {
+			wg.Add(1)
+			go func(ep string) {
+				defer wg.Done()
+				stat, err := a.repo.AggregateMinuteStats(ctx, ep, from, to)
+				if err != nil {
+					logger.ErrorCtx(ctx, "failed to aggregate minute stats for %s: %v", ep, err)
+					return
+				}
+				a.repo.UpsertMinuteStat(ctx, stat)
+			}(endpoint)
 		}
-		a.repo.UpsertMinuteStat(ctx, stat)
+		wg.Wait()
+		
+		a.lastMinuteAggAt = to
+		logger.DebugCtx(ctx, "aggregated minute stats for %s", from.Format("15:04"))
 	}
 
 	a.repo.CleanupOldMinuteStats(ctx, now.Add(-12*time.Hour))
