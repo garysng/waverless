@@ -235,12 +235,12 @@ func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoin
 	// Use COALESCE(last_task_time, created_at) to handle new workers that never completed a task
 	var currentIdleMs int64
 	r.ds.DB(ctx).Raw(`
-		SELECT COALESCE(SUM(
+		SELECT COALESCE(CAST(SUM(
 			TIMESTAMPDIFF(MICROSECOND, 
 				GREATEST(COALESCE(last_task_time, created_at), ?), 
 				?
 			) / 1000
-		), 0)
+		) AS SIGNED), 0)
 		FROM workers
 		WHERE endpoint = ? AND status IN ('ONLINE', 'BUSY', 'DRAINING') AND current_jobs = 0
 		AND COALESCE(last_task_time, created_at) < ?
