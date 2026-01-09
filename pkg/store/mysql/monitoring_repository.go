@@ -263,13 +263,10 @@ func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoin
 		maxIdleMs = currentIdleMs
 	}
 
-	idleCount := eventIdleStats.Count
-	if currentIdleMs > 0 {
-		idleCount += workerStats.IdleWorkers
-	}
+	// Use idle workers count for average calculation (not event count to avoid double counting)
 	var avgIdleMs float64
-	if idleCount > 0 {
-		avgIdleMs = float64(totalIdleMs) / float64(idleCount)
+	if workerStats.IdleWorkers > 0 {
+		avgIdleMs = float64(totalIdleMs) / float64(workerStats.IdleWorkers)
 	}
 
 	stat.AvgIdleDurationSec = avgIdleMs / 1000
