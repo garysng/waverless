@@ -193,7 +193,7 @@ func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoin
 	stat.P50ExecutionMs = execStats.P50Ms
 	stat.P95ExecutionMs = execStats.P95Ms
 
-	// 4. Worker stats from workers table (current snapshot)
+	// 4. Worker stats - count active workers by status
 	var workerStats struct {
 		ActiveWorkers int `gorm:"column:active_workers"`
 		IdleWorkers   int `gorm:"column:idle_workers"`
@@ -204,35 +204,78 @@ func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoin
 			COUNT(CASE WHEN current_jobs > 0 THEN 1 END) as active_workers,
 			COUNT(CASE WHEN current_jobs = 0 THEN 1 END) as idle_workers,
 			COUNT(*) as total_workers
-		FROM workers WHERE endpoint = ? AND status IN ('ONLINE', 'BUSY') AND last_heartbeat >= ?
-	`, endpoint, from).Scan(&workerStats)
+		FROM workers WHERE endpoint = ? AND status IN ('ONLINE', 'BUSY', 'DRAINING')
+	`, endpoint).Scan(&workerStats)
 	stat.ActiveWorkers = workerStats.ActiveWorkers
 	stat.IdleWorkers = workerStats.IdleWorkers
 	if workerStats.TotalWorkers > 0 {
 		stat.AvgWorkerUtilization = float64(workerStats.ActiveWorkers) / float64(workerStats.TotalWorkers) * 100
 	}
 
-	// 5. Worker idle stats from worker_events (WORKER_TASK_PULLED has idle_duration_ms)
-	var idleStats struct {
-		AvgIdleMs   float64 `gorm:"column:avg_idle_ms"`
-		MaxIdleMs   int64   `gorm:"column:max_idle_ms"`
-		TotalIdleMs int64   `gorm:"column:total_idle_ms"`
-		IdleCount   int     `gorm:"column:idle_count"`
+	// 5. Worker idle stats - combine WORKER_TASK_PULLED events + current idle time
+	// Handle boundary crossing: only count idle time within [from, to) window
+
+	// Part 1: From WORKER_TASK_PULLED events in [from, to) - clip to window boundary
+	var eventIdleStats struct {
+		SumIdleMs int64 `gorm:"column:sum_idle_ms"`
+		MaxIdleMs int64 `gorm:"column:max_idle_ms"`
+		Count     int   `gorm:"column:count"`
 	}
 	r.ds.DB(ctx).Raw(`
 		SELECT 
-			COALESCE(AVG(idle_duration_ms), 0) as avg_idle_ms,
-			COALESCE(MAX(idle_duration_ms), 0) as max_idle_ms,
-			COALESCE(SUM(idle_duration_ms), 0) as total_idle_ms,
-			COUNT(*) as idle_count
+			COALESCE(SUM(LEAST(idle_duration_ms, TIMESTAMPDIFF(MICROSECOND, ?, event_time) / 1000)), 0) as sum_idle_ms,
+			COALESCE(MAX(LEAST(idle_duration_ms, TIMESTAMPDIFF(MICROSECOND, ?, event_time) / 1000)), 0) as max_idle_ms,
+			COUNT(*) as count
 		FROM worker_events 
 		WHERE endpoint = ? AND event_time >= ? AND event_time < ? 
 		AND event_type = 'WORKER_TASK_PULLED' AND idle_duration_ms IS NOT NULL
-	`, endpoint, from, to).Scan(&idleStats)
-	stat.AvgIdleDurationSec = idleStats.AvgIdleMs / 1000
-	stat.MaxIdleDurationSec = int(idleStats.MaxIdleMs / 1000)
-	stat.TotalIdleTimeSec = int(idleStats.TotalIdleMs / 1000)
-	stat.IdleCount = idleStats.IdleCount
+	`, from, from, endpoint, from, to).Scan(&eventIdleStats)
+
+	// Part 2: Current idle time for workers still idle at end of window
+	// Use COALESCE(last_task_time, created_at) to handle new workers that never completed a task
+	var currentIdleMs int64
+	r.ds.DB(ctx).Raw(`
+		SELECT COALESCE(SUM(
+			TIMESTAMPDIFF(MICROSECOND, 
+				GREATEST(COALESCE(last_task_time, created_at), ?), 
+				?
+			) / 1000
+		), 0)
+		FROM workers
+		WHERE endpoint = ? AND status IN ('ONLINE', 'BUSY', 'DRAINING') AND current_jobs = 0
+		AND COALESCE(last_task_time, created_at) < ?
+	`, from, to, endpoint, to).Scan(&currentIdleMs)
+
+	// Part 3: WORKER_TASK_PULLED at boundary [to, to+1s) - their idle time belongs to this window
+	var boundaryIdleMs int64
+	windowMs := to.Sub(from).Milliseconds()
+	r.ds.DB(ctx).Raw(`
+		SELECT COALESCE(SUM(LEAST(idle_duration_ms, ?)), 0)
+		FROM worker_events 
+		WHERE endpoint = ? AND event_time >= ? AND event_time < ?
+		AND event_type = 'WORKER_TASK_PULLED' AND idle_duration_ms IS NOT NULL
+	`, windowMs, endpoint, to, to.Add(time.Second)).Scan(&boundaryIdleMs)
+
+	totalIdleMs := eventIdleStats.SumIdleMs + currentIdleMs + boundaryIdleMs
+
+	var maxIdleMs int64 = eventIdleStats.MaxIdleMs
+	if currentIdleMs > maxIdleMs {
+		maxIdleMs = currentIdleMs
+	}
+
+	idleCount := eventIdleStats.Count
+	if currentIdleMs > 0 {
+		idleCount += workerStats.IdleWorkers
+	}
+	var avgIdleMs float64
+	if idleCount > 0 {
+		avgIdleMs = float64(totalIdleMs) / float64(idleCount)
+	}
+
+	stat.AvgIdleDurationSec = avgIdleMs / 1000
+	stat.MaxIdleDurationSec = int(maxIdleMs / 1000)
+	stat.TotalIdleTimeSec = int(totalIdleMs / 1000)
+	stat.IdleCount = workerStats.IdleWorkers
 
 	// 6. Worker lifecycle from worker_events
 	var lifecycleStats struct {
@@ -411,14 +454,13 @@ func (r *MonitoringRepository) GetAllEndpoints(ctx context.Context) ([]string, e
 // GetRealtimeMetrics returns real-time metrics for an endpoint
 func (r *MonitoringRepository) GetRealtimeMetrics(ctx context.Context, endpoint string) (*RealtimeMetrics, error) {
 	metrics := &RealtimeMetrics{Endpoint: endpoint}
-	threshold := time.Now().Add(-60 * time.Second)
 
 	r.ds.DB(ctx).Raw(`
 		SELECT COUNT(*) as total,
 			COUNT(CASE WHEN current_jobs > 0 THEN 1 END) as active,
 			COUNT(CASE WHEN current_jobs = 0 THEN 1 END) as idle
-		FROM workers WHERE endpoint = ? AND status IN ('ONLINE', 'BUSY') AND last_heartbeat > ?
-	`, endpoint, threshold).Scan(&metrics.Workers)
+		FROM workers WHERE endpoint = ? AND status IN ('ONLINE', 'BUSY', 'DRAINING')
+	`, endpoint).Scan(&metrics.Workers)
 
 	lastMinute := time.Now().Add(-time.Minute)
 	r.ds.DB(ctx).Raw(`
