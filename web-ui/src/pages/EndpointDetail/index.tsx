@@ -440,7 +440,7 @@ const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
     const sum = (key: string) => statsData?.reduce((a: number, s: any) => a + (s[key] || 0), 0) || 0;
     const avg = (key: string) => statsData?.length ? (sum(key) / statsData.length).toFixed(1) : '0';
     return {
-      totals: { completed: sum('tasks_completed'), failed: sum('tasks_failed'), retried: sum('tasks_retried'), coldStarts: sum('cold_starts') },
+      totals: { submitted: sum('tasks_submitted'), completed: sum('tasks_completed'), failed: sum('tasks_failed'), retried: sum('tasks_retried'), coldStarts: sum('cold_starts') },
       avgValues: { activeWorkers: avg('active_workers'), workerUtilization: avg('avg_worker_utilization') }
     };
   }, [statsData]);
@@ -461,6 +461,7 @@ const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
     };
 
     init(requestsRef, { grid, tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel }, series: [
+      { name: 'Submitted', type: 'bar', stack: 'total', data: statsData.map((s: any) => s.tasks_submitted || 0), itemStyle: { color: '#3b82f6' }, barMaxWidth: 10 },
       { name: 'Completed', type: 'bar', stack: 'total', data: statsData.map((s: any) => s.tasks_completed || 0), itemStyle: { color: '#48bb78' }, barMaxWidth: 10 },
       { name: 'Failed', type: 'bar', stack: 'total', data: statsData.map((s: any) => s.tasks_failed || 0), itemStyle: { color: '#f56565' }, barMaxWidth: 10 },
       { name: 'Retried', type: 'bar', stack: 'total', data: statsData.map((s: any) => s.tasks_retried || 0), itemStyle: { color: '#ecc94b' }, barMaxWidth: 10 },
@@ -472,12 +473,12 @@ const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
     init(delayRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel: { ...axisLabel, formatter: (v: number) => (v / 1000).toFixed(0) + 's' } }, series: [{ name: 'Delay', type: 'bar', data: statsData.map((s: any) => s.avg_queue_wait_ms || 0), itemStyle: { color: '#f56565' }, barMaxWidth: 8 }] });
     init(coldStartCountRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel }, series: [{ name: 'Count', type: 'bar', data: statsData.map((s: any) => s.cold_starts || 0), itemStyle: { color: '#8b5cf6' }, barMaxWidth: 8 }] });
     init(coldStartTimeRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel: { ...axisLabel, formatter: (v: number) => v.toFixed(0) + 's' } }, series: [{ name: 'Time', type: 'bar', data: statsData.map((s: any) => (s.avg_cold_start_ms || 0) / 1000), itemStyle: { color: '#06b6d4' }, barMaxWidth: 8 }] });
-    init(workersRef, { grid, tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel }, series: [
+    init(workersRef, { grid, tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', minInterval: 1, axisLabel }, series: [
       { name: 'Active', type: 'line', stack: 'total', data: statsData.map((s: any) => s.active_workers || 0), smooth: true, symbol: 'none', lineStyle: { width: 0 }, areaStyle: { color: '#3b82f6' } },
       { name: 'Idle', type: 'line', stack: 'total', data: statsData.map((s: any) => s.idle_workers || 0), smooth: true, symbol: 'none', lineStyle: { width: 0 }, areaStyle: { color: '#94a3b8' } },
     ]});
     init(utilizationRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', max: 100, axisLabel: { ...axisLabel, formatter: (v: number) => v + '%' } }, series: [{ name: 'Utilization', type: 'line', data: statsData.map((s: any) => s.avg_worker_utilization || 0), smooth: true, symbol: 'none', lineStyle: { width: 2, color: '#10b981' }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(16,185,129,0.3)' }, { offset: 1, color: 'rgba(16,185,129,0.05)' }] } } }] });
-    init(idleTimeRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel: { ...axisLabel, formatter: (v: number) => v.toFixed(0) + 's' } }, series: [{ name: 'Idle Time', type: 'bar', data: statsData.map((s: any) => s.avg_idle_duration_sec || 0), itemStyle: { color: '#f59e0b' }, barMaxWidth: 8 }] });
+    init(idleTimeRef, { grid, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: labels, axisLabel }, yAxis: { type: 'value', axisLabel: { ...axisLabel, formatter: (v: number) => v.toFixed(0) + 's' } }, series: [{ name: 'Idle Time', type: 'line', data: statsData.map((s: any) => s.avg_idle_duration_sec || 0), smooth: true, symbol: 'none', lineStyle: { width: 0 }, areaStyle: { color: '#f59e0b' } }] });
   }, [statsData, granularity, formatLabel, grid, axisLabel, dataZoom]);
 
   const hasData = statsData && statsData.length > 0;
@@ -528,14 +529,14 @@ const MetricsTab = ({ endpoint }: { endpoint: AppInfo }) => {
         </label>
       </div>
       <div className="charts-grid">
-        <ChartCard chartRef={requestsRef} title="Requests" total={`Total: ${totals.completed + totals.failed}`} legend={[{ color: '#48bb78', label: `Completed: ${totals.completed}` }, { color: '#f56565', label: `Failed: ${totals.failed}` }, { color: '#ecc94b', label: `Retried: ${totals.retried}` }]} hasData={hasData} />
+        <ChartCard chartRef={requestsRef} title="Requests" total={`Submitted: ${totals.submitted}`} legend={[{ color: '#3b82f6', label: `Submitted: ${totals.submitted}` }, { color: '#48bb78', label: `Completed: ${totals.completed}` }, { color: '#f56565', label: `Failed: ${totals.failed}` }, { color: '#ecc94b', label: `Retried: ${totals.retried}` }]} hasData={hasData} />
         <ChartCard chartRef={executionRef} title="Execution Time" legend={[{ color: '#3b82f6', label: 'P50' }, { color: '#f56565', label: 'P95' }]} hasData={hasData} />
         <ChartCard chartRef={delayRef} title="Queue Wait Time" hasData={hasData} />
-        <ChartCard chartRef={coldStartCountRef} title="Cold Start Count" total={`Total: ${totals.coldStarts}`} hasData={hasData} />
-        <ChartCard chartRef={coldStartTimeRef} title="Cold Start Time" hasData={hasData} />
         <ChartCard chartRef={workersRef} title="Worker Count" total={`Avg: ${avgValues.activeWorkers}`} legend={[{ color: '#3b82f6', label: 'Active' }, { color: '#94a3b8', label: 'Idle' }]} hasData={hasData} />
         <ChartCard chartRef={utilizationRef} title="Worker Utilization" total={`Avg: ${avgValues.workerUtilization}%`} hasData={hasData} />
         <ChartCard chartRef={idleTimeRef} title="Worker Idle Time (Avg)" hasData={hasData} />
+        <ChartCard chartRef={coldStartCountRef} title="Cold Start Count" total={`Total: ${totals.coldStarts}`} hasData={hasData} />
+        <ChartCard chartRef={coldStartTimeRef} title="Cold Start Time" hasData={hasData} />
       </div>
     </>
   );

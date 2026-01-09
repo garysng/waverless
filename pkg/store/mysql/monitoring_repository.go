@@ -280,14 +280,23 @@ func (r *MonitoringRepository) AggregateMinuteStats(ctx context.Context, endpoin
 	stat.AvgIdleDurationSec = avgIdleMs / 1000
 	stat.MaxIdleDurationSec = int(maxIdleMs / 1000)
 	stat.TotalIdleTimeSec = int(totalIdleMs / 1000)
-	stat.IdleCount = workerStats.IdleWorkers
+	stat.IdleCount = workerStats.TotalWorkers
 
-	// Calculate utilization based on idle time: utilization = (total_time - idle_time) / total_time
+	// Calculate active/idle workers based on idle time ratio
+	// If idle_time == window_time, worker was fully idle; if idle_time < window_time, worker was active
 	if workerStats.TotalWorkers > 0 && windowMs > 0 {
 		totalWorkerTimeMs := int64(workerStats.TotalWorkers) * windowMs
 		activeTimeMs := totalWorkerTimeMs - totalIdleMs
 		if activeTimeMs < 0 {
 			activeTimeMs = 0
+		}
+		// Estimate: if any active time, count as active worker
+		if activeTimeMs > 0 {
+			stat.ActiveWorkers = workerStats.TotalWorkers
+			stat.IdleWorkers = 0
+		} else {
+			stat.ActiveWorkers = 0
+			stat.IdleWorkers = workerStats.TotalWorkers
 		}
 		stat.AvgWorkerUtilization = float64(activeTimeMs) / float64(totalWorkerTimeMs) * 100
 	}
