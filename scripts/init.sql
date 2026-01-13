@@ -1,5 +1,4 @@
 
-
 CREATE TABLE `autoscaler_configs` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `endpoint` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Endpoint name',
@@ -27,7 +26,7 @@ CREATE TABLE `autoscaler_configs` (
   UNIQUE KEY `idx_endpoint_unique` (`endpoint`),
   KEY `idx_enabled` (`enabled`),
   KEY `idx_last_task_time` (`last_task_time`)
-) ENGINE=InnoDB AUTO_INCREMENT=13 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Autoscaler configuration per endpoint';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Autoscaler configuration per endpoint';
 
 CREATE TABLE `endpoints` (
   `id` bigint NOT NULL AUTO_INCREMENT,
@@ -39,114 +38,42 @@ CREATE TABLE `endpoints` (
   `env` json DEFAULT NULL COMMENT 'Environment variables as JSON object',
   `labels` json DEFAULT NULL COMMENT 'Labels as JSON object',
   `status` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT 'active' COMMENT 'Endpoint status: active, inactive, deleted',
+  `enable_ptrace` tinyint(1) NOT NULL DEFAULT '0' COMMENT 'Enable SYS_PTRACE capability for debugging',
+  `max_pending_tasks` int NOT NULL DEFAULT '1' COMMENT 'Maximum allowed pending tasks before warning clients',
   `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
   UNIQUE KEY `idx_endpoint_unique` (`endpoint`),
   KEY `idx_status` (`status`),
   KEY `idx_created_at` (`created_at`)
-) ENGINE=InnoDB AUTO_INCREMENT=14 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Endpoint metadata and deployment configuration';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Endpoint metadata and deployment configuration';
 
-ALTER TABLE `endpoints` ADD COLUMN `enable_ptrace` tinyint(1) NOT NULL DEFAULT '0' COMMENT 'Enable SYS_PTRACE capability for debugging (only for fixed resource pools)';
-
-ALTER TABLE `endpoints` ADD COLUMN `max_pending_tasks` int NOT NULL DEFAULT '1' COMMENT 'Maximum allowed pending tasks before warning clients';
-
-CREATE TABLE `gpu_usage_records` (
+CREATE TABLE `workers` (
   `id` bigint NOT NULL AUTO_INCREMENT,
-  `task_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Task ID',
-  `endpoint` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Endpoint name',
-  `worker_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT 'Worker/Pod ID',
-  `spec_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT 'Spec name (e.g., h200-single, NVIDIA-A100-80GB)',
-  `gpu_count` int NOT NULL DEFAULT '1' COMMENT 'Number of GPUs used',
-  `gpu_type` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT 'GPU type (e.g., NVIDIA-H200, A100)',
-  `gpu_memory_gb` int DEFAULT NULL COMMENT 'GPU memory per card (GB)',
-  `started_at` datetime(3) NOT NULL COMMENT 'Task start time',
-  `completed_at` datetime(3) NOT NULL COMMENT 'Task completion time',
-  `duration_seconds` int NOT NULL COMMENT 'Task duration in seconds',
-  `gpu_hours` decimal(10,4) NOT NULL COMMENT 'GPU card-hours (gpu_count × duration_hours)',
-  `status` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Task status (COMPLETED, FAILED)',
+  `worker_id` varchar(255) NOT NULL COMMENT 'Worker unique ID (usually pod name)',
+  `endpoint` varchar(255) NOT NULL COMMENT 'Endpoint name',
+  `pod_name` varchar(255) DEFAULT NULL COMMENT 'K8s pod name',
+  `status` varchar(50) NOT NULL DEFAULT 'ONLINE' COMMENT 'Worker status: ONLINE, OFFLINE, BUSY, DRAINING',
+  `concurrency` int NOT NULL DEFAULT '1' COMMENT 'Maximum concurrency',
+  `current_jobs` int NOT NULL DEFAULT '0' COMMENT 'Current number of jobs',
+  `version` varchar(100) DEFAULT NULL COMMENT 'Worker version',
+  `pod_created_at` datetime(3) DEFAULT NULL COMMENT 'Pod creation time',
+  `pod_started_at` datetime(3) DEFAULT NULL COMMENT 'Pod started time (container running)',
+  `pod_ready_at` datetime(3) DEFAULT NULL COMMENT 'Pod ready time',
+  `cold_start_duration_ms` bigint DEFAULT NULL COMMENT 'Cold start duration in milliseconds',
+  `last_heartbeat` datetime(3) NOT NULL COMMENT 'Last heartbeat time',
+  `last_task_time` datetime(3) DEFAULT NULL COMMENT 'Last task completion time',
+  `total_tasks_completed` bigint NOT NULL DEFAULT '0' COMMENT 'Total completed tasks',
+  `total_tasks_failed` bigint NOT NULL DEFAULT '0' COMMENT 'Total failed tasks',
+  `total_execution_time_ms` bigint NOT NULL DEFAULT '0' COMMENT 'Total execution time in milliseconds',
   `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
-  UNIQUE KEY `idx_task_id_unique` (`task_id`),
+  UNIQUE KEY `idx_worker_id_unique` (`worker_id`),
   KEY `idx_endpoint` (`endpoint`),
-  KEY `idx_spec_name` (`spec_name`),
-  KEY `idx_started_at` (`started_at`),
-  KEY `idx_completed_at` (`completed_at`),
-  KEY `idx_created_at` (`created_at`)
-) ENGINE=InnoDB AUTO_INCREMENT=7115 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='GPU usage records at task level';
-
-CREATE TABLE `gpu_usage_statistics_daily` (
-  `id` bigint NOT NULL AUTO_INCREMENT,
-  `time_bucket` date NOT NULL COMMENT 'Time bucket (day granularity, e.g., 2025-11-12)',
-  `scope_type` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Scope type: global, endpoint, or spec',
-  `scope_value` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT 'Endpoint/Spec name (NULL for global)',
-  `total_tasks` int DEFAULT '0' COMMENT 'Total tasks completed in this day',
-  `completed_tasks` int DEFAULT '0' COMMENT 'Successfully completed tasks',
-  `failed_tasks` int DEFAULT '0' COMMENT 'Failed tasks',
-  `total_gpu_hours` decimal(10,4) DEFAULT '0.0000' COMMENT 'Total GPU card-hours used',
-  `avg_gpu_count` decimal(10,2) DEFAULT '0.00' COMMENT 'Average GPU count per task',
-  `max_gpu_count` int DEFAULT '0' COMMENT 'Max GPU count in any single task',
-  `available_gpu_hours` decimal(10,4) DEFAULT NULL COMMENT 'Available GPU hours (capacity)',
-  `utilization_rate` decimal(5,2) DEFAULT NULL COMMENT 'GPU utilization rate (%)',
-  `peak_hour` datetime DEFAULT NULL COMMENT 'Hour with highest GPU usage',
-  `peak_gpu_hours` decimal(10,4) DEFAULT NULL COMMENT 'GPU hours in peak hour',
-  `period_start` datetime(3) NOT NULL COMMENT 'Period start time',
-  `period_end` datetime(3) NOT NULL COMMENT 'Period end time',
-  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  `scope_value_key` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci GENERATED ALWAYS AS (coalesce(`scope_value`,_utf8mb4'__GLOBAL__')) STORED,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_time_scope` (`time_bucket`,`scope_type`,`scope_value_key`),
-  KEY `idx_time_bucket` (`time_bucket`),
-  KEY `idx_scope` (`scope_type`,`scope_value`),
-  KEY `idx_updated_at` (`updated_at`)
-) ENGINE=InnoDB AUTO_INCREMENT=103 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Daily aggregated GPU usage statistics';
-
-CREATE TABLE `gpu_usage_statistics_hourly` (
-  `id` bigint NOT NULL AUTO_INCREMENT,
-  `time_bucket` datetime NOT NULL COMMENT 'Time bucket (hour granularity, e.g., 2025-11-12 10:00:00)',
-  `scope_type` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Scope type: global, endpoint, or spec',
-  `scope_value` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT 'Endpoint/Spec name (NULL for global)',
-  `total_tasks` int DEFAULT '0' COMMENT 'Total tasks completed in this hour',
-  `completed_tasks` int DEFAULT '0' COMMENT 'Successfully completed tasks',
-  `failed_tasks` int DEFAULT '0' COMMENT 'Failed tasks',
-  `total_gpu_hours` decimal(10,4) DEFAULT '0.0000' COMMENT 'Total GPU card-hours used',
-  `avg_gpu_count` decimal(10,2) DEFAULT '0.00' COMMENT 'Average GPU count per task',
-  `max_gpu_count` int DEFAULT '0' COMMENT 'Max GPU count in any single task',
-  `peak_minute` datetime DEFAULT NULL COMMENT 'Minute with highest GPU usage',
-  `peak_gpu_hours` decimal(10,4) DEFAULT NULL COMMENT 'GPU hours in peak minute',
-  `period_start` datetime(3) NOT NULL COMMENT 'Period start time',
-  `period_end` datetime(3) NOT NULL COMMENT 'Period end time',
-  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  `scope_value_key` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci GENERATED ALWAYS AS (coalesce(`scope_value`,_utf8mb4'__GLOBAL__')) STORED,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_time_scope` (`time_bucket`,`scope_type`,`scope_value_key`),
-  KEY `idx_time_bucket` (`time_bucket`),
-  KEY `idx_scope` (`scope_type`,`scope_value`),
-  KEY `idx_updated_at` (`updated_at`)
-) ENGINE=InnoDB AUTO_INCREMENT=377 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Hourly aggregated GPU usage statistics';
-
-CREATE TABLE `gpu_usage_statistics_minute` (
-  `id` bigint NOT NULL AUTO_INCREMENT,
-  `time_bucket` datetime NOT NULL COMMENT 'Time bucket (minute granularity, e.g., 2025-11-12 10:30:00)',
-  `scope_type` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Scope type: global, endpoint, or spec',
-  `scope_value` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT 'Endpoint/Spec name (NULL for global)',
-  `total_tasks` int DEFAULT '0' COMMENT 'Total tasks completed in this minute',
-  `completed_tasks` int DEFAULT '0' COMMENT 'Successfully completed tasks',
-  `failed_tasks` int DEFAULT '0' COMMENT 'Failed tasks',
-  `total_gpu_seconds` decimal(12,2) DEFAULT '0.00' COMMENT 'Total GPU card-seconds used',
-  `total_gpu_hours` decimal(10,4) DEFAULT '0.0000' COMMENT 'Total GPU card-hours used',
-  `avg_gpu_count` decimal(10,2) DEFAULT '0.00' COMMENT 'Average GPU count per task',
-  `max_gpu_count` int DEFAULT '0' COMMENT 'Max GPU count in any single task',
-  `period_start` datetime(3) NOT NULL COMMENT 'Period start time',
-  `period_end` datetime(3) NOT NULL COMMENT 'Period end time',
-  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  `scope_value_key` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci GENERATED ALWAYS AS (coalesce(`scope_value`,_utf8mb4'__GLOBAL__')) STORED,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_time_scope` (`time_bucket`,`scope_type`,`scope_value_key`),
-  KEY `idx_time_bucket` (`time_bucket`),
-  KEY `idx_scope` (`scope_type`,`scope_value`),
-  KEY `idx_updated_at` (`updated_at`)
-) ENGINE=InnoDB AUTO_INCREMENT=6496 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Minute-level aggregated GPU usage statistics';
+  KEY `idx_status` (`status`),
+  KEY `idx_last_heartbeat` (`last_heartbeat`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Worker records';
 
 CREATE TABLE `scaling_events` (
   `id` bigint NOT NULL AUTO_INCREMENT,
@@ -165,7 +92,7 @@ CREATE TABLE `scaling_events` (
   KEY `idx_endpoint_timestamp` (`endpoint`,`timestamp`),
   KEY `idx_action` (`action`),
   KEY `idx_timestamp` (`timestamp`)
-) ENGINE=InnoDB AUTO_INCREMENT=7815 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Autoscaling event history';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Autoscaling event history';
 
 CREATE TABLE `task_events` (
   `id` bigint NOT NULL AUTO_INCREMENT,
@@ -181,15 +108,19 @@ CREATE TABLE `task_events` (
   `error_message` text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci COMMENT 'Error message if event is failure-related',
   `error_type` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT 'Error type classification',
   `retry_count` int NOT NULL DEFAULT '0' COMMENT 'Retry count at the time of this event',
+  `queue_wait_ms` int DEFAULT NULL COMMENT 'Queue wait time in milliseconds',
+  `execution_duration_ms` int DEFAULT NULL COMMENT 'Execution duration in milliseconds',
+  `total_duration_ms` int DEFAULT NULL COMMENT 'Total duration in milliseconds',
   `metadata` json DEFAULT NULL COMMENT 'Additional event metadata',
   PRIMARY KEY (`id`),
   UNIQUE KEY `idx_event_id_unique` (`event_id`),
   KEY `idx_task_id_event_time` (`task_id`,`event_time`),
   KEY `idx_endpoint_event_time` (`endpoint`,`event_time`),
+  KEY `idx_endpoint_event_type` (`endpoint`,`event_type`,`event_time`),
   KEY `idx_worker_id` (`worker_id`),
   KEY `idx_event_type` (`event_type`),
   KEY `idx_event_time` (`event_time`)
-) ENGINE=InnoDB AUTO_INCREMENT=105022 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Task event log for detailed tracking and auditing';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Task event log for detailed tracking and auditing';
 
 CREATE TABLE `task_statistics` (
   `id` int NOT NULL AUTO_INCREMENT,
@@ -205,7 +136,7 @@ CREATE TABLE `task_statistics` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_scope` (`scope_type`,`scope_value`),
   KEY `idx_updated_at` (`updated_at`)
-) ENGINE=InnoDB AUTO_INCREMENT=77671 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Task statistics for dashboard';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Task statistics for dashboard';
 
 CREATE TABLE `tasks` (
   `id` bigint NOT NULL AUTO_INCREMENT,
@@ -217,6 +148,7 @@ CREATE TABLE `tasks` (
   `error` text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci COMMENT 'Error message if task failed',
   `worker_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT 'Worker ID processing this task',
   `webhook_url` varchar(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT 'Webhook URL for completion notification',
+  `webhook_status` varchar(50) DEFAULT NULL COMMENT 'Webhook status: PENDING, SUCCESS, FAILED',
   `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   `started_at` datetime(3) DEFAULT NULL COMMENT 'Time when task started processing',
@@ -228,14 +160,12 @@ CREATE TABLE `tasks` (
   KEY `idx_status` (`status`),
   KEY `idx_worker_id` (`worker_id`),
   KEY `idx_created_at` (`created_at`),
-  KEY `idx_completed_at` (`completed_at`)
-) ENGINE=InnoDB AUTO_INCREMENT=26304 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Task records with all statuses';
+  KEY `idx_completed_at` (`completed_at`),
+  KEY `idx_endpoint_id` (`endpoint`, `id`),
+  KEY `idx_endpoint_status_id` (`endpoint`, `status`, `id`),
+  KEY `idx_status_id` (`status`, `id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Task records with all statuses';
 
-ALTER TABLE `tasks`
-  ADD INDEX `idx_endpoint_id` (`endpoint`, `id`),
-  ADD INDEX `idx_endpoint_status_id` (`endpoint`, `status`, `id`),
-  ADD INDEX `idx_status_id` (`status`, `id`);
-  
 CREATE TABLE `resource_specs` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'Spec name (unique identifier)',
@@ -259,3 +189,85 @@ CREATE TABLE `resource_specs` (
   KEY `idx_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Resource specifications for deployments';
 
+-- Monitoring aggregation tables (new)
+CREATE TABLE `endpoint_minute_stats` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `endpoint` varchar(255) NOT NULL,
+  `stat_minute` datetime NOT NULL COMMENT 'Minute timestamp',
+  `active_workers` int DEFAULT 0,
+  `idle_workers` int DEFAULT 0,
+  `tasks_submitted` int DEFAULT 0,
+  `tasks_completed` int DEFAULT 0,
+  `tasks_failed` int DEFAULT 0,
+  `tasks_timeout` int DEFAULT 0,
+  `avg_queue_wait_ms` decimal(10,2) DEFAULT 0,
+  `avg_execution_ms` decimal(10,2) DEFAULT 0,
+  `p95_execution_ms` decimal(10,2) DEFAULT 0,
+  `avg_gpu_utilization` decimal(5,2) DEFAULT 0,
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_endpoint_minute` (`endpoint`, `stat_minute`),
+  KEY `idx_stat_minute` (`stat_minute`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Endpoint minute-level statistics';
+
+CREATE TABLE `endpoint_hourly_stats` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `endpoint` varchar(255) NOT NULL,
+  `stat_hour` datetime NOT NULL COMMENT 'Hour timestamp',
+  `active_workers` int DEFAULT 0,
+  `idle_workers` int DEFAULT 0,
+  `tasks_submitted` int DEFAULT 0,
+  `tasks_completed` int DEFAULT 0,
+  `tasks_failed` int DEFAULT 0,
+  `tasks_timeout` int DEFAULT 0,
+  `avg_queue_wait_ms` decimal(10,2) DEFAULT 0,
+  `avg_execution_ms` decimal(10,2) DEFAULT 0,
+  `p95_execution_ms` decimal(10,2) DEFAULT 0,
+  `avg_gpu_utilization` decimal(5,2) DEFAULT 0,
+  `cold_starts` int DEFAULT 0,
+  `avg_cold_start_ms` decimal(10,2) DEFAULT 0,
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_endpoint_hour` (`endpoint`, `stat_hour`),
+  KEY `idx_stat_hour` (`stat_hour`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Endpoint hourly statistics';
+
+CREATE TABLE `endpoint_daily_stats` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `endpoint` varchar(255) NOT NULL,
+  `stat_date` date NOT NULL COMMENT 'Date',
+  `active_workers` int DEFAULT 0,
+  `idle_workers` int DEFAULT 0,
+  `tasks_submitted` int DEFAULT 0,
+  `tasks_completed` int DEFAULT 0,
+  `tasks_failed` int DEFAULT 0,
+  `tasks_timeout` int DEFAULT 0,
+  `avg_queue_wait_ms` decimal(10,2) DEFAULT 0,
+  `avg_execution_ms` decimal(10,2) DEFAULT 0,
+  `p95_execution_ms` decimal(10,2) DEFAULT 0,
+  `avg_gpu_utilization` decimal(5,2) DEFAULT 0,
+  `cold_starts` int DEFAULT 0,
+  `avg_cold_start_ms` decimal(10,2) DEFAULT 0,
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_endpoint_date` (`endpoint`, `stat_date`),
+  KEY `idx_stat_date` (`stat_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Endpoint daily statistics';
+
+CREATE TABLE `worker_resource_snapshots` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `worker_id` varchar(255) NOT NULL,
+  `snapshot_at` datetime(3) NOT NULL,
+  `gpu_utilization` decimal(5,2) DEFAULT NULL,
+  `gpu_memory_used_mb` int DEFAULT NULL,
+  `gpu_memory_total_mb` int DEFAULT NULL,
+  `gpu_temperature` int DEFAULT NULL,
+  `cpu_utilization` decimal(5,2) DEFAULT NULL,
+  `memory_used_mb` int DEFAULT NULL,
+  `memory_total_mb` int DEFAULT NULL,
+  `current_task_id` varchar(255) DEFAULT NULL,
+  `is_idle` tinyint(1) NOT NULL DEFAULT 1,
+  PRIMARY KEY (`id`),
+  KEY `idx_worker_snapshot` (`worker_id`, `snapshot_at`),
+  KEY `idx_snapshot_at` (`snapshot_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Worker resource usage snapshots';

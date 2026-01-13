@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"waverless/app/handler"
 	"waverless/app/router"
@@ -12,11 +13,14 @@ import (
 	"waverless/pkg/autoscaler"
 	"waverless/pkg/config"
 	"waverless/pkg/deploy/k8s"
+	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
+	"waverless/pkg/monitoring"
 	"waverless/pkg/provider"
-	"waverless/pkg/queue/asynq"
 	mysqlstore "waverless/pkg/store/mysql"
 	redisstore "waverless/pkg/store/redis"
+
+	appsv1 "k8s.io/api/apps/v1"
 
 	"github.com/gin-gonic/gin"
 )
@@ -44,7 +48,7 @@ func (app *Application) initLogger() error {
 
 // initMySQL initializes MySQL
 func (app *Application) initMySQL() error {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=UTC",
 		app.config.MySQL.User,
 		app.config.MySQL.Password,
 		app.config.MySQL.Host,
@@ -52,7 +56,7 @@ func (app *Application) initMySQL() error {
 		app.config.MySQL.Database,
 	)
 
-	repo, err := mysqlstore.NewRepository(dsn)
+	repo, err := mysqlstore.NewRepository(dsn, app.config.MySQL.Proxy)
 	if err != nil {
 		return err
 	}
@@ -106,27 +110,8 @@ func (app *Application) initProviders() error {
 	return nil
 }
 
-// initQueue initializes queue manager
-func (app *Application) initQueue() error {
-	queueMgr, err := asynq.NewManager(app.config)
-	if err != nil {
-		return err
-	}
-
-	app.queueMgr = queueMgr
-	app.registerCleanup(func() {
-		queueMgr.Close()
-		logger.InfoCtx(app.ctx, "Queue manager has been closed")
-	})
-
-	return nil
-}
-
 // initServices initializes service layer
 func (app *Application) initServices() error {
-	// Worker repository from Redis
-	workerRepo := redisstore.NewWorkerRepository(app.redisClient)
-
 	// Get K8s deployment provider for draining check
 	var k8sDeployProvider *k8s.K8sDeploymentProvider
 	if app.config.K8s.Enabled {
@@ -135,12 +120,23 @@ func (app *Application) initServices() error {
 		}
 	}
 
+	// Initialize worker service (MySQL-based)
+	app.workerService = service.NewWorkerService(
+		app.mysqlRepo.Worker,
+		app.mysqlRepo.Task,
+		k8sDeployProvider,
+	)
+
+	// Initialize worker event service for monitoring
+	app.workerEventService = service.NewWorkerEventService(app.mysqlRepo.Monitoring)
+	app.workerService.SetWorkerEventService(app.workerEventService)
+
 	// Initialize endpoint service
 	app.endpointService = endpointsvc.NewService(
 		app.mysqlRepo.Endpoint,
 		app.mysqlRepo.AutoscalerConfig,
 		app.mysqlRepo.Task,
-		workerRepo,
+		app.workerService,
 		app.deploymentProvider,
 	)
 
@@ -148,34 +144,30 @@ func (app *Application) initServices() error {
 	app.taskService = service.NewTaskService(
 		app.mysqlRepo.Task,
 		app.mysqlRepo.TaskEvent,
-		workerRepo,
-		app.queueMgr,
 		app.endpointService,
-		app.mysqlRepo.GPUUsage,
 		app.deploymentProvider,
-	)
-
-	// Initialize worker service
-	app.workerService = service.NewWorkerService(
-		workerRepo,
-		app.mysqlRepo.Task,
-		k8sDeployProvider,
 	)
 
 	// Set task service on worker service (for event recording)
 	app.workerService.SetTaskService(app.taskService)
 
+	// Set worker service on task service (for worker stats recording)
+	app.taskService.SetWorkerService(app.workerService)
+
 	// Initialize statistics service
-	app.statisticsService = service.NewStatisticsService(app.mysqlRepo.TaskStatistics)
+	app.statisticsService = service.NewStatisticsService(app.mysqlRepo.TaskStatistics, app.mysqlRepo.Worker)
 
 	// Set statistics service on task service (for incremental statistics updates)
 	app.taskService.SetStatisticsService(app.statisticsService)
 
-	// Initialize GPU usage service
-	app.gpuUsageService = service.NewGPUUsageService(app.mysqlRepo.GPUUsage)
-
 	// Initialize spec service
 	app.specService = service.NewSpecService(app.mysqlRepo.Spec)
+
+	// Initialize monitoring service
+	app.monitoringService = service.NewMonitoringService(app.mysqlRepo.Monitoring)
+
+	// Initialize monitoring collector
+	app.monitoringCollector = monitoring.NewCollector(app.mysqlRepo.Monitoring, app.mysqlRepo.Worker, app.mysqlRepo.Task)
 
 	// Setup Pod watcher for graceful shutdown (when K8s is enabled)
 	if err := app.setupPodWatcher(k8sDeployProvider); err != nil {
@@ -183,10 +175,21 @@ func (app *Application) initServices() error {
 		// Non-critical feature, continue startup
 	}
 
+	// Setup Spot interruption watcher (when K8s is enabled)
+	if err := app.setupSpotInterruptionWatcher(k8sDeployProvider); err != nil {
+		logger.WarnCtx(app.ctx, "Failed to setup spot interruption watcher: %v (non-critical, continuing)", err)
+		// Non-critical feature, continue startup
+	}
+
 	// Setup Deployment watcher for optimized rolling updates (when K8s is enabled)
 	if err := app.setupDeploymentWatcher(k8sDeployProvider); err != nil {
 		logger.WarnCtx(app.ctx, "Failed to setup deployment watcher: %v (non-critical, continuing)", err)
 		// Non-critical feature, continue startup
+	}
+
+	// Setup Pod status watcher for worker runtime state sync (when K8s is enabled)
+	if err := app.setupPodStatusWatcher(k8sDeployProvider); err != nil {
+		logger.WarnCtx(app.ctx, "Failed to setup pod status watcher: %v (non-critical, continuing)", err)
 	}
 
 	// Start pod cleanup job for stuck terminating pods (when K8s is enabled)
@@ -249,6 +252,58 @@ func (app *Application) setupPodWatcher(k8sProvider *k8s.K8sDeploymentProvider) 
 	}
 
 	logger.InfoCtx(app.ctx, "✅ Pod watcher registered successfully")
+	return nil
+}
+
+// setupSpotInterruptionWatcher sets up Spot interruption detection
+func (app *Application) setupSpotInterruptionWatcher(k8sProvider *k8s.K8sDeploymentProvider) error {
+	if k8sProvider == nil {
+		logger.InfoCtx(app.ctx, "K8s provider not available, skipping spot interruption watcher setup")
+		return nil
+	}
+
+	logger.InfoCtx(app.ctx, "Setting up spot interruption watcher...")
+
+	err := k8sProvider.WatchSpotInterruption(app.ctx, func(podName, endpoint, reason string) {
+		logger.WarnCtx(app.ctx, "🚨 SPOT INTERRUPTION detected for Pod %s (endpoint: %s), reason: %s",
+			podName, endpoint, reason)
+
+		// Find Worker by PodName
+		worker, err := app.workerService.GetWorkerByPodName(app.ctx, endpoint, podName)
+		if err != nil {
+			logger.WarnCtx(app.ctx, "Spot interruption detected but worker not found for pod %s: %v", podName, err)
+			return
+		}
+
+		// Immediately mark Worker as DRAINING (2-minute grace period starts now)
+		err = app.workerService.UpdateWorkerStatus(app.ctx, worker.ID, model.WorkerStatusDraining)
+		if err != nil {
+			logger.ErrorCtx(app.ctx, "Failed to mark worker %s as draining after spot interruption: %v", worker.ID, err)
+			return
+		}
+
+		logger.InfoCtx(app.ctx, "✅ Worker %s (Pod: %s) marked as DRAINING due to spot interruption - stopping new task acceptance",
+			worker.ID, podName)
+
+		// Log current jobs for monitoring
+		if len(worker.JobsInProgress) > 0 {
+			logger.InfoCtx(app.ctx, "📋 Worker %s has %d jobs in progress that will continue: %v",
+				worker.ID, len(worker.JobsInProgress), worker.JobsInProgress)
+		} else {
+			logger.InfoCtx(app.ctx, "📋 Worker %s has no jobs in progress - can terminate safely", worker.ID)
+		}
+
+		// Mark Pod as draining for observability
+		if err := k8sProvider.MarkPodDraining(app.ctx, podName); err != nil {
+			logger.WarnCtx(app.ctx, "Failed to mark pod %s as draining: %v", podName, err)
+		}
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to setup spot interruption watcher: %w", err)
+	}
+
+	logger.InfoCtx(app.ctx, "✅ Spot interruption watcher setup complete")
 	return nil
 }
 
@@ -322,22 +377,57 @@ func (app *Application) setupDeploymentWatcher(k8sProvider *k8s.K8sDeploymentPro
 		return fmt.Errorf("failed to register deployment watcher: %w", err)
 	}
 
+	// Register deployment status change callback to sync status to database
+	err = k8sProvider.WatchDeploymentStatusChange(app.ctx, func(endpoint string, deployment *appsv1.Deployment) {
+		// Calculate status
+		status := "Pending"
+		if deployment.Status.AvailableReplicas == *deployment.Spec.Replicas && *deployment.Spec.Replicas > 0 {
+			status = "Running"
+		} else if *deployment.Spec.Replicas == 0 {
+			status = "Stopped"
+		}
+
+		logger.InfoCtx(app.ctx, "📊 Deployment status changed for %s: status=%s, replicas=%d/%d/%d",
+			endpoint, status, deployment.Status.ReadyReplicas, deployment.Status.AvailableReplicas, *deployment.Spec.Replicas)
+
+		// Update endpoint in database
+		if app.mysqlRepo != nil && app.mysqlRepo.Endpoint != nil {
+			runtimeState := map[string]interface{}{
+				"namespace":         deployment.Namespace,
+				"replicas":          *deployment.Spec.Replicas,
+				"readyReplicas":     deployment.Status.ReadyReplicas,
+				"availableReplicas": deployment.Status.AvailableReplicas,
+			}
+			// Extract shmSize and volumeMounts
+			if info := k8s.DeploymentToAppInfo(deployment); info != nil {
+				if info.ShmSize != "" {
+					runtimeState["shmSize"] = info.ShmSize
+				}
+				if len(info.VolumeMounts) > 0 {
+					runtimeState["volumeMounts"] = info.VolumeMounts
+				}
+			}
+			if err := app.mysqlRepo.Endpoint.UpdateRuntimeState(app.ctx, endpoint, status, runtimeState); err != nil {
+				logger.ErrorCtx(app.ctx, "Failed to update endpoint runtime state: %v", err)
+			}
+		}
+	})
+
+	if err != nil {
+		logger.WarnCtx(app.ctx, "Failed to register deployment status watcher: %v", err)
+	}
+
 	logger.InfoCtx(app.ctx, "✅ Deployment watcher registered successfully")
 	return nil
 }
 
 // initHandlers initializes handler layer
-func (app *Application) initHandlers() error{
+func (app *Application) initHandlers() error {
 	// Initialize handlers
 	app.taskHandler = handler.NewTaskHandler(app.taskService, app.workerService)
 	app.workerHandler = handler.NewWorkerHandler(app.workerService, app.taskService, app.deploymentProvider)
-	app.statisticsHandler = handler.NewStatisticsHandler(app.statisticsService)
-	app.gpuUsageHandler = handler.NewGPUUsageHandler(
-		app.gpuUsageService,
-		app.mysqlRepo.Task,
-		app.mysqlRepo.Endpoint,
-		app.deploymentProvider,
-	)
+	app.statisticsHandler = handler.NewStatisticsHandler(app.statisticsService, app.workerService)
+	app.monitoringHandler = handler.NewMonitoringHandler(app.monitoringService)
 
 	// Initialize K8s Handler (Endpoint Handler)
 	if app.config.K8s.Enabled {
@@ -400,7 +490,7 @@ func (app *Application) initAutoScaler() error {
 		autoscalerConfig,
 		app.deploymentProvider,
 		app.endpointService,
-		redisstore.NewWorkerRepository(app.redisClient),
+		app.workerService,
 		app.mysqlRepo.Task,
 		app.mysqlRepo.ScalingEvent,
 		app.redisClient.GetClient(),
@@ -412,10 +502,68 @@ func (app *Application) initAutoScaler() error {
 	return nil
 }
 
+// setupPodStatusWatcher syncs Pod runtime state to worker table
+func (app *Application) setupPodStatusWatcher(k8sProvider *k8s.K8sDeploymentProvider) error {
+	if k8sProvider == nil {
+		return nil
+	}
+
+	logger.InfoCtx(app.ctx, "Setting up pod status watcher for worker runtime sync...")
+
+	err := k8sProvider.WatchPodStatusChange(app.ctx, func(podName, endpoint string, info *interfaces.PodInfo) {
+		var createdAt, startedAt *time.Time
+		if info.CreatedAt != "" {
+			if t, err := time.Parse(time.RFC3339, info.CreatedAt); err == nil {
+				createdAt = &t
+			}
+		}
+		if info.StartedAt != "" {
+			if t, err := time.Parse(time.RFC3339, info.StartedAt); err == nil {
+				startedAt = &t
+			}
+		}
+
+		// Check if this is a new worker (for WORKER_STARTED event)
+		existingWorker, _ := app.mysqlRepo.Worker.GetByPodName(app.ctx, endpoint, podName)
+		isNewWorker := existingWorker == nil
+
+		// Create or update worker (status STARTING until heartbeat)
+		if err := app.mysqlRepo.Worker.UpsertFromPod(app.ctx, podName, endpoint, info.Phase, info.Status, info.Reason, info.Message, info.IP, info.NodeName, createdAt, startedAt); err != nil {
+			logger.WarnCtx(app.ctx, "Failed to upsert worker from pod %s: %v", podName, err)
+		}
+
+		// Record WORKER_STARTED event for new workers
+		if isNewWorker && app.workerEventService != nil {
+			app.workerEventService.RecordWorkerStarted(app.ctx, podName, endpoint)
+		}
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to setup pod status watcher: %w", err)
+	}
+
+	// Watch pod deletions to mark workers as OFFLINE
+	err = k8sProvider.WatchPodDelete(app.ctx, func(podName, endpoint string) {
+		// Record WORKER_OFFLINE event before marking offline
+		if app.workerEventService != nil {
+			app.workerEventService.RecordWorkerOffline(app.ctx, podName, endpoint, podName)
+		}
+		if err := app.mysqlRepo.Worker.MarkOfflineByPodName(app.ctx, podName); err != nil {
+			logger.WarnCtx(app.ctx, "Failed to mark worker offline for deleted pod %s: %v", podName, err)
+		}
+	})
+	if err != nil {
+		logger.WarnCtx(app.ctx, "Failed to setup pod delete watcher: %v", err)
+	}
+
+	logger.InfoCtx(app.ctx, "✅ Pod status watcher registered successfully")
+	return nil
+}
+
 // initHTTPServer initializes HTTP server
-func (app *Application) initHTTPServer() error{
+func (app *Application) initHTTPServer() error {
 	// Initialize router
-	r := router.NewRouter(app.taskHandler, app.workerHandler, app.endpointHandler, app.autoscalerHandler, app.statisticsHandler, app.gpuUsageHandler, app.specHandler, app.imageHandler)
+	r := router.NewRouter(app.taskHandler, app.workerHandler, app.endpointHandler, app.autoscalerHandler, app.statisticsHandler, app.specHandler, app.imageHandler, app.monitoringHandler)
 
 	// Set Gin mode
 	gin.SetMode(app.config.Server.Mode)

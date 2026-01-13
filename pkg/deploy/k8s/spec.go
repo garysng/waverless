@@ -162,26 +162,37 @@ func (m *SpecManager) ListSpecsByCategory(category string) []*ResourceSpec {
 
 // GetPlatformConfig 获取平台特定配置
 func (s *ResourceSpec) GetPlatformConfig(platform string) PlatformConfig {
+	// 1. Try exact platform match
 	if config, exists := s.Platforms[platform]; exists {
 		return config
 	}
-	// Return generic config as default
+	// 2. Try generic config
 	if config, exists := s.Platforms["generic"]; exists {
 		return config
+	}
+	// 3. If only one platform config exists, use it as fallback
+	if len(s.Platforms) == 1 {
+		for _, config := range s.Platforms {
+			return config
+		}
 	}
 	return PlatformConfig{}
 }
 
 // convertSpecInfoToResourceSpec converts interfaces.SpecInfo to k8s.ResourceSpec
 func (m *SpecManager) convertSpecInfoToResourceSpec(specInfo *interfaces.SpecInfo) *ResourceSpec {
+	ctx := context.Background()
 	// Convert platforms from map[string]interface{} to map[string]PlatformConfig
 	platforms := make(map[string]PlatformConfig)
 	if specInfo.Platforms != nil {
+		logger.InfoCtx(ctx, "[SPEC-CONVERT] specInfo.Platforms=%+v", specInfo.Platforms)
 		for platformName, platformData := range specInfo.Platforms {
+			logger.InfoCtx(ctx, "[SPEC-CONVERT] platformName=%s, platformData type=%T, value=%+v", platformName, platformData, platformData)
 			if platformMap, ok := platformData.(map[string]interface{}); ok {
 				platform := PlatformConfig{}
 
 				// Convert nodeSelector
+				logger.InfoCtx(ctx, "[SPEC-CONVERT] platformMap[nodeSelector] type=%T, value=%+v", platformMap["nodeSelector"], platformMap["nodeSelector"])
 				if nodeSelector, ok := platformMap["nodeSelector"].(map[string]interface{}); ok {
 					platform.NodeSelector = make(map[string]string)
 					for k, v := range nodeSelector {
@@ -189,6 +200,7 @@ func (m *SpecManager) convertSpecInfoToResourceSpec(specInfo *interfaces.SpecInf
 							platform.NodeSelector[k] = str
 						}
 					}
+					logger.InfoCtx(ctx, "[SPEC-CONVERT] converted NodeSelector=%+v", platform.NodeSelector)
 				}
 
 				// Convert labels

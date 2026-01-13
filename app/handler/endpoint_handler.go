@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -10,7 +11,6 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
 
-	"waverless/internal/model"
 	"waverless/internal/service"
 	endpointsvc "waverless/internal/service/endpoint"
 	"waverless/pkg/deploy/k8s"
@@ -158,42 +158,8 @@ func (h *EndpointHandler) GetEndpoint(c *gin.Context) {
 		return
 	}
 
-	// Enrich with runtime status if deployment provider is available
-	if h.deploymentProvider != nil {
-		if app, err := h.deploymentProvider.GetApp(c.Request.Context(), name); err == nil && app != nil {
-			metadata.Status = app.Status
-			metadata.ReadyReplicas = int(app.ReadyReplicas)
-			metadata.AvailableReplicas = int(app.AvailableReplicas)
-			if metadata.Namespace == "" {
-				metadata.Namespace = app.Namespace
-			}
-			// Only backfill spec/image/replicas when metadata lacks those fields
-			if metadata.Image == "" {
-				metadata.Image = app.Image
-			}
-			if metadata.Replicas == 0 {
-				metadata.Replicas = int(app.Replicas)
-			}
-			// Backfill shmSize and volumeMounts from K8s deployment
-			metadata.ShmSize = app.ShmSize
-			metadata.VolumeMounts = app.VolumeMounts
-		} else if err != nil {
-			logger.WarnCtx(c.Request.Context(), "failed to fetch runtime status for endpoint %s: %v", name, err)
-		}
-	}
-
-	// Enrich with task statistics
-	if h.endpointService != nil {
-		if stats, err := h.endpointService.GetEndpointStats(c.Request.Context(), name); err == nil {
-			metadata.PendingTasks = int64(stats.PendingTasks)
-			metadata.RunningTasks = int64(stats.RunningTasks)
-			metadata.TotalTasks = int64(stats.PendingTasks + stats.RunningTasks + stats.CompletedTasks + stats.FailedTasks)
-			metadata.CompletedTasks = int64(stats.CompletedTasks)
-			metadata.FailedTasks = int64(stats.FailedTasks)
-		} else {
-			logger.WarnCtx(c.Request.Context(), "failed to get endpoint stats for %s: %v", name, err)
-		}
-	}
+	// Runtime status (namespace, readyReplicas, availableReplicas, shmSize, volumeMounts)
+	// is already loaded from runtime_state JSON field in fromMySQLEndpoint
 
 	c.JSON(http.StatusOK, metadata)
 }
@@ -215,37 +181,6 @@ func (h *EndpointHandler) ListEndpoints(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
-	}
-
-	runtimeMap := make(map[string]*interfaces.AppInfo)
-	if h.deploymentProvider != nil {
-		if apps, err := h.deploymentProvider.ListApps(c.Request.Context()); err == nil {
-			for _, app := range apps {
-				runtimeMap[app.Name] = app
-			}
-		} else {
-			logger.WarnCtx(c.Request.Context(), "failed to list runtime apps for enrichment: %v", err)
-		}
-	}
-
-	for _, endpoint := range endpoints {
-		if app, ok := runtimeMap[endpoint.Name]; ok {
-			endpoint.Status = app.Status
-			endpoint.ReadyReplicas = int(app.ReadyReplicas)
-			endpoint.AvailableReplicas = int(app.AvailableReplicas)
-			if endpoint.Namespace == "" {
-				endpoint.Namespace = app.Namespace
-			}
-			if endpoint.Image == "" {
-				endpoint.Image = app.Image
-			}
-			if endpoint.Replicas == 0 {
-				endpoint.Replicas = int(app.Replicas)
-			}
-			// Backfill shmSize and volumeMounts from K8s deployment
-			endpoint.ShmSize = app.ShmSize
-			endpoint.VolumeMounts = app.VolumeMounts
-		}
 	}
 
 	c.JSON(http.StatusOK, endpoints)
@@ -659,90 +594,93 @@ func (h *EndpointHandler) GetEndpointWorkers(c *gin.Context) {
 		return
 	}
 
-	// Get all workers from Redis (worker.ID == pod.Name)
-	workers, err := h.workerService.ListWorkers(ctx, endpoint)
+	workers, err := h.workerService.ListWorkersWithPodInfo(ctx, endpoint)
 	if err != nil {
 		logger.ErrorCtx(ctx, "Failed to get workers for endpoint %s: %v", endpoint, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Map: worker.ID (== pod.Name) -> worker
-	workerByID := make(map[string]*model.Worker)
-	for _, w := range workers {
-		if w.ID != "" {
-			workerByID[w.ID] = w
-		}
-	}
-
-	// Get Pods from K8s
-	allPods := make([]*interfaces.PodInfo, 0)
-	if h.deploymentProvider != nil {
-		pods, err := h.deploymentProvider.GetPods(ctx, endpoint)
-		if err != nil {
-			logger.WarnCtx(ctx, "failed to get pods for endpoint %s: %v", endpoint, err)
-		} else {
-			allPods = pods
-		}
-	}
-
-	// Map: pod.Name -> PodInfo
-	podByName := make(map[string]*interfaces.PodInfo)
-	for _, pod := range allPods {
-		podByName[pod.Name] = pod
-	}
-
-	// Merge worker info and pod info
-	// Worker.ID == Pod.Name, use Pod as primary entity, Worker info as supplement
+	// Return structure matching frontend expectations
 	type WorkerWithPodInfo struct {
-		model.Worker
-		PodPhase          string `json:"podPhase,omitempty"`
-		PodStatus         string `json:"podStatus,omitempty"`
-		PodReason         string `json:"podReason,omitempty"`
-		PodMessage        string `json:"podMessage,omitempty"`
-		PodIP             string `json:"podIP,omitempty"`
-		PodNodeName       string `json:"podNodeName,omitempty"`
-		PodCreatedAt      string `json:"podCreatedAt,omitempty"`
-		PodStartedAt      string `json:"podStartedAt,omitempty"`
-		PodRestartCount   int32  `json:"podRestartCount,omitempty"`
-		DeletionTimestamp string `json:"deletionTimestamp,omitempty"`
+		ID                string   `json:"id"`
+		Endpoint          string   `json:"endpoint"`
+		PodName           string   `json:"pod_name,omitempty"`
+		Status            string   `json:"status"`
+		Concurrency       int      `json:"concurrency"`
+		CurrentJobs       int      `json:"current_jobs"`
+		JobsInProgress    []string `json:"jobs_in_progress"`
+		LastHeartbeat     string   `json:"last_heartbeat"`
+		LastTaskTime      string   `json:"last_task_time,omitempty"`
+		Version           string   `json:"version,omitempty"`
+		RegisteredAt      string   `json:"registered_at"`
+		PodPhase          string   `json:"podPhase,omitempty"`
+		PodStatus         string   `json:"podStatus,omitempty"`
+		PodReason         string   `json:"podReason,omitempty"`
+		PodMessage        string   `json:"podMessage,omitempty"`
+		PodIP             string   `json:"podIP,omitempty"`
+		PodNodeName       string   `json:"podNodeName,omitempty"`
+		PodCreatedAt      string   `json:"podCreatedAt,omitempty"`
+		PodStartedAt      string   `json:"podStartedAt,omitempty"`
+		PodRestartCount   int32    `json:"podRestartCount,omitempty"`
+		DeletionTimestamp string   `json:"deletionTimestamp,omitempty"`
 	}
 
-	result := make([]WorkerWithPodInfo, 0)
+	result := make([]WorkerWithPodInfo, 0, len(workers))
 
-	// Iterate all Pods (use Pod as primary entity)
-	for _, pod := range allPods {
-		var workerWithPod WorkerWithPodInfo
-
-		// Try to match Worker (worker.ID == pod.Name)
-		if worker, exists := workerByID[pod.Name]; exists {
-			// Pod matched to Worker (Worker registered and sent heartbeat)
-			workerWithPod = WorkerWithPodInfo{
-				Worker: *worker,
-			}
-		} else {
-			// Pod has no matching Worker (creating or offline)
-			workerWithPod = WorkerWithPodInfo{
-				Worker: model.Worker{
-					ID:       pod.Name,
-					Endpoint: endpoint,
-					Status:   model.WorkerStatusOffline, // Worker not registered or offline
-					PodName:  pod.Name,
-				},
-			}
+	for _, worker := range workers {
+		// Parse jobs_in_progress JSON
+		var jobsInProgress []string
+		if worker.JobsInProgress != "" {
+			json.Unmarshal([]byte(worker.JobsInProgress), &jobsInProgress)
+		}
+		if jobsInProgress == nil {
+			jobsInProgress = []string{}
 		}
 
-		// Attach Pod information
-		workerWithPod.PodPhase = pod.Phase
-		workerWithPod.PodStatus = pod.Status
-		workerWithPod.PodReason = pod.Reason
-		workerWithPod.PodMessage = pod.Message
-		workerWithPod.PodIP = pod.IP
-		workerWithPod.PodNodeName = pod.NodeName
-		workerWithPod.PodCreatedAt = pod.CreatedAt
-		workerWithPod.PodStartedAt = pod.StartedAt
-		workerWithPod.PodRestartCount = pod.RestartCount
-		workerWithPod.DeletionTimestamp = pod.DeletionTimestamp
+		workerWithPod := WorkerWithPodInfo{
+			ID:             worker.WorkerID,
+			Endpoint:       worker.Endpoint,
+			PodName:        worker.PodName,
+			Status:         worker.Status,
+			Concurrency:    worker.Concurrency,
+			CurrentJobs:    worker.CurrentJobs,
+			JobsInProgress: jobsInProgress,
+			LastHeartbeat:  worker.LastHeartbeat.Format("2006-01-02T15:04:05Z07:00"),
+			Version:        worker.Version,
+			RegisteredAt:   worker.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		}
+		if worker.LastTaskTime != nil {
+			workerWithPod.LastTaskTime = worker.LastTaskTime.Format("2006-01-02T15:04:05Z07:00")
+		}
+
+		// Extract from runtime_state
+		if rs := worker.RuntimeState; rs != nil {
+			if v, ok := rs["phase"].(string); ok {
+				workerWithPod.PodPhase = v
+			}
+			if v, ok := rs["status"].(string); ok {
+				workerWithPod.PodStatus = v
+			}
+			if v, ok := rs["reason"].(string); ok {
+				workerWithPod.PodReason = v
+			}
+			if v, ok := rs["message"].(string); ok {
+				workerWithPod.PodMessage = v
+			}
+			if v, ok := rs["ip"].(string); ok {
+				workerWithPod.PodIP = v
+			}
+			if v, ok := rs["nodeName"].(string); ok {
+				workerWithPod.PodNodeName = v
+			}
+			if v, ok := rs["createdAt"].(string); ok {
+				workerWithPod.PodCreatedAt = v
+			}
+			if v, ok := rs["startedAt"].(string); ok {
+				workerWithPod.PodStartedAt = v
+			}
+		}
 
 		result = append(result, workerWithPod)
 	}

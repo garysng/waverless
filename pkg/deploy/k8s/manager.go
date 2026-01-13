@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -20,15 +21,16 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	appslisters "k8s.io/client-go/listers/apps/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
-	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/yaml"
 
+	"waverless/pkg/constants"
 	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
 )
@@ -79,33 +81,60 @@ type Manager struct {
 	informerStopCh   chan struct{}
 	stopOnce         sync.Once
 
-	callbacksMu                   sync.RWMutex
-	replicaCallbacks              map[int64]interfaces.ReplicaCallback
-	podTerminatingCallbacks       map[int64]PodTerminatingCallback
-	deploymentSpecChangeCallbacks map[int64]DeploymentSpecChangeCallback
-	nextCallbackID                int64
+	callbacksMu                     sync.RWMutex
+	replicaCallbacks                map[int64]interfaces.ReplicaCallback
+	podTerminatingCallbacks         map[int64]PodTerminatingCallback
+	podDeleteCallbacks              map[int64]PodDeleteCallback
+	podStatusChangeCallbacks        map[int64]PodStatusChangeCallback
+	spotInterruptionCallbacks       map[int64]SpotInterruptionCallback
+	deploymentSpecChangeCallbacks   map[int64]DeploymentSpecChangeCallback
+	deploymentStatusChangeCallbacks map[int64]DeploymentStatusChangeCallback
+	nextCallbackID                  int64
 }
 
 // PodTerminatingCallback is called when a pod is marked for deletion (DeletionTimestamp set)
 // This allows the system to drain workers before pods are actually terminated
 type PodTerminatingCallback func(podName, endpoint string)
 
+// PodDeleteCallback is called when a pod is deleted from K8s
+type PodDeleteCallback func(podName, endpoint string)
+
+// PodStatusChangeCallback is called when a pod's status changes
+// This allows the system to sync pod status to worker database
+type PodStatusChangeCallback func(podName, endpoint string, info *interfaces.PodInfo)
+
+// SpotInterruptionCallback is called when a spot interruption is detected
+type SpotInterruptionCallback func(podName, endpoint, reason string)
+
 // DeploymentSpecChangeCallback is called when a deployment's spec changes (image, resources, etc.)
 // This allows the system to optimize pod replacement during rolling updates
 type DeploymentSpecChangeCallback func(endpoint string)
 
+// DeploymentStatusChangeCallback is called when a deployment's status changes (replicas ready, etc.)
+// This allows the system to sync deployment status to database
+type DeploymentStatusChangeCallback func(endpoint string, deployment *appsv1.Deployment)
+
 // NewManager creates a K8s manager
 func NewManager(namespace, platformName, configDir string) (*Manager, error) {
 	// Create K8s client
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		// If not in cluster, try to use kubeconfig
+	var config *rest.Config
+	var err error
+
+	// Check if running in cluster by looking for service account token
+	if _, err := os.Stat("/var/run/secrets/kubernetes.io/serviceaccount/token"); err == nil {
+		// Running in cluster, use InClusterConfig
+		config, err = rest.InClusterConfig()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get in-cluster config: %v", err)
+		}
+	} else {
+		// Running outside cluster, use kubeconfig
 		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 		configOverrides := &clientcmd.ConfigOverrides{}
 		kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
 		config, err = kubeConfig.ClientConfig()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get kubernetes config: %v", err)
+			return nil, fmt.Errorf("failed to get kubeconfig: %v", err)
 		}
 	}
 
@@ -153,6 +182,9 @@ func NewManager(namespace, platformName, configDir string) (*Manager, error) {
 		informerStopCh:                stopCh,
 		replicaCallbacks:              make(map[int64]interfaces.ReplicaCallback),
 		podTerminatingCallbacks:       make(map[int64]PodTerminatingCallback),
+		podDeleteCallbacks:            make(map[int64]PodDeleteCallback),
+		podStatusChangeCallbacks:      make(map[int64]PodStatusChangeCallback),
+		spotInterruptionCallbacks:     make(map[int64]SpotInterruptionCallback),
 		deploymentSpecChangeCallbacks: make(map[int64]DeploymentSpecChangeCallback),
 	}
 
@@ -167,6 +199,7 @@ func NewManager(namespace, platformName, configDir string) (*Manager, error) {
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			logger.DebugCtx(context.Background(), "pod added (informer cache)")
+			manager.handlePodAdd(obj)
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			logger.DebugCtx(context.Background(), "pod updated (informer cache)")
@@ -174,6 +207,7 @@ func NewManager(namespace, platformName, configDir string) (*Manager, error) {
 		},
 		DeleteFunc: func(obj interface{}) {
 			logger.DebugCtx(context.Background(), "pod deleted (informer cache)")
+			manager.handlePodDelete(obj)
 		},
 	})
 
@@ -307,7 +341,18 @@ func (m *Manager) DeployApp(ctx context.Context, req *DeployAppRequest) error {
 // buildRenderContext builds render context (simplified version)
 func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) (*RenderContext, error) {
 	// Get platform-specific configuration
-	platformConfig := spec.GetPlatformConfig(m.platform.GetName())
+	platformName := m.platform.GetName()
+	platformConfig := spec.GetPlatformConfig(platformName)
+
+	// Debug logging
+	logger.InfoCtx(context.Background(), "[SPEC-CONVERT] buildRenderContext: platform=%s, spec.Platforms=%+v", platformName, spec.Platforms)
+	logger.InfoCtx(context.Background(), "[SPEC-CONVERT] platformConfig: NodeSelector=%+v, Tolerations=%+v", platformConfig.NodeSelector, platformConfig.Tolerations)
+
+	// Ensure NodeSelector is initialized (not nil) to avoid template rendering issues
+	nodeSelector := platformConfig.NodeSelector
+	if nodeSelector == nil {
+		nodeSelector = make(map[string]string)
+	}
 
 	// Build render context
 	ctx := &RenderContext{
@@ -325,7 +370,7 @@ func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) 
 		MemoryRequest: spec.Resources.Memory,
 
 		// K8s scheduling configuration (from Spec)
-		NodeSelector: platformConfig.NodeSelector,
+		NodeSelector: nodeSelector,
 		Tolerations:  platformConfig.Tolerations,
 		Labels:       platformConfig.Labels,
 		Annotations:  platformConfig.Annotations,
@@ -721,6 +766,87 @@ func (m *Manager) UnregisterPodTerminatingCallback(id int64) {
 	m.callbacksMu.Unlock()
 }
 
+// RegisterPodDeleteCallback adds a new pod delete listener and returns its id.
+func (m *Manager) RegisterPodDeleteCallback(cb PodDeleteCallback) int64 {
+	if cb == nil {
+		return 0
+	}
+	id := atomic.AddInt64(&m.nextCallbackID, 1)
+	m.callbacksMu.Lock()
+	if m.podDeleteCallbacks == nil {
+		m.podDeleteCallbacks = make(map[int64]PodDeleteCallback)
+	}
+	m.podDeleteCallbacks[id] = cb
+	m.callbacksMu.Unlock()
+	return id
+}
+
+// UnregisterPodDeleteCallback removes a previously registered pod delete listener.
+func (m *Manager) UnregisterPodDeleteCallback(id int64) {
+	if id == 0 {
+		return
+	}
+	m.callbacksMu.Lock()
+	if m.podDeleteCallbacks != nil {
+		delete(m.podDeleteCallbacks, id)
+	}
+	m.callbacksMu.Unlock()
+}
+
+// RegisterPodStatusChangeCallback adds a new pod status change listener and returns its id.
+func (m *Manager) RegisterPodStatusChangeCallback(cb PodStatusChangeCallback) int64 {
+	if cb == nil {
+		return 0
+	}
+	id := atomic.AddInt64(&m.nextCallbackID, 1)
+	m.callbacksMu.Lock()
+	if m.podStatusChangeCallbacks == nil {
+		m.podStatusChangeCallbacks = make(map[int64]PodStatusChangeCallback)
+	}
+	m.podStatusChangeCallbacks[id] = cb
+	m.callbacksMu.Unlock()
+	return id
+}
+
+// UnregisterPodStatusChangeCallback removes a previously registered pod status change listener.
+func (m *Manager) UnregisterPodStatusChangeCallback(id int64) {
+	if id == 0 {
+		return
+	}
+	m.callbacksMu.Lock()
+	if m.podStatusChangeCallbacks != nil {
+		delete(m.podStatusChangeCallbacks, id)
+	}
+	m.callbacksMu.Unlock()
+}
+
+// RegisterSpotInterruptionCallback adds a new spot interruption listener and returns its id.
+func (m *Manager) RegisterSpotInterruptionCallback(cb SpotInterruptionCallback) int64 {
+	if cb == nil {
+		return 0
+	}
+	id := atomic.AddInt64(&m.nextCallbackID, 1)
+	m.callbacksMu.Lock()
+	if m.spotInterruptionCallbacks == nil {
+		m.spotInterruptionCallbacks = make(map[int64]SpotInterruptionCallback)
+	}
+	m.spotInterruptionCallbacks[id] = cb
+	m.callbacksMu.Unlock()
+	return id
+}
+
+// UnregisterSpotInterruptionCallback removes a previously registered spot interruption listener.
+func (m *Manager) UnregisterSpotInterruptionCallback(id int64) {
+	if id == 0 {
+		return
+	}
+	m.callbacksMu.Lock()
+	if m.spotInterruptionCallbacks != nil {
+		delete(m.spotInterruptionCallbacks, id)
+	}
+	m.callbacksMu.Unlock()
+}
+
 // RegisterDeploymentSpecChangeCallback adds a new deployment spec change listener and returns its id.
 // The callback is invoked when a deployment's spec changes (image, resources, env, etc).
 // This allows the system to optimize pod replacement during rolling updates.
@@ -750,6 +876,55 @@ func (m *Manager) UnregisterDeploymentSpecChangeCallback(id int64) {
 	m.callbacksMu.Unlock()
 }
 
+// RegisterDeploymentStatusChangeCallback adds a new deployment status change listener and returns its id.
+func (m *Manager) RegisterDeploymentStatusChangeCallback(cb DeploymentStatusChangeCallback) int64 {
+	if cb == nil {
+		return 0
+	}
+	id := atomic.AddInt64(&m.nextCallbackID, 1)
+	m.callbacksMu.Lock()
+	if m.deploymentStatusChangeCallbacks == nil {
+		m.deploymentStatusChangeCallbacks = make(map[int64]DeploymentStatusChangeCallback)
+	}
+	m.deploymentStatusChangeCallbacks[id] = cb
+	m.callbacksMu.Unlock()
+	return id
+}
+
+// UnregisterDeploymentStatusChangeCallback removes a previously registered deployment status change listener.
+func (m *Manager) UnregisterDeploymentStatusChangeCallback(id int64) {
+	if id == 0 {
+		return
+	}
+	m.callbacksMu.Lock()
+	if m.deploymentStatusChangeCallbacks != nil {
+		delete(m.deploymentStatusChangeCallbacks, id)
+	}
+	m.callbacksMu.Unlock()
+}
+
+// notifyDeploymentStatusChange notifies all registered callbacks that a deployment status has changed
+func (m *Manager) notifyDeploymentStatusChange(endpoint string, deployment *appsv1.Deployment) {
+	m.callbacksMu.RLock()
+	callbacks := make([]DeploymentStatusChangeCallback, 0, len(m.deploymentStatusChangeCallbacks))
+	for _, cb := range m.deploymentStatusChangeCallbacks {
+		callbacks = append(callbacks, cb)
+	}
+	m.callbacksMu.RUnlock()
+
+	for _, cb := range callbacks {
+		cb := cb
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.ErrorCtx(context.Background(), "Deployment status change callback panicked: %v", r)
+				}
+			}()
+			cb(endpoint, deployment)
+		}()
+	}
+}
+
 // notifyDeploymentSpecChange notifies all registered callbacks that a deployment spec has changed
 func (m *Manager) notifyDeploymentSpecChange(endpoint string) {
 	m.callbacksMu.RLock()
@@ -773,6 +948,70 @@ func (m *Manager) notifyDeploymentSpecChange(endpoint string) {
 	}
 }
 
+// handlePodAdd handles pod add events and creates worker record
+func (m *Manager) handlePodAdd(obj interface{}) {
+	pod, ok := obj.(*corev1.Pod)
+	if !ok || pod == nil {
+		return
+	}
+
+	endpoint := GetPodEndpoint(pod)
+	if endpoint == "" || !m.isManagedWorkerPod(pod) {
+		return
+	}
+
+	podInfo := m.podToPodInfo(pod)
+	m.notifyPodStatusChange(pod.Name, endpoint, podInfo)
+}
+
+// isManagedWorkerPod checks if pod is a managed worker pod (not the waverless service itself)
+func (m *Manager) isManagedWorkerPod(pod *corev1.Pod) bool {
+	if pod == nil || pod.Labels == nil {
+		return false
+	}
+	endpoint := pod.Labels[constants.LabelApp]
+	managedBy := pod.Labels[constants.LabelManagedBy]
+	return endpoint != "" && managedBy == constants.ManagedByWaverless && endpoint != "waverless"
+}
+
+// handlePodDelete handles pod delete events
+func (m *Manager) handlePodDelete(obj interface{}) {
+	pod, ok := obj.(*corev1.Pod)
+	if !ok || pod == nil {
+		return
+	}
+
+	endpoint := GetPodEndpoint(pod)
+	if endpoint == "" || !m.isManagedWorkerPod(pod) {
+		return
+	}
+
+	logger.InfoCtx(context.Background(), "🗑️ Pod %s (endpoint: %s) deleted", pod.Name, endpoint)
+	m.notifyPodDelete(pod.Name, endpoint)
+}
+
+// notifyPodDelete notifies all registered callbacks about pod deletion
+func (m *Manager) notifyPodDelete(podName, endpoint string) {
+	m.callbacksMu.RLock()
+	callbacks := make([]PodDeleteCallback, 0, len(m.podDeleteCallbacks))
+	for _, cb := range m.podDeleteCallbacks {
+		callbacks = append(callbacks, cb)
+	}
+	m.callbacksMu.RUnlock()
+
+	for _, cb := range callbacks {
+		cb := cb
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.ErrorCtx(context.Background(), "Pod delete callback panicked: %v", r)
+				}
+			}()
+			cb(podName, endpoint)
+		}()
+	}
+}
+
 // handlePodUpdate handles pod update events and detects when pods are marked for deletion
 func (m *Manager) handlePodUpdate(oldObj, newObj interface{}) {
 	oldPod, oldOk := oldObj.(*corev1.Pod)
@@ -782,27 +1021,32 @@ func (m *Manager) handlePodUpdate(oldObj, newObj interface{}) {
 		return
 	}
 
-	// Detect when a pod is marked for deletion (DeletionTimestamp transitions from nil to non-nil)
-	if oldPod.DeletionTimestamp == nil && newPod.DeletionTimestamp != nil {
-		// Pod is now terminating
-		podName := newPod.Name
+	// Extract pod info
+	podName := newPod.Name
+	endpoint := GetPodEndpoint(newPod)
 
-		// Extract endpoint from pod labels
-		endpoint := ""
-		managedBy := ""
-		if newPod.Labels != nil {
-			endpoint = newPod.Labels["app"]
-			managedBy = newPod.Labels["managed-by"]
-		}
-
-		// Only handle pods managed by waverless (worker pods)
-		// Skip waverless service's own pods
-		if endpoint != "" && managedBy == "waverless" && endpoint != "waverless" {
-			logger.InfoCtx(context.Background(), "🔔 Pod %s (endpoint: %s) marked for deletion, notifying callbacks",
-				podName, endpoint)
-			m.notifyPodTerminating(podName, endpoint)
-		}
+	// Only handle pods managed by waverless (worker pods)
+	if endpoint == "" || !m.isManagedWorkerPod(newPod) {
+		return
 	}
+
+	// 1. Check for Spot interruption FIRST (before pod termination)
+	if detected, reason := m.detectSpotInterruption(newPod); detected {
+		logger.WarnCtx(context.Background(), "🚨 Spot interruption detected for pod %s (endpoint: %s): %s",
+			podName, endpoint, reason)
+		m.notifySpotInterruption(podName, endpoint, reason)
+	}
+
+	// 2. Detect when a pod is marked for deletion
+	if oldPod.DeletionTimestamp == nil && newPod.DeletionTimestamp != nil {
+		logger.InfoCtx(context.Background(), "🔔 Pod %s (endpoint: %s) marked for deletion, notifying callbacks",
+			podName, endpoint)
+		m.notifyPodTerminating(podName, endpoint)
+	}
+
+	// 3. Notify pod status change (for worker runtime state sync)
+	podInfo := m.podToPodInfo(newPod)
+	m.notifyPodStatusChange(podName, endpoint, podInfo)
 }
 
 // notifyPodTerminating notifies all registered callbacks that a pod is terminating
@@ -828,12 +1072,104 @@ func (m *Manager) notifyPodTerminating(podName, endpoint string) {
 	}
 }
 
+// notifyPodStatusChange notifies all registered callbacks about pod status change
+func (m *Manager) notifyPodStatusChange(podName, endpoint string, info *interfaces.PodInfo) {
+	m.callbacksMu.RLock()
+	callbacks := make([]PodStatusChangeCallback, 0, len(m.podStatusChangeCallbacks))
+	for _, cb := range m.podStatusChangeCallbacks {
+		callbacks = append(callbacks, cb)
+	}
+	m.callbacksMu.RUnlock()
+
+	for _, cb := range callbacks {
+		cb := cb
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.ErrorCtx(context.Background(), "Pod status change callback panicked: %v", r)
+				}
+			}()
+			cb(podName, endpoint, info)
+		}()
+	}
+}
+
+// podToPodInfo converts a K8s Pod to PodInfo
+func (m *Manager) podToPodInfo(pod *corev1.Pod) *interfaces.PodInfo {
+	info := &interfaces.PodInfo{
+		Name:      pod.Name,
+		Phase:     string(pod.Status.Phase),
+		IP:        pod.Status.PodIP,
+		NodeName:  pod.Spec.NodeName,
+		CreatedAt: pod.CreationTimestamp.Format(time.RFC3339),
+	}
+	if pod.DeletionTimestamp != nil {
+		info.DeletionTimestamp = pod.DeletionTimestamp.Format(time.RFC3339)
+	}
+	// Get container status
+	for _, cs := range pod.Status.ContainerStatuses {
+		info.RestartCount += cs.RestartCount
+		if cs.State.Running != nil {
+			info.Status = "Running"
+			info.StartedAt = cs.State.Running.StartedAt.Format(time.RFC3339)
+		} else if cs.State.Waiting != nil {
+			info.Status = cs.State.Waiting.Reason
+			info.Reason = cs.State.Waiting.Reason
+			info.Message = cs.State.Waiting.Message
+		} else if cs.State.Terminated != nil {
+			info.Status = "Terminated"
+			info.Reason = cs.State.Terminated.Reason
+			info.Message = cs.State.Terminated.Message
+		}
+	}
+	// Check conditions for Ready
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+			info.Reason = "Ready"
+			info.Message = "All containers are ready"
+		}
+	}
+	return info
+}
+
+// detectSpotInterruption checks if a pod is experiencing spot interruption
+func (m *Manager) detectSpotInterruption(pod *corev1.Pod) (bool, string) {
+	if m.platform == nil {
+		return false, ""
+	}
+	return m.platform.DetectSpotInterruption(pod)
+}
+
+// notifySpotInterruption notifies all registered callbacks about spot interruption
+func (m *Manager) notifySpotInterruption(podName, endpoint, reason string) {
+	m.callbacksMu.RLock()
+	callbacks := make([]SpotInterruptionCallback, 0, len(m.spotInterruptionCallbacks))
+	for _, cb := range m.spotInterruptionCallbacks {
+		callbacks = append(callbacks, cb)
+	}
+	m.callbacksMu.RUnlock()
+
+	// Fan out asynchronously
+	for _, cb := range callbacks {
+		cb := cb
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.ErrorCtx(context.Background(), "spot interruption callback panic: %v", r)
+				}
+			}()
+			cb(podName, endpoint, reason)
+		}()
+	}
+}
+
 func (m *Manager) handleDeploymentEvent(obj interface{}) {
 	deployment, ok := obj.(*appsv1.Deployment)
 	if !ok || deployment == nil {
 		return
 	}
 	m.emitReplicaChange(buildReplicaEvent(deployment))
+	m.syncDeploymentStatus(deployment)
 }
 
 func (m *Manager) handleDeploymentUpdate(oldObj, newObj interface{}) {
@@ -847,24 +1183,44 @@ func (m *Manager) handleDeploymentUpdate(oldObj, newObj interface{}) {
 	// Always emit replica change event
 	m.emitReplicaChange(buildReplicaEvent(newDep))
 
-	// Detect spec changes that trigger pod recreation (image, resources, env, etc.)
-	// Ignore replica count changes as those are handled separately
-	if m.hasSpecChanged(oldDep, newDep) {
-		// Extract endpoint name from deployment labels
-		endpoint := ""
-		managedBy := ""
-		if newDep.Labels != nil {
-			endpoint = newDep.Labels["app"]
-			managedBy = newDep.Labels["managed-by"]
-		}
-
-		// Only handle deployments managed by waverless (worker deployments)
-		if endpoint != "" && managedBy == "waverless" && endpoint != "waverless" {
-			logger.InfoCtx(context.Background(), "🔄 Deployment %s (endpoint: %s) spec changed, triggering optimized rolling update",
-				newDep.Name, endpoint)
-			m.notifyDeploymentSpecChange(endpoint)
-		}
+	// Extract endpoint name from deployment labels
+	endpoint := ""
+	managedBy := ""
+	if newDep.Labels != nil {
+		endpoint = newDep.Labels["app"]
+		managedBy = newDep.Labels["managed-by"]
 	}
+
+	// Only handle deployments managed by waverless (worker deployments)
+	if endpoint == "" || managedBy != "waverless" || endpoint == "waverless" {
+		return
+	}
+
+	// Notify status change if replicas changed
+	if oldDep.Status.ReadyReplicas != newDep.Status.ReadyReplicas ||
+		oldDep.Status.AvailableReplicas != newDep.Status.AvailableReplicas {
+		m.syncDeploymentStatus(newDep)
+	}
+
+	// Detect spec changes that trigger pod recreation (image, resources, env, etc.)
+	if m.hasSpecChanged(oldDep, newDep) {
+		logger.InfoCtx(context.Background(), "🔄 Deployment %s (endpoint: %s) spec changed, triggering optimized rolling update",
+			newDep.Name, endpoint)
+		m.notifyDeploymentSpecChange(endpoint)
+	}
+}
+
+func (m *Manager) syncDeploymentStatus(deployment *appsv1.Deployment) {
+	endpoint := ""
+	managedBy := ""
+	if deployment.Labels != nil {
+		endpoint = deployment.Labels["app"]
+		managedBy = deployment.Labels["managed-by"]
+	}
+	if endpoint == "" || managedBy != "waverless" || endpoint == "waverless" {
+		return
+	}
+	m.notifyDeploymentStatusChange(endpoint, deployment)
 }
 
 func (m *Manager) handleDeploymentDelete(obj interface{}) {
@@ -1026,6 +1382,11 @@ func (m *Manager) listPodsViaAPI(ctx context.Context) []*AppInfo {
 		result = append(result, podToAppInfo(pod))
 	}
 	return result
+}
+
+// DeploymentToAppInfo converts a K8s Deployment to AppInfo (exported for use in callbacks)
+func DeploymentToAppInfo(deployment *appsv1.Deployment) *AppInfo {
+	return deploymentToAppInfo(deployment)
 }
 
 func deploymentToAppInfo(deployment *appsv1.Deployment) *AppInfo {
@@ -1257,7 +1618,12 @@ func (m *Manager) UpdateDeployment(ctx context.Context, endpoint string, specNam
 			deployment.Spec.Template.Spec.Tolerations = tolerations
 
 			// 2. Update NodeSelector (replace entirely)
-			deployment.Spec.Template.Spec.NodeSelector = platformConfig.NodeSelector
+			// Ensure NodeSelector is initialized (not nil) to avoid nil map assignment
+			nodeSelector := platformConfig.NodeSelector
+			if nodeSelector == nil {
+				nodeSelector = make(map[string]string)
+			}
+			deployment.Spec.Template.Spec.NodeSelector = nodeSelector
 
 			// 3. Update Pod Labels (smart merge: remove old platform labels, keep system labels, apply new platform labels)
 			if deployment.Spec.Template.Labels == nil {

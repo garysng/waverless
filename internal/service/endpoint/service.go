@@ -7,7 +7,6 @@ import (
 
 	"waverless/pkg/interfaces"
 	"waverless/pkg/store/mysql"
-	redisstore "waverless/pkg/store/redis"
 )
 
 // Service coordinates endpoint metadata, deployment, and scaling responsibilities.
@@ -23,10 +22,10 @@ func NewService(
 	endpointRepo *mysql.EndpointRepository,
 	autoscalerConfigRepo *mysql.AutoscalerConfigRepository,
 	taskRepo *mysql.TaskRepository,
-	workerRepo *redisstore.WorkerRepository,
+	workerLister workerLister,
 	deploymentProvider interfaces.DeploymentProvider,
 ) *Service {
-	metadata := NewMetadataManager(endpointRepo, autoscalerConfigRepo, taskRepo, workerRepo)
+	metadata := NewMetadataManager(endpointRepo, autoscalerConfigRepo, taskRepo, workerLister)
 	deployment := NewDeploymentManager(deploymentProvider, metadata)
 	scaler := NewScalerManager(deploymentProvider, endpointRepo, autoscalerConfigRepo)
 
@@ -76,14 +75,6 @@ func (s *Service) DeleteEndpoint(ctx context.Context, name string) error {
 		return fmt.Errorf("metadata manager not configured")
 	}
 	return s.metadata.Delete(ctx, name)
-}
-
-// GetEndpointStats aggregates task and worker stats for an endpoint.
-func (s *Service) GetEndpointStats(ctx context.Context, name string) (*interfaces.EndpointStats, error) {
-	if s.metadata == nil {
-		return nil, fmt.Errorf("metadata manager not configured")
-	}
-	return s.metadata.GetStats(ctx, name)
 }
 
 // Deploy triggers a deployment through the provider and persists metadata.

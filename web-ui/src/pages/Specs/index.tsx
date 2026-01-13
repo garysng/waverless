@@ -1,24 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import {
-  Card,
-  Row,
-  Col,
-  Typography,
-  Tag,
-  Descriptions,
-  Divider,
-  Empty,
-  Spin,
-  Button,
-  Space,
-  Modal,
-  Form,
-  Input,
-  Select,
-  message,
-  Popconfirm,
-} from 'antd';
+import { Modal, Form, message, Popconfirm } from 'antd';
 import {
   DatabaseOutlined,
   ReloadOutlined,
@@ -30,9 +12,6 @@ import { api } from '@/api/client';
 import type { SpecInfo } from '@/types';
 import PlatformConfigEditor from '@/components/PlatformConfigEditor';
 
-const { Title, Paragraph, Text } = Typography;
-const { Option } = Select;
-
 const SpecsPage = () => {
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
@@ -42,7 +21,6 @@ const SpecsPage = () => {
   const [editForm] = Form.useForm();
   const queryClient = useQueryClient();
 
-  // Fetch specs from database (specs API)
   const { data: specs, isLoading, refetch } = useQuery({
     queryKey: ['specs'],
     queryFn: async () => {
@@ -51,7 +29,6 @@ const SpecsPage = () => {
     },
   });
 
-  // Create spec mutation
   const createMutation = useMutation({
     mutationFn: api.specs.create,
     onSuccess: () => {
@@ -65,10 +42,8 @@ const SpecsPage = () => {
     },
   });
 
-  // Update spec mutation
   const updateMutation = useMutation({
-    mutationFn: ({ name, data }: { name: string; data: any }) =>
-      api.specs.update(name, data),
+    mutationFn: ({ name, data }: { name: string; data: any }) => api.specs.update(name, data),
     onSuccess: () => {
       message.success('Spec updated successfully');
       setIsEditModalVisible(false);
@@ -81,7 +56,6 @@ const SpecsPage = () => {
     },
   });
 
-  // Delete spec mutation
   const deleteMutation = useMutation({
     mutationFn: api.specs.delete,
     onSuccess: () => {
@@ -93,12 +67,10 @@ const SpecsPage = () => {
     },
   });
 
-  // Filter specs by category
   const filteredSpecs = specs?.filter(
     (spec) => selectedCategory === 'all' || spec.category === selectedCategory
   );
 
-  // Get unique categories
   const categories = ['all', ...new Set(specs?.map((s) => s.category) || [])];
 
   const handleCreate = async () => {
@@ -117,14 +89,7 @@ const SpecsPage = () => {
           ephemeralStorage: values.ephemeralStorage,
           shmSize: values.shmSize,
         },
-        platforms: values.platforms || {
-          generic: {
-            nodeSelector: {},
-            tolerations: [],
-            labels: {},
-            annotations: {},
-          },
-        },
+        platforms: values.platforms || { generic: { nodeSelector: {}, tolerations: [], labels: {}, annotations: {} } },
       });
     } catch (error) {
       console.error('Validation failed:', error);
@@ -174,283 +139,211 @@ const SpecsPage = () => {
     }
   };
 
-  const handleDelete = (name: string) => {
-    deleteMutation.mutate(name);
-  };
-
-  const renderSpecCard = (spec: SpecInfo) => (
-    <Card
-      key={spec.name}
-      title={
-        <Space>
-          <DatabaseOutlined />
-          <span>{spec.displayName}</span>
-        </Space>
-      }
-      extra={
-        <Space>
-          <Tag color={spec.category === 'gpu' ? 'blue' : 'green'}>{spec.category.toUpperCase()}</Tag>
-          <Tag color={spec.resourceType === 'fixed' ? 'purple' : 'cyan'}>
-            {spec.resourceType === 'fixed' ? 'FIXED' : 'SERVERLESS'}
-          </Tag>
-          <Button
-            type="text"
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => handleEdit(spec)}
-          />
-          <Popconfirm
-            title="Delete Spec"
-            description="Are you sure you want to delete this spec?"
-            onConfirm={() => handleDelete(spec.name)}
-            okText="Yes"
-            cancelText="No"
-          >
-            <Button
-              type="text"
-              size="small"
-              danger
-              icon={<DeleteOutlined />}
-            />
-          </Popconfirm>
-        </Space>
-      }
-      hoverable
-      style={{ marginBottom: 16 }}
-    >
-      <Descriptions column={1} size="small">
-        <Descriptions.Item label="Name">
-          <Text code>{spec.name}</Text>
-        </Descriptions.Item>
-
-        {spec.resources.gpu && (
-          <Descriptions.Item label="GPU">
-            <Tag color="blue">
-              {spec.resources.gpu} × {spec.resources.gpuType}
-            </Tag>
-          </Descriptions.Item>
-        )}
-
-        <Descriptions.Item label="CPU">
-          <Tag>{spec.resources.cpu} cores</Tag>
-        </Descriptions.Item>
-
-        <Descriptions.Item label="Memory">
-          <Tag>{spec.resources.memory}</Tag>
-        </Descriptions.Item>
-
-        {spec.resources.ephemeralStorage && (
-          <Descriptions.Item label="Ephemeral Storage">
-            <Tag>{spec.resources.ephemeralStorage}GB</Tag>
-          </Descriptions.Item>
-        )}
-
-        {spec.resources.shmSize && (
-          <Descriptions.Item label="Shared Memory (SHM)">
-            <Tag>{spec.resources.shmSize}</Tag>
-          </Descriptions.Item>
-        )}
-      </Descriptions>
-
-      {/* Show platform configs */}
-      {spec.platforms && Object.keys(spec.platforms).length > 0 && (
-        <>
-          <Divider style={{ margin: '12px 0' }} />
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            Supported Platforms: {Object.keys(spec.platforms).join(', ')}
-          </Text>
-        </>
-      )}
-    </Card>
-  );
+  if (isLoading) {
+    return <div className="loading"><div className="spinner"></div></div>;
+  }
 
   return (
-    <div>
-      <Row justify="space-between" align="middle" style={{ marginBottom: 12 }}>
-        <Col>
-          <Title level={3} style={{ margin: 0, marginBottom: 4 }}>
-            <DatabaseOutlined /> GPU Specs
-          </Title>
-          <Paragraph type="secondary" style={{ margin: 0, fontSize: 13 }}>
-            Manage GPU and CPU specifications for deployment
-          </Paragraph>
-        </Col>
-        <Col>
-          <Space>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={() => setIsCreateModalVisible(true)}
-            >
-              Create Spec
-            </Button>
-            <Button icon={<ReloadOutlined />} onClick={() => refetch()} loading={isLoading}>
-              Refresh
-            </Button>
-          </Space>
-        </Col>
-      </Row>
-
-      {/* Category Filter */}
-      <Card style={{ marginBottom: 16 }}>
-        <Space wrap>
-          <Text strong>Filter by category:</Text>
+    <>
+      {/* Header */}
+      <div className="flex justify-between items-center mb-4">
+        <div className="filters">
           {categories.map((cat) => (
-            <Tag.CheckableTag
+            <button
               key={cat}
-              checked={selectedCategory === cat}
-              onChange={() => setSelectedCategory(cat)}
-              style={{ padding: '4px 12px', fontSize: 14 }}
+              className={`btn btn-sm ${selectedCategory === cat ? 'btn-blue' : 'btn-outline'}`}
+              onClick={() => setSelectedCategory(cat)}
             >
               {cat.toUpperCase()}
-            </Tag.CheckableTag>
+            </button>
           ))}
-        </Space>
-      </Card>
+        </div>
+        <div className="flex gap-2">
+          <button className="btn btn-outline" onClick={() => refetch()}>
+            <ReloadOutlined /> Refresh
+          </button>
+          <button className="btn btn-blue" onClick={() => setIsCreateModalVisible(true)}>
+            <PlusOutlined /> Create Spec
+          </button>
+        </div>
+      </div>
 
-      <Spin spinning={isLoading}>
-        {filteredSpecs && filteredSpecs.length > 0 ? (
-          <Row gutter={[16, 16]}>
-            {filteredSpecs.map((spec) => (
-              <Col xs={24} sm={12} lg={8} key={spec.name}>
-                {renderSpecCard(spec)}
-              </Col>
-            ))}
-          </Row>
-        ) : (
-          <Card>
-            <Empty description="No specs found" />
-          </Card>
+      {/* Specs Grid */}
+      <div className="specs-grid">
+        {filteredSpecs?.map((spec) => (
+          <div key={spec.name} className="spec-card" style={{ cursor: 'default' }}>
+            <div className="flex justify-between items-center mb-2">
+              <div className="spec-header">
+                <DatabaseOutlined style={{ marginRight: 8, color: '#8b5cf6' }} />
+                <span className="spec-vram">{spec.displayName}</span>
+              </div>
+              <div className="flex gap-2">
+                <button className="btn btn-sm btn-outline btn-icon" onClick={() => handleEdit(spec)}>
+                  <EditOutlined />
+                </button>
+                <Popconfirm
+                  title="Delete this spec?"
+                  onConfirm={() => deleteMutation.mutate(spec.name)}
+                  okText="Yes"
+                  cancelText="No"
+                >
+                  <button className="btn btn-sm btn-outline btn-icon" style={{ color: '#f56565' }}>
+                    <DeleteOutlined />
+                  </button>
+                </Popconfirm>
+              </div>
+            </div>
+
+            <div className="flex gap-2 mb-3">
+              <span className={`tag ${spec.category === 'gpu' ? 'running' : 'success'}`}>
+                {spec.category.toUpperCase()}
+              </span>
+              <span className={`tag ${spec.resourceType === 'fixed' ? 'pending' : ''}`} style={{ background: 'rgba(139,92,246,0.1)', color: '#8b5cf6' }}>
+                {spec.resourceType === 'fixed' ? 'FIXED' : 'SERVERLESS'}
+              </span>
+            </div>
+
+            <div style={{ fontSize: 13, color: '#6b7280' }}>
+              <div className="mb-2">
+                <strong>Name:</strong> <code style={{ background: '#f3f4f6', padding: '2px 6px', borderRadius: 4 }}>{spec.name}</code>
+              </div>
+              {spec.resources.gpu && (
+                <div className="mb-1">
+                  <strong>GPU:</strong> {spec.resources.gpu} × {spec.resources.gpuType}
+                </div>
+              )}
+              <div className="mb-1">
+                <strong>CPU:</strong> {spec.resources.cpu} cores
+              </div>
+              <div className="mb-1">
+                <strong>Memory:</strong> {spec.resources.memory}
+              </div>
+              {spec.resources.ephemeralStorage && (
+                <div className="mb-1">
+                  <strong>Storage:</strong> {spec.resources.ephemeralStorage}GB
+                </div>
+              )}
+            </div>
+
+            {spec.platforms && Object.keys(spec.platforms).length > 0 && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #f3f4f6', fontSize: 12, color: '#9ca3af' }}>
+                Platforms: {Object.keys(spec.platforms).join(', ')}
+              </div>
+            )}
+          </div>
+        ))}
+
+        {(!filteredSpecs || filteredSpecs.length === 0) && (
+          <div className="empty-state" style={{ gridColumn: '1 / -1' }}>
+            <DatabaseOutlined style={{ fontSize: 48, opacity: 0.3 }} />
+            <p>No specs found</p>
+          </div>
         )}
-      </Spin>
+      </div>
 
       {/* Create Modal */}
       <Modal
         title="Create New Spec"
         open={isCreateModalVisible}
         onOk={handleCreate}
-        onCancel={() => {
-          setIsCreateModalVisible(false);
-          createForm.resetFields();
-        }}
+        onCancel={() => { setIsCreateModalVisible(false); createForm.resetFields(); }}
         okText="Create"
         confirmLoading={createMutation.isPending}
-        width={900}
+        width={700}
+        footer={null}
       >
-        <Form form={createForm} layout="vertical">
-          <Form.Item
-            name="name"
-            label="Spec Name"
-            rules={[
-              { required: true, message: 'Please enter spec name' },
-              {
-                pattern: /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/,
-                message: 'Must be lowercase alphanumeric and hyphens, start/end with alphanumeric',
-              },
-              {
-                max: 63,
-                message: 'Maximum 63 characters',
-              },
-            ]}
-            tooltip="Kubernetes resource name format: lowercase letters, numbers, hyphens (-), max 63 chars"
-          >
-            <Input placeholder="e.g., h200-single" />
-          </Form.Item>
-
-          <Form.Item
-            name="displayName"
-            label="Display Name"
-            rules={[{ required: true, message: 'Please enter display name' }]}
-          >
-            <Input placeholder="e.g., H200 1 GPU" />
-          </Form.Item>
-
-          <Form.Item
-            name="category"
-            label="Category"
-            rules={[{ required: true, message: 'Please select category' }]}
-          >
-            <Select placeholder="Select category">
-              <Option value="cpu">CPU</Option>
-              <Option value="gpu">GPU</Option>
-            </Select>
-          </Form.Item>
-
-          <Form.Item
-            name="resourceType"
-            label="Resource Type"
-            rules={[{ required: true, message: 'Please select resource type' }]}
-            tooltip="Fixed resource pools have dedicated nodes and support debugging features like ptrace. Serverless resources are on-demand."
-            initialValue="serverless"
-          >
-            <Select placeholder="Select resource type">
-              <Option value="serverless">Serverless (on-demand)</Option>
-              <Option value="fixed">Fixed (dedicated pool)</Option>
-            </Select>
-          </Form.Item>
-
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="cpu" label="CPU Cores">
-                <Input placeholder="e.g., 4" />
+        <Form form={createForm} layout="vertical" style={{ marginTop: 16 }}>
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label"><span className="required">*</span> Spec Name</label>
+              <Form.Item name="name" rules={[{ required: true, message: 'Required' }, { pattern: /^[a-z0-9-]+$/, message: 'Lowercase, numbers, hyphens only' }]} style={{ marginBottom: 0 }}>
+                <input className="form-input" placeholder="e.g., h200-single" />
               </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item
-                name="memory"
-                label="Memory"
-                rules={[{ required: true, message: 'Please enter memory' }]}
-              >
-                <Input placeholder="e.g., 8Gi" />
+            </div>
+            <div className="form-group">
+              <label className="form-label"><span className="required">*</span> Display Name</label>
+              <Form.Item name="displayName" rules={[{ required: true, message: 'Required' }]} style={{ marginBottom: 0 }}>
+                <input className="form-input" placeholder="e.g., H200 1 GPU" />
               </Form.Item>
-            </Col>
-          </Row>
-
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="gpu" label="GPU Count">
-                <Input placeholder="e.g., 1" />
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label"><span className="required">*</span> Category</label>
+              <Form.Item name="category" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+                <select className="form-select">
+                  <option value="">Select category</option>
+                  <option value="cpu">CPU</option>
+                  <option value="gpu">GPU</option>
+                </select>
               </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="gpuType" label="GPU Type">
-                <Input placeholder="e.g., NVIDIA-H200" />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Resource Type</label>
+              <Form.Item name="resourceType" initialValue="serverless" style={{ marginBottom: 0 }}>
+                <select className="form-select">
+                  <option value="serverless">Serverless</option>
+                  <option value="fixed">Fixed</option>
+                </select>
               </Form.Item>
-            </Col>
-          </Row>
-
-          <Form.Item
-            name="ephemeralStorage"
-            label="Ephemeral Storage (GB)"
-          >
-            <Input placeholder="e.g., 300" />
-          </Form.Item>
-
-          <Form.Item
-            name="shmSize"
-            label="Shared Memory Size (Optional)"
-            tooltip="Shared memory size for /dev/shm (e.g., 1Gi, 512Mi). Useful for ML workloads."
-          >
-            <Input placeholder="e.g., 1Gi, 512Mi" />
-          </Form.Item>
-
-          <Divider>Platform Configuration</Divider>
-
-          <Form.Item
-            name="platforms"
-            label="Platform-specific Settings"
-            tooltip="Configure node selectors, tolerations, labels, and annotations for different platforms"
-            initialValue={{
-              generic: {
-                nodeSelector: {},
-                tolerations: [],
-                labels: {},
-                annotations: {},
-              },
-            }}
-          >
-            <PlatformConfigEditor />
-          </Form.Item>
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">CPU Cores</label>
+              <Form.Item name="cpu" style={{ marginBottom: 0 }}>
+                <input className="form-input" placeholder="e.g., 4" />
+              </Form.Item>
+            </div>
+            <div className="form-group">
+              <label className="form-label"><span className="required">*</span> Memory</label>
+              <Form.Item name="memory" rules={[{ required: true, message: 'Required' }]} style={{ marginBottom: 0 }}>
+                <input className="form-input" placeholder="e.g., 32Gi" />
+              </Form.Item>
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">GPU Count</label>
+              <Form.Item name="gpu" style={{ marginBottom: 0 }}>
+                <input className="form-input" placeholder="e.g., 1" />
+              </Form.Item>
+            </div>
+            <div className="form-group">
+              <label className="form-label">GPU Type</label>
+              <Form.Item name="gpuType" style={{ marginBottom: 0 }}>
+                <input className="form-input" placeholder="e.g., nvidia.com/gpu" />
+              </Form.Item>
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">Ephemeral Storage (GB)</label>
+              <Form.Item name="ephemeralStorage" style={{ marginBottom: 0 }}>
+                <input className="form-input" placeholder="e.g., 100" />
+              </Form.Item>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Shared Memory</label>
+              <Form.Item name="shmSize" style={{ marginBottom: 0 }}>
+                <input className="form-input" placeholder="e.g., 16Gi" />
+              </Form.Item>
+            </div>
+          </div>
+          <div className="form-group full" style={{ marginTop: 16 }}>
+            <label className="form-label">Platform Configurations</label>
+            <Form.Item name="platforms" style={{ marginBottom: 0 }}>
+              <PlatformConfigEditor />
+            </Form.Item>
+          </div>
+          <div className="modal-footer" style={{ margin: '24px -24px -24px', padding: '16px 24px' }}>
+            <button type="button" className="btn btn-outline" onClick={() => { setIsCreateModalVisible(false); createForm.resetFields(); }}>
+              Cancel
+            </button>
+            <button type="button" className="btn btn-blue" onClick={handleCreate} disabled={createMutation.isPending}>
+              {createMutation.isPending ? 'Creating...' : 'Create'}
+            </button>
+          </div>
         </Form>
       </Modal>
 
@@ -459,104 +352,98 @@ const SpecsPage = () => {
         title={`Edit Spec: ${editingSpec?.name}`}
         open={isEditModalVisible}
         onOk={handleUpdate}
-        onCancel={() => {
-          setIsEditModalVisible(false);
-          setEditingSpec(null);
-          editForm.resetFields();
-        }}
+        onCancel={() => { setIsEditModalVisible(false); setEditingSpec(null); editForm.resetFields(); }}
         okText="Update"
         confirmLoading={updateMutation.isPending}
-        width={900}
+        width={700}
+        footer={null}
       >
-        <Form form={editForm} layout="vertical">
-          <Form.Item
-            name="displayName"
-            label="Display Name"
-            rules={[{ required: true, message: 'Please enter display name' }]}
-          >
-            <Input placeholder="e.g., H200 1 GPU" />
-          </Form.Item>
-
-          <Form.Item
-            name="category"
-            label="Category"
-            rules={[{ required: true, message: 'Please select category' }]}
-          >
-            <Select placeholder="Select category">
-              <Option value="cpu">CPU</Option>
-              <Option value="gpu">GPU</Option>
-            </Select>
-          </Form.Item>
-
-          <Form.Item
-            name="resourceType"
-            label="Resource Type"
-            rules={[{ required: true, message: 'Please select resource type' }]}
-            tooltip="Fixed resource pools have dedicated nodes and support debugging features like ptrace. Serverless resources are on-demand."
-          >
-            <Select placeholder="Select resource type">
-              <Option value="serverless">Serverless (on-demand)</Option>
-              <Option value="fixed">Fixed (dedicated pool)</Option>
-            </Select>
-          </Form.Item>
-
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="cpu" label="CPU Cores">
-                <Input placeholder="e.g., 4" />
+        <Form form={editForm} layout="vertical" style={{ marginTop: 16 }}>
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label"><span className="required">*</span> Display Name</label>
+              <Form.Item name="displayName" rules={[{ required: true, message: 'Required' }]} style={{ marginBottom: 0 }}>
+                <input className="form-input" />
               </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item
-                name="memory"
-                label="Memory"
-                rules={[{ required: true, message: 'Please enter memory' }]}
-              >
-                <Input placeholder="e.g., 8Gi" />
+            </div>
+            <div className="form-group">
+              <label className="form-label"><span className="required">*</span> Category</label>
+              <Form.Item name="category" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+                <select className="form-select">
+                  <option value="cpu">CPU</option>
+                  <option value="gpu">GPU</option>
+                </select>
               </Form.Item>
-            </Col>
-          </Row>
-
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="gpu" label="GPU Count">
-                <Input placeholder="e.g., 1" />
+            </div>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Resource Type</label>
+            <Form.Item name="resourceType" style={{ marginBottom: 0 }}>
+              <select className="form-select">
+                <option value="serverless">Serverless</option>
+                <option value="fixed">Fixed</option>
+              </select>
+            </Form.Item>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">CPU Cores</label>
+              <Form.Item name="cpu" style={{ marginBottom: 0 }}>
+                <input className="form-input" />
               </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="gpuType" label="GPU Type">
-                <Input placeholder="e.g., NVIDIA-H200" />
+            </div>
+            <div className="form-group">
+              <label className="form-label"><span className="required">*</span> Memory</label>
+              <Form.Item name="memory" rules={[{ required: true, message: 'Required' }]} style={{ marginBottom: 0 }}>
+                <input className="form-input" />
               </Form.Item>
-            </Col>
-          </Row>
-
-          <Form.Item
-            name="ephemeralStorage"
-            label="Ephemeral Storage (GB)"
-          >
-            <Input placeholder="e.g., 300" />
-          </Form.Item>
-
-          <Form.Item
-            name="shmSize"
-            label="Shared Memory Size (Optional)"
-            tooltip="Shared memory size for /dev/shm (e.g., 1Gi, 512Mi). Useful for ML workloads."
-          >
-            <Input placeholder="e.g., 1Gi, 512Mi" />
-          </Form.Item>
-
-          <Divider>Platform Configuration</Divider>
-
-          <Form.Item
-            name="platforms"
-            label="Platform-specific Settings"
-            tooltip="Configure node selectors, tolerations, labels, and annotations for different platforms"
-          >
-            <PlatformConfigEditor />
-          </Form.Item>
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">GPU Count</label>
+              <Form.Item name="gpu" style={{ marginBottom: 0 }}>
+                <input className="form-input" />
+              </Form.Item>
+            </div>
+            <div className="form-group">
+              <label className="form-label">GPU Type</label>
+              <Form.Item name="gpuType" style={{ marginBottom: 0 }}>
+                <input className="form-input" />
+              </Form.Item>
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">Ephemeral Storage (GB)</label>
+              <Form.Item name="ephemeralStorage" style={{ marginBottom: 0 }}>
+                <input className="form-input" />
+              </Form.Item>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Shared Memory</label>
+              <Form.Item name="shmSize" style={{ marginBottom: 0 }}>
+                <input className="form-input" />
+              </Form.Item>
+            </div>
+          </div>
+          <div className="form-group full" style={{ marginTop: 16 }}>
+            <label className="form-label">Platform Configurations</label>
+            <Form.Item name="platforms" style={{ marginBottom: 0 }}>
+              <PlatformConfigEditor />
+            </Form.Item>
+          </div>
+          <div className="modal-footer" style={{ margin: '24px -24px -24px', padding: '16px 24px' }}>
+            <button type="button" className="btn btn-outline" onClick={() => { setIsEditModalVisible(false); setEditingSpec(null); editForm.resetFields(); }}>
+              Cancel
+            </button>
+            <button type="button" className="btn btn-blue" onClick={handleUpdate} disabled={updateMutation.isPending}>
+              {updateMutation.isPending ? 'Updating...' : 'Update'}
+            </button>
+          </div>
         </Form>
       </Modal>
-    </div>
+    </>
   );
 };
 

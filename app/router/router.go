@@ -14,22 +14,22 @@ type Router struct {
 	endpointHandler   *handler.EndpointHandler
 	autoscalerHandler *handler.AutoScalerHandler
 	statisticsHandler *handler.StatisticsHandler
-	gpuUsageHandler   *handler.GPUUsageHandler
 	specHandler       *handler.SpecHandler
 	imageHandler      *handler.ImageHandler
+	monitoringHandler *handler.MonitoringHandler
 }
 
 // NewRouter creates a new Router
-func NewRouter(taskHandler *handler.TaskHandler, workerHandler *handler.WorkerHandler, endpointHandler *handler.EndpointHandler, autoscalerHandler *handler.AutoScalerHandler, statisticsHandler *handler.StatisticsHandler, gpuUsageHandler *handler.GPUUsageHandler, specHandler *handler.SpecHandler, imageHandler *handler.ImageHandler) *Router {
+func NewRouter(taskHandler *handler.TaskHandler, workerHandler *handler.WorkerHandler, endpointHandler *handler.EndpointHandler, autoscalerHandler *handler.AutoScalerHandler, statisticsHandler *handler.StatisticsHandler, specHandler *handler.SpecHandler, imageHandler *handler.ImageHandler, monitoringHandler *handler.MonitoringHandler) *Router {
 	return &Router{
 		taskHandler:       taskHandler,
 		workerHandler:     workerHandler,
 		endpointHandler:   endpointHandler,
 		autoscalerHandler: autoscalerHandler,
 		statisticsHandler: statisticsHandler,
-		gpuUsageHandler:   gpuUsageHandler,
 		specHandler:       specHandler,
 		imageHandler:      imageHandler,
+		monitoringHandler: monitoringHandler,
 	}
 }
 
@@ -53,10 +53,16 @@ func (r *Router) Setup(engine *gin.Engine) {
 		{
 			endpoint.POST("/run", r.taskHandler.SubmitWithEndpoint)
 			endpoint.POST("/runsync", r.taskHandler.SubmitSyncWithEndpoint)
-			endpoint.GET("/status/:task_id", r.taskHandler.Status)  // Reuse existing
-			endpoint.POST("/cancel/:task_id", r.taskHandler.Cancel) // Reuse existing
-			endpoint.GET("/stats", r.taskHandler.GetEndpointStats)  // endpoint statistics
+			endpoint.GET("/status/:task_id", r.taskHandler.Status)       // Reuse existing
+			endpoint.POST("/cancel/:task_id", r.taskHandler.Cancel)      // Reuse existing
+			endpoint.GET("/stats", r.taskHandler.GetEndpointStats)       // endpoint statistics
 			endpoint.GET("/check", r.taskHandler.CheckSubmitEligibility) // check if task submission is recommended
+
+			// Monitoring APIs
+			if r.monitoringHandler != nil {
+				endpoint.GET("/metrics/realtime", r.monitoringHandler.GetRealtimeMetrics)
+				endpoint.GET("/metrics/stats", r.monitoringHandler.GetStats)
+			}
 		}
 	}
 
@@ -98,8 +104,8 @@ func (r *Router) Setup(engine *gin.Engine) {
 
 				// Image update check
 				if r.imageHandler != nil {
-					endpoints.POST("/:name/check-image", r.imageHandler.CheckImageUpdate)     // Check image update for specific endpoint
-					endpoints.POST("/check-images", r.imageHandler.CheckAllImagesUpdate)      // Check image updates for all endpoints
+					endpoints.POST("/:name/check-image", r.imageHandler.CheckImageUpdate) // Check image update for specific endpoint
+					endpoints.POST("/check-images", r.imageHandler.CheckAllImagesUpdate)  // Check image updates for all endpoints
 				}
 			}
 
@@ -179,18 +185,6 @@ func (r *Router) Setup(engine *gin.Engine) {
 					statistics.GET("/overview", r.statisticsHandler.GetOverview)                      // Global statistics
 					statistics.GET("/endpoints", r.statisticsHandler.GetTopEndpoints)                 // Top endpoints by task volume
 					statistics.GET("/endpoints/:endpoint", r.statisticsHandler.GetEndpointStatistics) // Specific endpoint statistics
-				}
-			}
-
-			// GPU Usage APIs
-			if r.gpuUsageHandler != nil {
-				gpuUsage := api.Group("/gpu-usage")
-				{
-					gpuUsage.GET("/minute", r.gpuUsageHandler.GetMinuteStatistics)       // Minute-level statistics
-					gpuUsage.GET("/hourly", r.gpuUsageHandler.GetHourlyStatistics)       // Hourly statistics
-					gpuUsage.GET("/daily", r.gpuUsageHandler.GetDailyStatistics)         // Daily statistics
-					gpuUsage.POST("/aggregate", r.gpuUsageHandler.TriggerAggregation)    // Manual aggregation trigger
-					gpuUsage.POST("/backfill", r.gpuUsageHandler.BackfillHistoricalData) // Backfill historical data
 				}
 			}
 		}

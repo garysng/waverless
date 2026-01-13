@@ -2,14 +2,21 @@ package mysql
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
+	"net"
+	"net/url"
 	"os"
 	"time"
 
+	mysqldriver "github.com/go-sql-driver/mysql"
+	"golang.org/x/net/proxy"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"waverless/pkg/config"
 )
 
 // Datastore wraps GORM DB and provides transaction support
@@ -18,7 +25,7 @@ type Datastore struct {
 }
 
 // NewDatastore creates a new MySQL datastore
-func NewDatastore(dsn string) (*Datastore, error) {
+func NewDatastore(dsn string, proxyConfig *config.ProxyConfig) (*Datastore, error) {
 	// Configure GORM logger
 	newLogger := logger.New(
 		log.New(os.Stdout, "\r\n", log.LstdFlags),
@@ -30,12 +37,40 @@ func NewDatastore(dsn string) (*Datastore, error) {
 		},
 	)
 
+	// Configure MySQL driver with custom dialer if proxy is enabled
+	var finalDSN string
+	var err error
+
+	if proxyConfig != nil && proxyConfig.Enabled {
+		// Parse DSN to get MySQL config
+		cfg, err := mysqldriver.ParseDSN(dsn)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse DSN: %w", err)
+		}
+
+		// Register custom dialer with proxy support
+		dialerName := fmt.Sprintf("proxy_%s_%d", proxyConfig.Type, time.Now().UnixNano())
+		mysqldriver.RegisterDialContext(dialerName, func(ctx context.Context, addr string) (net.Conn, error) {
+			return dialWithProxy(ctx, addr, proxyConfig)
+		})
+
+		// Use the custom dialer
+		cfg.Net = dialerName
+
+		// Format DSN with custom dialer
+		finalDSN = cfg.FormatDSN()
+
+		log.Printf("MySQL proxy enabled: %s://%s:%d", proxyConfig.Type, proxyConfig.Host, proxyConfig.Port)
+	} else {
+		finalDSN = dsn
+	}
+
 	// Open database connection
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
-		Logger: newLogger,
-		// Disable default transaction for better performance
+	db, err := gorm.Open(mysql.Open(finalDSN), &gorm.Config{
+		Logger:                 newLogger,
 		SkipDefaultTransaction: true,
 	})
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -53,6 +88,88 @@ func NewDatastore(dsn string) (*Datastore, error) {
 	sqlDB.SetConnMaxIdleTime(10 * time.Minute) // Connection max idle time
 
 	return &Datastore{db: db}, nil
+}
+
+// dialWithProxy creates a connection through proxy
+func dialWithProxy(ctx context.Context, addr string, proxyConfig *config.ProxyConfig) (net.Conn, error) {
+	var baseDialer proxy.Dialer
+	var err error
+
+	proxyAddr := fmt.Sprintf("%s:%d", proxyConfig.Host, proxyConfig.Port)
+
+	switch proxyConfig.Type {
+	case "socks5":
+		// Create SOCKS5 dialer
+		baseDialer, err = proxy.SOCKS5("tcp", proxyAddr, nil, proxy.Direct)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create SOCKS5 proxy dialer: %w", err)
+		}
+	case "http", "https":
+		// Create HTTP/HTTPS proxy dialer
+		proxyURL, err := url.Parse(fmt.Sprintf("%s://%s", proxyConfig.Type, proxyAddr))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse proxy URL: %w", err)
+		}
+
+		// Use HTTP proxy dialer
+		baseDialer = &httpProxyDialer{
+			proxyURL: proxyURL,
+			forward:  proxy.Direct,
+		}
+	default:
+		return nil, fmt.Errorf("unsupported proxy type: %s (supported: http, https, socks5)", proxyConfig.Type)
+	}
+
+	return baseDialer.Dial("tcp", addr)
+}
+
+// httpProxyDialer implements proxy.Dialer for HTTP/HTTPS proxies
+type httpProxyDialer struct {
+	proxyURL *url.URL
+	forward  proxy.Dialer
+}
+
+func (d *httpProxyDialer) Dial(network, addr string) (net.Conn, error) {
+	// Connect to the proxy server
+	conn, err := d.forward.Dial("tcp", d.proxyURL.Host)
+	if err != nil {
+		return nil, err
+	}
+
+	// For HTTPS proxy, establish TLS connection
+	if d.proxyURL.Scheme == "https" {
+		tlsConn := tls.Client(conn, &tls.Config{
+			ServerName: d.proxyURL.Hostname(),
+		})
+		if err := tlsConn.Handshake(); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		conn = tlsConn
+	}
+
+	// Send HTTP CONNECT request
+	connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", addr, addr)
+	if _, err := conn.Write([]byte(connectReq)); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	// Read response
+	response := make([]byte, 4096)
+	n, err := conn.Read(response)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	// Check if connection was successful (HTTP 200)
+	if n < 12 || string(response[9:12]) != "200" {
+		conn.Close()
+		return nil, fmt.Errorf("proxy connection failed: %s", string(response[:n]))
+	}
+
+	return conn, nil
 }
 
 // Close closes the database connection

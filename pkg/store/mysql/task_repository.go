@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -41,6 +42,25 @@ func (r *TaskRepository) UpdateFields(ctx context.Context, taskID string, update
 	return r.ds.DB(ctx).Model(&Task{}).
 		Where("task_id = ?", taskID).
 		Updates(updates).Error
+}
+
+// UpdateFieldsWithStatus updates specific fields of a task with CAS (Compare-And-Swap) on status
+// This prevents concurrent updates by ensuring the task status matches expectedStatus before updating
+// Returns error if task not found or status doesn't match expectedStatus
+func (r *TaskRepository) UpdateFieldsWithStatus(ctx context.Context, taskID string, expectedStatus string, updates map[string]interface{}) error {
+	result := r.ds.DB(ctx).Model(&Task{}).
+		Where("task_id = ? AND status = ?", taskID, expectedStatus).
+		Updates(updates)
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to update task: %w", result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("task not found or status changed (expected: %s): task_id=%s", expectedStatus, taskID)
+	}
+
+	return nil
 }
 
 // UpdateStatus updates task status with atomic state transition (CAS - Compare And Swap)
@@ -123,6 +143,13 @@ func (r *TaskRepository) CountByEndpointAndStatus(ctx context.Context, endpoint,
 		return 0, fmt.Errorf("failed to count tasks: %w", err)
 	}
 	return count, nil
+}
+
+// CountByStatus counts tasks by status globally
+func (r *TaskRepository) CountByStatus(ctx context.Context, status string) (int64, error) {
+	var count int64
+	err := r.ds.DB(ctx).Model(&Task{}).Where("status = ?", status).Count(&count).Error
+	return count, err
 }
 
 // CountInProgressByEndpoint counts in-progress tasks for an endpoint
@@ -249,6 +276,7 @@ func (r *TaskRepository) GetPendingTasksByEndpoint(ctx context.Context, endpoint
 // Uses SELECT FOR UPDATE row lock to ensure same task won't be pulled by multiple workers simultaneously
 // This function only handles query and locking, not status update, to avoid rollback needs
 // OPTIMIZATION: Only returns task IDs to avoid fetching large input field
+// DEPRECATED: Use SelectAndAssignTasks instead to avoid race condition
 func (r *TaskRepository) SelectPendingTasksForUpdate(ctx context.Context, endpoint string, limit int) ([]string, error) {
 	var taskIDs []string
 
@@ -275,6 +303,54 @@ func (r *TaskRepository) SelectPendingTasksForUpdate(ctx context.Context, endpoi
 	}
 
 	return taskIDs, nil
+}
+
+// SelectAndAssignTasks atomically selects PENDING tasks and assigns them to worker in one transaction
+// This prevents race condition where multiple workers grab the same task
+func (r *TaskRepository) SelectAndAssignTasks(ctx context.Context, endpoint string, limit int, workerID string) ([]*Task, error) {
+	var assignedTasks []*Task
+
+	err := r.ds.ExecTx(ctx, func(txCtx context.Context) error {
+		// 1. SELECT FOR UPDATE to lock PENDING tasks
+		var tasks []*Task
+		err := r.ds.DB(txCtx).
+			Where("endpoint = ? AND status = ?", endpoint, "PENDING").
+			Order("id ASC").
+			Limit(limit).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Find(&tasks).Error
+		if err != nil {
+			return fmt.Errorf("failed to select pending tasks: %w", err)
+		}
+
+		if len(tasks) == 0 {
+			return nil
+		}
+
+		now := r.ds.GetDB().NowFunc()
+
+		// 2. Update each task in the same transaction
+		for _, task := range tasks {
+			task.Status = "IN_PROGRESS"
+			task.WorkerID = workerID
+			task.StartedAt = &now
+			task.AddExecutionRecord(workerID, now)
+
+			err := r.ds.DB(txCtx).Save(task).Error
+			if err != nil {
+				return fmt.Errorf("failed to update task %s: %w", task.TaskID, err)
+			}
+			assignedTasks = append(assignedTasks, task)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return assignedTasks, nil
 }
 
 // AssignTasksToWorker atomically assigns tasks to worker (CAS update)
@@ -342,4 +418,29 @@ func (r *TaskRepository) AssignTasksToWorker(ctx context.Context, taskIDs []stri
 	}
 
 	return updatedTasks, nil
+}
+
+// ExecTx executes a function within a transaction
+// This allows multiple repository operations to be executed atomically
+func (r *TaskRepository) ExecTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	return r.ds.ExecTx(ctx, fn)
+}
+
+
+// CleanupOldTasks removes completed/failed tasks older than the given time in batches
+func (r *TaskRepository) CleanupOldTasks(ctx context.Context, before time.Time) (int64, error) {
+	const batchSize = 5000
+	var total int64
+	for {
+		result := r.ds.DB(ctx).Where("status IN (?, ?, ?) AND updated_at < ?", "COMPLETED", "FAILED", "TIMEOUT", before).Limit(batchSize).Delete(&Task{})
+		if result.Error != nil {
+			return total, result.Error
+		}
+		total += result.RowsAffected
+		if result.RowsAffected < batchSize {
+			break
+		}
+		time.Sleep(100 * time.Millisecond) // avoid overwhelming DB
+	}
+	return total, nil
 }

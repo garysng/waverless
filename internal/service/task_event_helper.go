@@ -22,15 +22,32 @@ func (s *TaskService) recordTaskEvent(
 ) {
 	// 1. Record detailed event to task_events table (async, non-blocking)
 	go func() {
+		now := time.Now()
 		event := &mysqlModel.TaskEvent{
 			TaskID:        task.TaskID,
 			Endpoint:      task.Endpoint,
 			EventType:     string(eventType),
-			EventTime:     time.Now(),
+			EventTime:     now,
 			WorkerID:      workerID,
 			WorkerPodName: workerPodName,
 			FromStatus:    task.Status,
 			ErrorMessage:  errorMsg,
+		}
+
+		// Fill queue_wait_ms for TASK_ASSIGNED event
+		if eventType == mysqlModel.EventTaskAssigned {
+			queueMs := int(now.Sub(task.CreatedAt).Milliseconds())
+			event.QueueWaitMs = &queueMs
+		}
+
+		// Fill execution_duration_ms for completion events
+		if eventType == mysqlModel.EventTaskCompleted || eventType == mysqlModel.EventTaskFailed || eventType == mysqlModel.EventTaskTimeout {
+			if task.StartedAt != nil {
+				execMs := int(now.Sub(*task.StartedAt).Milliseconds())
+				event.ExecutionDurationMs = &execMs
+			}
+			totalMs := int(now.Sub(task.CreatedAt).Milliseconds())
+			event.TotalDurationMs = &totalMs
 		}
 
 		if err := s.taskEventRepo.RecordEvent(context.Background(), event); err != nil {
@@ -134,5 +151,21 @@ func (s *TaskService) recordTaskEventOnly(
 // recordTaskAssignedEventOnly 只记录 TASK_ASSIGNED 事件，不更新 extend
 // 用于任务已经通过 AssignTasksToWorker 完成所有更新的情况
 func (s *TaskService) recordTaskAssignedEventOnly(ctx context.Context, task *mysqlModel.Task, workerID string, workerPodName string) {
-	s.recordTaskEventOnly(ctx, task, mysqlModel.EventTaskAssigned, workerID, workerPodName, "PENDING", "")
+	go func() {
+		now := time.Now()
+		queueMs := int(now.Sub(task.CreatedAt).Milliseconds())
+		event := &mysqlModel.TaskEvent{
+			TaskID:        task.TaskID,
+			Endpoint:      task.Endpoint,
+			EventType:     string(mysqlModel.EventTaskAssigned),
+			EventTime:     now,
+			WorkerID:      workerID,
+			WorkerPodName: workerPodName,
+			FromStatus:    "PENDING",
+			QueueWaitMs:   &queueMs,
+		}
+		if err := s.taskEventRepo.RecordEvent(context.Background(), event); err != nil {
+			logger.ErrorCtx(context.Background(), "failed to record task event: %v", err)
+		}
+	}()
 }

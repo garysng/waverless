@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -15,10 +14,8 @@ import (
 	"waverless/pkg/config"
 	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
-	"waverless/pkg/queue/asynq"
 	"waverless/pkg/store/mysql"
 	mysqlModel "waverless/pkg/store/mysql/model"
-	redisstore "waverless/pkg/store/redis"
 
 	"github.com/google/uuid"
 )
@@ -27,31 +24,30 @@ import (
 type TaskService struct {
 	taskRepo           *mysql.TaskRepository
 	taskEventRepo      *mysql.TaskEventRepository
-	workerRepo         *redisstore.WorkerRepository
-	queue              *asynq.Manager
 	endpointService    *endpointsvc.Service
-	gpuUsageRepo       *mysql.GPUUsageRepository
 	deploymentProvider interfaces.DeploymentProvider
 	statisticsService  *StatisticsService
+	workerService      *WorkerService
 }
 
 // NewTaskService creates a new Task service
-func NewTaskService(taskRepo *mysql.TaskRepository, taskEventRepo *mysql.TaskEventRepository, workerRepo *redisstore.WorkerRepository, queueMgr *asynq.Manager, endpointService *endpointsvc.Service, gpuUsageRepo *mysql.GPUUsageRepository, deploymentProvider interfaces.DeploymentProvider) *TaskService {
+func NewTaskService(taskRepo *mysql.TaskRepository, taskEventRepo *mysql.TaskEventRepository, endpointService *endpointsvc.Service, deploymentProvider interfaces.DeploymentProvider) *TaskService {
 	return &TaskService{
 		taskRepo:           taskRepo,
 		taskEventRepo:      taskEventRepo,
-		workerRepo:         workerRepo,
-		queue:              queueMgr,
 		endpointService:    endpointService,
-		gpuUsageRepo:       gpuUsageRepo,
 		deploymentProvider: deploymentProvider,
-		statisticsService:  nil, // Will be set later to avoid circular dependency
 	}
 }
 
 // SetStatisticsService sets the statistics service (for dependency injection)
 func (s *TaskService) SetStatisticsService(statsService *StatisticsService) {
 	s.statisticsService = statsService
+}
+
+// SetWorkerService sets the worker service (for dependency injection)
+func (s *TaskService) SetWorkerService(workerService *WorkerService) {
+	s.workerService = workerService
 }
 
 // SubmitTask submits a task
@@ -74,28 +70,34 @@ func (s *TaskService) SubmitTask(ctx context.Context, req *model.SubmitRequest) 
 		UpdatedAt:  time.Now(),
 	}
 
-	// Save task to MySQL
 	mysqlTask := mysql.FromTaskDomain(task)
-	if err := s.taskRepo.Create(ctx, mysqlTask); err != nil {
-		return nil, fmt.Errorf("failed to save task: %w", err)
-	}
 
-	// Record TASK_CREATED event (task is in MySQL with PENDING status, worker will pull directly from database)
-	s.recordTaskCreated(ctx, mysqlTask)
+	// Execute all operations in a single transaction
+	err := s.taskRepo.ExecTx(ctx, func(txCtx context.Context) error {
+		// 1. Create task
+		if err := s.taskRepo.Create(txCtx, mysqlTask); err != nil {
+			return fmt.Errorf("failed to save task: %w", err)
+		}
 
-	// Record TASK_QUEUED event
-	s.recordTaskQueued(ctx, mysqlTask)
+		// 2. Record events and update extend field
+		s.recordTaskCreated(txCtx, mysqlTask)
+		s.recordTaskQueued(txCtx, mysqlTask)
+		if err := s.taskRepo.UpdateFields(txCtx, mysqlTask.TaskID, map[string]interface{}{
+			"extend": mysqlTask.Extend,
+		}); err != nil {
+			return fmt.Errorf("failed to update task extend: %w", err)
+		}
 
-	// Save updated extend field
-	if err := s.taskRepo.UpdateFields(ctx, mysqlTask.TaskID, map[string]interface{}{
-		"extend": mysqlTask.Extend,
-	}); err != nil {
-		logger.ErrorCtx(ctx, "failed to update task extend: %v", err)
-	}
+		// 3. Update statistics
+		if s.statisticsService != nil {
+			s.statisticsService.UpdateStatisticsOnTaskStatusChange(txCtx, endpoint, "", "PENDING")
+		}
 
-	// Asynchronously update statistics (new task: fromStatus="", toStatus=PENDING)
-	if s.statisticsService != nil {
-		go s.statisticsService.UpdateStatisticsOnTaskStatusChange(context.Background(), endpoint, "", "PENDING")
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
 	}
 
 	logger.InfoCtx(ctx, "task submitted, task_id: %s, endpoint: %s", taskID, endpoint)
@@ -276,18 +278,21 @@ func (s *TaskService) UpdateTaskResult(ctx context.Context, req *model.JobResult
 		go s.statisticsService.UpdateStatisticsOnTaskStatusChange(context.Background(), endpoint, oldStatus, newStatus)
 	}
 
+	// Record worker task completion stats
+	if s.workerService != nil && mysqlTask.WorkerID != "" {
+		executionMs := int64(0)
+		if mysqlTask.StartedAt != nil {
+			executionMs = now.Sub(*mysqlTask.StartedAt).Milliseconds()
+		}
+		go s.workerService.RecordTaskCompletion(context.Background(), mysqlTask.WorkerID, mysqlTask.Endpoint, mysqlTask.TaskID, newStatus == "COMPLETED", executionMs, now)
+	}
+
 	logger.InfoCtx(ctx, "task result updated, task_id: %s, status: %s", req.TaskID, updates["status"])
 
 	// 🔥 CRITICAL: Update mysqlTask.CompletedAt before recording GPU usage
 	// The mysqlTask object was fetched from DB before updates, so CompletedAt is still nil
 	// We must update it with the value from updates map for GPU usage recording to work
 	mysqlTask.CompletedAt = &now
-
-	// Record GPU usage statistics
-	if err := s.recordGPUUsage(ctx, mysqlTask); err != nil {
-		logger.WarnCtx(ctx, "failed to record GPU usage for task %s: %v", req.TaskID, err)
-		// Non-critical, continue execution
-	}
 
 	// 🔥 CRITICAL: Update endpoint's LastTaskTime (for autoscaler idle time calculation)
 	// If not updated, autoscaler will think endpoint is always idle, causing immediate scale-down after task completion
@@ -439,6 +444,11 @@ func (s *TaskService) ListTasks(ctx context.Context, status string, endpoint str
 	return responses, total, nil
 }
 
+// CountTasksByStatus counts tasks by status globally
+func (s *TaskService) CountTasksByStatus(ctx context.Context, status string) (int64, error) {
+	return s.taskRepo.CountByStatus(ctx, status)
+}
+
 // CleanupOrphanedTasks checks for tasks assigned to workers that no longer exist
 // This handles cases where workers crash or are scaled down while tasks are in progress
 func (s *TaskService) CleanupOrphanedTasks(ctx context.Context) error {
@@ -456,18 +466,6 @@ func (s *TaskService) CleanupOrphanedTasks(ctx context.Context) error {
 	}
 
 	logger.DebugCtx(ctx, "checking %d in-progress tasks for orphaned workers", len(taskIDs))
-
-	// Get all active workers
-	workers, err := s.workerRepo.GetAll(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get active workers: %w", err)
-	}
-
-	// Build set of active worker IDs for fast lookup
-	activeWorkerIDs := make(map[string]bool)
-	for _, worker := range workers {
-		activeWorkerIDs[worker.ID] = true
-	}
 
 	orphanedCount := 0
 
@@ -489,26 +487,26 @@ func (s *TaskService) CleanupOrphanedTasks(ctx context.Context) error {
 
 		// Check if task has a worker assigned
 		if mysqlTask.WorkerID == "" {
-			// Task in progress but no worker assigned - this is an orphan
 			logger.WarnCtx(ctx, "orphaned task detected (no worker assigned), task_id: %s, endpoint: %s",
 				taskID, mysqlTask.Endpoint)
-
-			// Re-queue task (worker crashed before assignment completed)
 			s.requeueOrphanedTask(ctx, mysqlTask, "No worker assigned")
 			orphanedCount++
 			continue
 		}
 
-		// Check if the assigned worker still exists
-		if !activeWorkerIDs[mysqlTask.WorkerID] {
-			// Worker no longer exists - this is an orphan
-			logger.WarnCtx(ctx, "orphaned task detected (worker not found), task_id: %s, worker_id: %s, endpoint: %s",
-				taskID, mysqlTask.WorkerID, mysqlTask.Endpoint)
-
-			// Record TASK_ORPHANED event
+		// Check if the assigned worker exists in database (any status except OFFLINE)
+		if s.workerService == nil {
+			logger.ErrorCtx(ctx, "orphaned workerService is nil, cannot check orphaned tasks")
+			continue
+		}
+		worker, err := s.workerService.GetWorker(ctx, mysqlTask.WorkerID)
+		if err != nil {
+			logger.WarnCtx(ctx, "orphaned task: failed to get worker %s: %v", mysqlTask.WorkerID, err)
+		}
+		if err != nil || worker == nil || worker.Status == model.WorkerStatusOffline {
+			logger.WarnCtx(ctx, "orphaned task detected (worker offline/not found), task_id: %s, worker_id: %s, endpoint: %s, worker_status: %v",
+				taskID, mysqlTask.WorkerID, mysqlTask.Endpoint, worker)
 			s.recordTaskOrphaned(ctx, mysqlTask)
-
-			// Re-queue task (worker crashed/scaled down)
 			s.requeueOrphanedTask(ctx, mysqlTask, fmt.Sprintf("Worker %s no longer exists", mysqlTask.WorkerID))
 			orphanedCount++
 		}
@@ -524,44 +522,82 @@ func (s *TaskService) CleanupOrphanedTasks(ctx context.Context) error {
 // requeueOrphanedTask re-queues an orphaned task for retry
 // Unlike timeout/failure, orphaned tasks are healthy but lost their worker (crash/scale-down)
 // They should be given another chance to execute
+//
+// OPTIMIZATION: Uses transaction to ensure atomicity and reduce database operations from 3 to 2
 func (s *TaskService) requeueOrphanedTask(ctx context.Context, task *mysql.Task, reason string) {
 	logger.InfoCtx(ctx, "re-queuing orphaned task, task_id: %s, endpoint: %s, reason: %s",
 		task.TaskID, task.Endpoint, reason)
 
-	// Reset task to PENDING status
 	now := time.Now()
+	oldStatus := task.Status
+
+	// Prepare status updates
 	task.Status = string(model.TaskStatusPending)
 	task.WorkerID = ""
 	task.StartedAt = nil
 	task.CompletedAt = nil
 	task.UpdatedAt = now
 
-	// Update task status
-	fieldUpdates := map[string]interface{}{
-		"status":       task.Status,
-		"worker_id":    task.WorkerID,
-		"started_at":   task.StartedAt,
-		"completed_at": task.CompletedAt,
-		"updated_at":   task.UpdatedAt,
-	}
+	// Update extend field for TASK_REQUEUED event (in-memory)
+	// Note: We use updateTaskExtend instead of recordTaskRequeued to avoid async goroutine
+	// which cannot be rolled back in transaction
+	s.updateTaskExtend(task, mysqlModel.EventTaskRequeued, "")
 
-	if err := s.taskRepo.UpdateFields(ctx, task.TaskID, fieldUpdates); err != nil {
-		logger.ErrorCtx(ctx, "failed to update orphaned task, task_id: %s, error: %v", task.TaskID, err)
+	// 🔒 Use transaction to execute all database operations atomically
+	err := s.taskRepo.ExecTx(ctx, func(txCtx context.Context) error {
+		// 1️⃣ Update all task fields in a single UPDATE (including extend)
+		// ⚠️ CRITICAL: Use CAS to prevent race condition with task completion
+		// Only update if task is still IN_PROGRESS (may have been completed by worker in the meantime)
+		fieldUpdates := map[string]interface{}{
+			"status":       task.Status,
+			"worker_id":    task.WorkerID,
+			"started_at":   task.StartedAt,
+			"completed_at": task.CompletedAt,
+			"updated_at":   task.UpdatedAt,
+			"extend":       task.Extend, // ✅ Merged: avoid second UPDATE
+		}
+
+		if err := s.taskRepo.UpdateFieldsWithStatus(txCtx, task.TaskID, "IN_PROGRESS", fieldUpdates); err != nil {
+			// Check if error is due to status change (task completed/cancelled by worker)
+			if strings.Contains(err.Error(), "status changed") {
+				logger.InfoCtx(txCtx, "⏭️  Task %s status changed during requeue (likely completed by worker), skipping requeue",
+					task.TaskID)
+				return nil // Not an error, just skip this task
+			}
+			return fmt.Errorf("failed to update orphaned task: %w", err)
+		}
+
+		// 2️⃣ Record TASK_REQUEUED event (synchronous, within transaction)
+		event := &mysqlModel.TaskEvent{
+			TaskID:       task.TaskID,
+			Endpoint:     task.Endpoint,
+			EventType:    string(mysqlModel.EventTaskRequeued),
+			EventTime:    now,
+			WorkerID:     "",
+			FromStatus:   oldStatus,
+			ErrorMessage: reason,
+		}
+
+		if err := s.taskEventRepo.RecordEvent(txCtx, event); err != nil {
+			return fmt.Errorf("failed to record task event: %w", err)
+		}
+
+		return nil // ✅ Commit transaction
+	})
+
+	if err != nil {
+		logger.ErrorCtx(ctx, "failed to requeue orphaned task (transaction rolled back), task_id: %s, error: %v",
+			task.TaskID, err)
 		return
 	}
 
-	// worker_id already cleared in MySQL, no additional Redis operations needed
-	// Record TASK_REQUEUED event (task status changed to PENDING, worker will automatically pull from MySQL database)
-	s.recordTaskRequeued(ctx, task, reason)
-
-	// Save updated extend field
-	if err := s.taskRepo.UpdateFields(ctx, task.TaskID, map[string]interface{}{
-		"extend": task.Extend,
-	}); err != nil {
-		logger.ErrorCtx(ctx, "failed to update task extend after requeue: %v", err)
+	// Asynchronously update statistics (non-critical, failure doesn't affect main flow)
+	if s.statisticsService != nil {
+		go s.statisticsService.UpdateStatisticsOnTaskStatusChange(
+			context.Background(), task.Endpoint, oldStatus, task.Status)
 	}
 
-	logger.InfoCtx(ctx, "orphaned task re-queued successfully, task_id: %s, endpoint: %s, status: PENDING",
+	logger.InfoCtx(ctx, "✅ orphaned task re-queued successfully, task_id: %s, endpoint: %s, status: PENDING",
 		task.TaskID, task.Endpoint)
 }
 
@@ -698,113 +734,4 @@ func (s *TaskService) GetTaskEvents(ctx context.Context, taskID string) ([]*mysq
 // GetTaskTimeline gets task timeline (simplified event list)
 func (s *TaskService) GetTaskTimeline(ctx context.Context, taskID string) ([]*mysql.TaskEvent, error) {
 	return s.taskEventRepo.GetTaskTimeline(ctx, taskID)
-}
-
-// recordGPUUsage records GPU usage for a completed or failed task
-func (s *TaskService) recordGPUUsage(ctx context.Context, task *mysql.Task) error {
-	// Skip if gpuUsageRepo is not configured
-	if s.gpuUsageRepo == nil {
-		return nil
-	}
-
-	// Only record for COMPLETED or FAILED tasks
-	if task.Status != string(model.TaskStatusCompleted) && task.Status != string(model.TaskStatusFailed) {
-		return nil
-	}
-
-	// Need both start and completion times
-	if task.StartedAt == nil || task.CompletedAt == nil {
-		logger.WarnCtx(ctx, "task %s missing start/completion time, skipping GPU usage recording", task.TaskID)
-		return nil
-	}
-
-	// Get endpoint to fetch spec information
-	endpoint, err := s.endpointService.GetEndpoint(ctx, task.Endpoint)
-	if err != nil {
-		return fmt.Errorf("failed to get endpoint: %w", err)
-	}
-
-	// Calculate duration
-	duration := task.CompletedAt.Sub(*task.StartedAt)
-	durationSeconds := int(duration.Seconds())
-	if durationSeconds < 0 {
-		durationSeconds = 0
-	}
-
-	// Parse GPU info from spec via DeploymentProvider
-	specName := endpoint.SpecName
-	gpuCount := 1 // Default to 1 GPU if spec not found
-	var gpuType *string
-	var gpuMemoryGB *int
-
-	// Get spec details from deployment provider
-	if s.deploymentProvider != nil {
-		specInfo, err := s.deploymentProvider.GetSpec(ctx, specName)
-		if err != nil {
-			logger.WarnCtx(ctx, "failed to get spec %s for GPU tracking: %v, using default gpu_count=1", specName, err)
-		} else {
-			// Parse GPU count from Resources.GPU field (e.g., "1", "2", "4")
-			if specInfo.Resources.GPU != "" {
-				if count, err := strconv.Atoi(strings.TrimSpace(specInfo.Resources.GPU)); err == nil && count > 0 {
-					gpuCount = count
-				}
-			}
-
-			// Parse GPU type from Resources.GPUType field (e.g., "A100", "H100")
-			if specInfo.Resources.GPUType != "" {
-				gpuTypeStr := strings.TrimSpace(specInfo.Resources.GPUType)
-				gpuType = &gpuTypeStr
-			}
-
-			// Try to parse GPU memory from GPUType if it contains memory info
-			// Example: "A100-80GB" -> memory=80
-			if gpuType != nil {
-				parts := strings.Split(*gpuType, "-")
-				for _, part := range parts {
-					if strings.HasSuffix(strings.ToUpper(part), "GB") {
-						memStr := strings.TrimSuffix(strings.ToUpper(part), "GB")
-						if mem, err := strconv.Atoi(memStr); err == nil && mem > 0 {
-							gpuMemoryGB = &mem
-							break
-						}
-					}
-				}
-			}
-
-			logger.DebugCtx(ctx, "parsed GPU info from spec %s: count=%d, type=%v, memory=%v",
-				specName, gpuCount, gpuType, gpuMemoryGB)
-		}
-	} else {
-		logger.WarnCtx(ctx, "deployment provider not available, using default gpu_count=1 for task %s", task.TaskID)
-	}
-
-	// Calculate GPU hours
-	gpuHours := float64(gpuCount) * (float64(durationSeconds) / 3600.0)
-
-	// Create GPU usage record
-	record := &mysqlModel.GPUUsageRecord{
-		TaskID:          task.TaskID,
-		Endpoint:        task.Endpoint,
-		WorkerID:        &task.WorkerID,
-		SpecName:        &specName,
-		GPUCount:        gpuCount,
-		GPUType:         gpuType,
-		GPUMemoryGB:     gpuMemoryGB,
-		StartedAt:       *task.StartedAt,
-		CompletedAt:     *task.CompletedAt,
-		DurationSeconds: durationSeconds,
-		GPUHours:        gpuHours,
-		Status:          task.Status,
-		CreatedAt:       time.Now(),
-	}
-
-	// Save record
-	if err := s.gpuUsageRepo.RecordGPUUsage(ctx, record); err != nil {
-		return fmt.Errorf("failed to create GPU usage record: %w", err)
-	}
-
-	logger.InfoCtx(ctx, "recorded GPU usage: task=%s, gpu_count=%d, duration=%ds, gpu_hours=%.4f",
-		task.TaskID, gpuCount, durationSeconds, gpuHours)
-
-	return nil
 }

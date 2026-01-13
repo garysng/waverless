@@ -114,6 +114,14 @@ type EndpointStatus struct {
 	ResourceUsage    Resources `json:"resourceUsage"`
 }
 
+// ClusterResourcesStatus 集群资源状态（轻量版）
+type ClusterResourcesStatus struct {
+	Enabled          bool             `json:"enabled"`
+	Running          bool             `json:"running"`
+	LastRunTime      time.Time        `json:"lastRunTime"`
+	ClusterResources ClusterResources `json:"clusterResources"`
+}
+
 // AutoScalerStatus 自动扩缩容系统状态
 type AutoScalerStatus struct {
 	Enabled           bool                   `json:"enabled"`

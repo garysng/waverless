@@ -39,11 +39,20 @@ type RedisConfig struct {
 
 // MySQLConfig MySQL configuration
 type MySQLConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password"`
-	Database string `yaml:"database"`
+	Host     string       `yaml:"host"`
+	Port     int          `yaml:"port"`
+	User     string       `yaml:"user"`
+	Password string       `yaml:"password"`
+	Database string       `yaml:"database"`
+	Proxy    *ProxyConfig `yaml:"proxy,omitempty"` // Proxy configuration (optional)
+}
+
+// ProxyConfig Proxy configuration for network connections
+type ProxyConfig struct {
+	Enabled bool   `yaml:"enabled"` // Enable proxy
+	Type    string `yaml:"type"`    // Proxy type: http, https, socks5
+	Host    string `yaml:"host"`    // Proxy host
+	Port    int    `yaml:"port"`    // Proxy port
 }
 
 // QueueConfig queue configuration
@@ -70,7 +79,11 @@ type LoggerConfig struct {
 
 // LoggerFileConfig logger file configuration
 type LoggerFileConfig struct {
-	Path string `yaml:"path"`
+	Path       string `yaml:"path"`
+	MaxSize    int    `yaml:"max_size"`     // MB per file (default: 100)
+	MaxBackups int    `yaml:"max_backups"`  // max backup files (default: 3)
+	MaxAge     int    `yaml:"max_age"`      // days to keep (default: 7)
+	Compress   bool   `yaml:"compress"`     // compress rotated files (default: false)
 }
 
 // K8sConfig K8s configuration

@@ -11,7 +11,6 @@ import (
 	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
 	"waverless/pkg/store/mysql"
-	redisstore "waverless/pkg/store/redis"
 )
 
 // Executor executor - executes scaling operations
@@ -19,9 +18,9 @@ type Executor struct {
 	deploymentProvider interfaces.DeploymentProvider
 	endpointService    *endpointsvc.Service
 	scalingEventRepo   *mysql.ScalingEventRepository
-	workerRepo         *redisstore.WorkerRepository // For smart scale-down
-	taskRepo           *mysql.TaskRepository        // For checking running tasks in database
-	k8sProvider        *k8s.K8sDeploymentProvider   // For pod draining & deletion
+	workerLister       interfaces.WorkerLister       // For smart scale-down
+	taskRepo           *mysql.TaskRepository         // For checking running tasks in database
+	k8sProvider        *k8s.K8sDeploymentProvider    // For pod draining & deletion
 }
 
 // NewExecutor creates executor
@@ -29,7 +28,7 @@ func NewExecutor(
 	deploymentProvider interfaces.DeploymentProvider,
 	endpointService *endpointsvc.Service,
 	scalingEventRepo *mysql.ScalingEventRepository,
-	workerRepo *redisstore.WorkerRepository,
+	workerLister interfaces.WorkerLister,
 	taskRepo *mysql.TaskRepository,
 ) *Executor {
 	// Try to get K8sDeploymentProvider for pod-level operations
@@ -39,7 +38,7 @@ func NewExecutor(
 		deploymentProvider: deploymentProvider,
 		endpointService:    endpointService,
 		scalingEventRepo:   scalingEventRepo,
-		workerRepo:         workerRepo,
+		workerLister:       workerLister,
 		taskRepo:           taskRepo,
 		k8sProvider:        k8sProvider,
 	}
@@ -143,7 +142,7 @@ func (e *Executor) scaleDown(ctx context.Context, decision *ScaleDecision) error
 		decision.Endpoint, decision.CurrentReplicas, decision.DesiredReplicas, decision.Reason)
 
 	// Step 1: Get workers for this endpoint only (optimized query)
-	endpointWorkers, err := e.workerRepo.GetByEndpoint(ctx, decision.Endpoint)
+	endpointWorkers, err := e.workerLister.ListWorkers(ctx, decision.Endpoint)
 	if err != nil {
 		return fmt.Errorf("failed to get workers: %w", err)
 	}
@@ -172,19 +171,22 @@ func (e *Executor) scaleDown(ctx context.Context, decision *ScaleDecision) error
 	// Step 3: If no idle worker found, cannot safely scale down
 	if idleWorker == nil {
 		logger.WarnCtx(ctx, "no idle worker found for %s, skip scale down", decision.Endpoint)
-		// Record blocked scale-down event
-		event := &mysql.ScalingEvent{
-			EventID:      generateEventID(),
-			Endpoint:     decision.Endpoint,
-			Timestamp:    time.Now(),
-			Action:       "scale_down_blocked",
-			FromReplicas: decision.CurrentReplicas,
-			ToReplicas:   decision.DesiredReplicas,
-			Reason:       "No idle worker available",
-			QueueLength:  decision.QueueLength,
-			Priority:     decision.Priority,
+		// Only record blocked event once per 5 minutes to avoid noise
+		recent, _ := e.scalingEventRepo.GetLatestByEndpoint(ctx, decision.Endpoint)
+		if recent == nil || recent.Action != "scale_down_blocked" || time.Since(recent.Timestamp) > 5*time.Minute {
+			event := &mysql.ScalingEvent{
+				EventID:      generateEventID(),
+				Endpoint:     decision.Endpoint,
+				Timestamp:    time.Now(),
+				Action:       "scale_down_blocked",
+				FromReplicas: decision.CurrentReplicas,
+				ToReplicas:   decision.DesiredReplicas,
+				Reason:       "No idle worker available",
+				QueueLength:  decision.QueueLength,
+				Priority:     decision.Priority,
+			}
+			e.scalingEventRepo.Create(ctx, event)
 		}
-		e.scalingEventRepo.Create(ctx, event)
 		return fmt.Errorf("no idle worker available for scale down")
 	}
 
@@ -246,7 +248,7 @@ func (e *Executor) gracefulScaleDown(ctx context.Context, decision *ScaleDecisio
 
 		case <-ticker.C:
 			// Check if Worker is still idle (podName = worker_id)
-			worker, err := e.workerRepo.Get(ctx, podName)
+			worker, err := e.workerLister.GetWorker(ctx, podName)
 			if err != nil || worker == nil {
 				// Worker no longer exists, may have been deleted
 				logger.InfoCtx(ctx, "worker no longer exists: %s, scale down aborted", podName)

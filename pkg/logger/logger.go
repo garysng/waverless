@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 
 	"waverless/pkg/config"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 var Log *zap.Logger
@@ -71,31 +71,11 @@ func Init() error {
 	var syncer zapcore.WriteSyncer
 	switch cfg.Output {
 	case "file":
-		// Ensure log directory exists
-		dir := cfg.File.Path[:strings.LastIndex(cfg.File.Path, "/")]
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return fmt.Errorf("failed to create log directory: %v", err)
-		}
-
-		file, err := os.OpenFile(cfg.File.Path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			return fmt.Errorf("failed to open log file: %v", err)
-		}
-		syncer = zapcore.AddSync(file)
+		syncer = zapcore.AddSync(getLogWriter(cfg))
 	case "both":
-		// Ensure log directory exists
-		dir := cfg.File.Path[:strings.LastIndex(cfg.File.Path, "/")]
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return fmt.Errorf("failed to create log directory: %v", err)
-		}
-
-		file, err := os.OpenFile(cfg.File.Path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			return fmt.Errorf("failed to open log file: %v", err)
-		}
 		syncer = zapcore.NewMultiWriteSyncer(
 			zapcore.AddSync(os.Stdout),
-			zapcore.AddSync(file),
+			zapcore.AddSync(getLogWriter(cfg)),
 		)
 	default: // console
 		syncer = zapcore.AddSync(os.Stdout)
@@ -112,6 +92,30 @@ func Init() error {
 	sugar = Log.Sugar()
 
 	return nil
+}
+
+// getLogWriter creates log writer with rotation support
+func getLogWriter(cfg config.LoggerConfig) zapcore.WriteSyncer {
+	maxSize := cfg.File.MaxSize
+	if maxSize == 0 {
+		maxSize = 100
+	}
+	maxBackups := cfg.File.MaxBackups
+	if maxBackups == 0 {
+		maxBackups = 3
+	}
+	maxAge := cfg.File.MaxAge
+	if maxAge == 0 {
+		maxAge = 7
+	}
+	
+	return zapcore.AddSync(&lumberjack.Logger{
+		Filename:   cfg.File.Path,
+		MaxSize:    maxSize,
+		MaxBackups: maxBackups,
+		MaxAge:     maxAge,
+		Compress:   cfg.File.Compress,
+	})
 }
 
 // defaultFields returns default field list, including trace_id

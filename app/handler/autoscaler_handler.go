@@ -52,14 +52,13 @@ func (h *AutoScalerHandler) GetStatus(c *gin.Context) {
 // @Success 200 {object} map[string]interface{}
 // @Router /api/v1/autoscaler/cluster-resources [get]
 func (h *AutoScalerHandler) GetClusterResources(c *gin.Context) {
-	status, err := h.manager.GetStatus(c.Request.Context())
+	status, err := h.manager.GetClusterResourcesOnly(c.Request.Context())
 	if err != nil {
-		logger.ErrorCtx(c.Request.Context(), "failed to get autoscaler status: %v", err)
+		logger.ErrorCtx(c.Request.Context(), "failed to get cluster resources: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Only return cluster resources
 	c.JSON(http.StatusOK, gin.H{
 		"enabled":          status.Enabled,
 		"running":          status.Running,

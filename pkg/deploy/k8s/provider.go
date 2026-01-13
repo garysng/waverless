@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -338,6 +339,77 @@ func (p *K8sDeploymentProvider) WatchPodTerminating(ctx context.Context, callbac
 	return nil
 }
 
+// WatchPodStatusChange registers a callback to observe pod status changes
+func (p *K8sDeploymentProvider) WatchPodStatusChange(ctx context.Context, callback PodStatusChangeCallback) error {
+	if p.manager == nil {
+		return fmt.Errorf("k8s manager not initialized")
+	}
+	if callback == nil {
+		return fmt.Errorf("pod status change callback is nil")
+	}
+
+	id := p.manager.RegisterPodStatusChangeCallback(func(podName, endpoint string, info *interfaces.PodInfo) {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			callback(podName, endpoint, info)
+		}
+	})
+
+	go func() {
+		<-ctx.Done()
+		p.manager.UnregisterPodStatusChangeCallback(id)
+	}()
+
+	return nil
+}
+
+// WatchPodDelete registers a callback to observe pod deletions
+func (p *K8sDeploymentProvider) WatchPodDelete(ctx context.Context, callback PodDeleteCallback) error {
+	if p.manager == nil {
+		return fmt.Errorf("k8s manager not initialized")
+	}
+	if callback == nil {
+		return fmt.Errorf("pod delete callback is nil")
+	}
+
+	id := p.manager.RegisterPodDeleteCallback(func(podName, endpoint string) {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			callback(podName, endpoint)
+		}
+	})
+
+	go func() {
+		<-ctx.Done()
+		p.manager.UnregisterPodDeleteCallback(id)
+	}()
+
+	return nil
+}
+
+// WatchSpotInterruption registers a callback to observe spot interruptions
+func (p *K8sDeploymentProvider) WatchSpotInterruption(ctx context.Context, callback func(podName, endpoint, reason string)) error {
+	if p.manager == nil {
+		return fmt.Errorf("k8s manager not initialized")
+	}
+	if callback == nil {
+		return fmt.Errorf("spot interruption callback is nil")
+	}
+
+	id := p.manager.RegisterSpotInterruptionCallback(callback)
+
+	go func() {
+		<-ctx.Done()
+		p.manager.UnregisterSpotInterruptionCallback(id)
+	}()
+
+	return nil
+}
+
 // WatchDeploymentSpecChange registers a callback to observe when deployment spec changes.
 // This is used to optimize pod replacement during rolling updates by prioritizing idle workers.
 func (p *K8sDeploymentProvider) WatchDeploymentSpecChange(ctx context.Context, callback DeploymentSpecChangeCallback) error {
@@ -360,6 +432,33 @@ func (p *K8sDeploymentProvider) WatchDeploymentSpecChange(ctx context.Context, c
 	go func() {
 		<-ctx.Done()
 		p.manager.UnregisterDeploymentSpecChangeCallback(id)
+	}()
+
+	return nil
+}
+
+// WatchDeploymentStatusChange registers a callback to observe when deployment status changes.
+// This is used to sync deployment status to database.
+func (p *K8sDeploymentProvider) WatchDeploymentStatusChange(ctx context.Context, callback DeploymentStatusChangeCallback) error {
+	if p.manager == nil {
+		return fmt.Errorf("k8s manager not initialized")
+	}
+	if callback == nil {
+		return fmt.Errorf("deployment status change callback is nil")
+	}
+
+	id := p.manager.RegisterDeploymentStatusChangeCallback(func(endpoint string, deployment *appsv1.Deployment) {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			callback(endpoint, deployment)
+		}
+	})
+
+	go func() {
+		<-ctx.Done()
+		p.manager.UnregisterDeploymentStatusChangeCallback(id)
 	}()
 
 	return nil

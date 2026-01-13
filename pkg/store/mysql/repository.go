@@ -1,5 +1,7 @@
 package mysql
 
+import "waverless/pkg/config"
+
 // Repository aggregates all MySQL repositories
 type Repository struct {
 	ds *Datastore
@@ -10,13 +12,14 @@ type Repository struct {
 	TaskStatistics   *TaskStatisticsRepository
 	ScalingEvent     *ScalingEventRepository
 	AutoscalerConfig *AutoscalerConfigRepository
-	GPUUsage         *GPUUsageRepository
 	Spec             *SpecRepository
+	Worker           *WorkerRepository
+	Monitoring       *MonitoringRepository
 }
 
 // NewRepository creates a new MySQL repository with all sub-repositories
-func NewRepository(dsn string) (*Repository, error) {
-	ds, err := NewDatastore(dsn)
+func NewRepository(dsn string, proxyConfig *config.ProxyConfig) (*Repository, error) {
+	ds, err := NewDatastore(dsn, proxyConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -29,8 +32,9 @@ func NewRepository(dsn string) (*Repository, error) {
 		TaskStatistics:   NewTaskStatisticsRepository(ds),
 		ScalingEvent:     NewScalingEventRepository(ds),
 		AutoscalerConfig: NewAutoscalerConfigRepository(ds),
-		GPUUsage:         NewGPUUsageRepository(ds),
 		Spec:             NewSpecRepository(ds),
+		Worker:           NewWorkerRepository(ds),
+		Monitoring:       NewMonitoringRepository(ds),
 	}, nil
 }
 

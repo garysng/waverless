@@ -1,5 +1,9 @@
 package k8s
 
+import (
+	corev1 "k8s.io/api/core/v1"
+)
+
 // Platform K8s 平台接口
 type Platform interface {
 	// GetName 获取平台名称
@@ -10,6 +14,9 @@ type Platform interface {
 
 	// GetNasDriver 获取 NAS 驱动
 	GetNasDriver() string
+
+	// DetectSpotInterruption 检测Spot中断
+	DetectSpotInterruption(pod *corev1.Pod) (bool, string)
 }
 
 // GenericPlatform 通用 K8s 平台
@@ -26,6 +33,27 @@ func (p *GenericPlatform) CustomizeAnnotations(annotations map[string]string, sp
 
 func (p *GenericPlatform) GetNasDriver() string {
 	return "nfs.csi.k8s.io"
+}
+
+func (p *GenericPlatform) DetectSpotInterruption(pod *corev1.Pod) (bool, string) {
+	// Generic spot interruption detection
+	if pod.Annotations != nil {
+		patterns := []struct {
+			key    string
+			reason string
+		}{
+			{"spot.io/interruption-detected", "Spot Interruption"},
+			{"preemptible.interruption", "Preemptible Interruption"},
+			{"node.termination", "Node Termination"},
+		}
+
+		for _, pattern := range patterns {
+			if detected, exists := pod.Annotations[pattern.key]; exists && detected == "true" {
+				return true, pattern.reason
+			}
+		}
+	}
+	return false, ""
 }
 
 // AliyunACKPlatform 阿里云 ACK 平台
@@ -56,6 +84,16 @@ func (p *AliyunACKPlatform) GetNasDriver() string {
 	return "nasplugin.csi.alibabacloud.com"
 }
 
+func (p *AliyunACKPlatform) DetectSpotInterruption(pod *corev1.Pod) (bool, string) {
+	// Alibaba Cloud preemptible instance detection
+	if pod.Annotations != nil {
+		if detected, exists := pod.Annotations["alicloud.com/preemptible-interruption"]; exists && detected == "true" {
+			return true, "Alibaba Preemptible Interruption"
+		}
+	}
+	return false, ""
+}
+
 // AWSEKS 平台
 type AWSEKSPlatform struct{}
 
@@ -70,6 +108,12 @@ func (p *AWSEKSPlatform) CustomizeAnnotations(annotations map[string]string, spe
 
 func (p *AWSEKSPlatform) GetNasDriver() string {
 	return "efs.csi.aws.com"
+}
+
+func (p *AWSEKSPlatform) DetectSpotInterruption(pod *corev1.Pod) (bool, string) {
+	// AWS Karpenter spot interruption detection
+	// aws not spot interruption events
+	return false, ""
 }
 
 // PlatformFactory 平台工厂

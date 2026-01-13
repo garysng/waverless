@@ -12,6 +12,8 @@ import (
 	"waverless/pkg/autoscaler"
 	"waverless/pkg/deploy/k8s"
 	"waverless/pkg/logger"
+	"waverless/pkg/monitoring"
+	mysqlstore "waverless/pkg/store/mysql"
 )
 
 func (app *Application) initJobs() error {
@@ -41,25 +43,27 @@ func (app *Application) initJobs() error {
 	// Register background tasks with locks
 	manager.Register(newWorkerCleanupJob(workerInterval, app.workerService, workerCleanupLock))
 	manager.Register(newTaskTimeoutCleanupJob(5*time.Minute, app.taskService, taskTimeoutLock))
-	manager.Register(newOrphanedTaskCleanupJob(30*time.Second, app.taskService, orphanedTaskLock))
-
-	// Register GPU statistics aggregation tasks
-	if app.gpuUsageService != nil {
-		gpuMinuteLock := autoscaler.NewRedisDistributedLock(redisClient, "gpu:aggregate-minute-lock")
-		gpuHourlyLock := autoscaler.NewRedisDistributedLock(redisClient, "gpu:aggregate-hourly-lock")
-		gpuDailyLock := autoscaler.NewRedisDistributedLock(redisClient, "gpu:aggregate-daily-lock")
-		gpuCleanupLock := autoscaler.NewRedisDistributedLock(redisClient, "gpu:cleanup-lock")
-
-		manager.Register(newGPUMinuteAggregationJob(1*time.Minute, app.gpuUsageService, gpuMinuteLock))
-		manager.Register(newGPUHourlyAggregationJob(5*time.Minute, app.gpuUsageService, gpuHourlyLock))
-		manager.Register(newGPUDailyAggregationJob(1*time.Hour, app.gpuUsageService, gpuDailyLock))
-		manager.Register(newGPUDataCleanupJob(24*time.Hour, app.gpuUsageService, gpuCleanupLock))
-	}
+	manager.Register(newOrphanedTaskCleanupJob(15*time.Second, app.taskService, orphanedTaskLock))
 
 	// Register task statistics refresh task
 	if app.statisticsService != nil {
 		statsRefreshLock := autoscaler.NewRedisDistributedLock(redisClient, "stats:refresh-lock")
 		manager.Register(newStatisticsRefreshJob(10*time.Minute, app.statisticsService, statsRefreshLock))
+	}
+
+	// Register monitoring tasks
+	if app.monitoringService != nil {
+		minuteAggLock := autoscaler.NewRedisDistributedLock(redisClient, "monitoring:minute-agg-lock")
+		hourlyAggLock := autoscaler.NewRedisDistributedLock(redisClient, "monitoring:hourly-agg-lock")
+		dailyAggLock := autoscaler.NewRedisDistributedLock(redisClient, "monitoring:daily-agg-lock")
+		snapshotLock := autoscaler.NewRedisDistributedLock(redisClient, "monitoring:snapshot-lock")
+		dataCleanupLock := autoscaler.NewRedisDistributedLock(redisClient, "cleanup:data-retention-lock")
+
+		manager.Register(newMinuteAggregationJob(time.Minute, app.monitoringService, minuteAggLock))
+		manager.Register(newHourlyAggregationJob(time.Hour, app.monitoringService, hourlyAggLock))
+		manager.Register(newDailyAggregationJob(24*time.Hour, app.monitoringService, dailyAggLock))
+		manager.Register(newSnapshotCollectionJob(time.Minute, app.monitoringCollector, snapshotLock))
+		manager.Register(newDataRetentionCleanupJob(24*time.Hour, app.mysqlRepo, dataCleanupLock))
 	}
 
 	app.jobsManager = manager
@@ -290,190 +294,6 @@ func (app *Application) hasRunningTasks(ctx context.Context, workerID string) (b
 	return len(tasks) > 0, nil
 }
 
-// gpuMinuteAggregationJob aggregates GPU usage statistics by minute
-type gpuMinuteAggregationJob struct {
-	interval        time.Duration
-	gpuUsageService *service.GPUUsageService
-	distributedLock autoscaler.DistributedLock
-}
-
-func newGPUMinuteAggregationJob(interval time.Duration, svc *service.GPUUsageService, lock autoscaler.DistributedLock) jobs.Job {
-	return &gpuMinuteAggregationJob{
-		interval:        interval,
-		gpuUsageService: svc,
-		distributedLock: lock,
-	}
-}
-
-func (j *gpuMinuteAggregationJob) Name() string {
-	return "gpu-minute-aggregation"
-}
-
-func (j *gpuMinuteAggregationJob) Interval() time.Duration {
-	return j.interval
-}
-
-func (j *gpuMinuteAggregationJob) Run(ctx context.Context) error {
-	if j.gpuUsageService == nil {
-		return fmt.Errorf("gpu usage service not configured")
-	}
-
-	// Try to acquire distributed lock
-	if j.distributedLock != nil {
-		acquired, err := j.distributedLock.TryLock(ctx)
-		if err != nil || !acquired {
-			logger.DebugCtx(ctx, "another instance is running GPU minute aggregation, skipping this cycle")
-			return nil
-		}
-		defer j.distributedLock.Unlock(ctx)
-	}
-
-	logger.DebugCtx(ctx, "running GPU minute aggregation job")
-	// Aggregate the previous minute (to ensure all records are captured)
-	now := time.Now()
-	endTime := now.Add(-1 * time.Minute).Truncate(time.Minute)
-	startTime := endTime.Add(-1 * time.Minute)
-
-	return j.gpuUsageService.AggregateStatistics(ctx, startTime, endTime, "minute")
-}
-
-// gpuHourlyAggregationJob aggregates GPU usage statistics by hour
-type gpuHourlyAggregationJob struct {
-	interval        time.Duration
-	gpuUsageService *service.GPUUsageService
-	distributedLock autoscaler.DistributedLock
-}
-
-func newGPUHourlyAggregationJob(interval time.Duration, svc *service.GPUUsageService, lock autoscaler.DistributedLock) jobs.Job {
-	return &gpuHourlyAggregationJob{
-		interval:        interval,
-		gpuUsageService: svc,
-		distributedLock: lock,
-	}
-}
-
-func (j *gpuHourlyAggregationJob) Name() string {
-	return "gpu-hourly-aggregation"
-}
-
-func (j *gpuHourlyAggregationJob) Interval() time.Duration {
-	return j.interval
-}
-
-func (j *gpuHourlyAggregationJob) Run(ctx context.Context) error {
-	if j.gpuUsageService == nil {
-		return fmt.Errorf("gpu usage service not configured")
-	}
-
-	// Try to acquire distributed lock
-	if j.distributedLock != nil {
-		acquired, err := j.distributedLock.TryLock(ctx)
-		if err != nil || !acquired {
-			logger.DebugCtx(ctx, "another instance is running GPU hourly aggregation, skipping this cycle")
-			return nil
-		}
-		defer j.distributedLock.Unlock(ctx)
-	}
-
-	logger.DebugCtx(ctx, "running GPU hourly aggregation job")
-	// Aggregate the previous hour
-	now := time.Now()
-	endTime := now.Add(-1 * time.Hour).Truncate(time.Hour)
-	startTime := endTime.Add(-1 * time.Hour)
-
-	return j.gpuUsageService.AggregateStatistics(ctx, startTime, endTime, "hourly")
-}
-
-// gpuDailyAggregationJob aggregates GPU usage statistics by day
-type gpuDailyAggregationJob struct {
-	interval        time.Duration
-	gpuUsageService *service.GPUUsageService
-	distributedLock autoscaler.DistributedLock
-}
-
-func newGPUDailyAggregationJob(interval time.Duration, svc *service.GPUUsageService, lock autoscaler.DistributedLock) jobs.Job {
-	return &gpuDailyAggregationJob{
-		interval:        interval,
-		gpuUsageService: svc,
-		distributedLock: lock,
-	}
-}
-
-func (j *gpuDailyAggregationJob) Name() string {
-	return "gpu-daily-aggregation"
-}
-
-func (j *gpuDailyAggregationJob) Interval() time.Duration {
-	return j.interval
-}
-
-func (j *gpuDailyAggregationJob) Run(ctx context.Context) error {
-	if j.gpuUsageService == nil {
-		return fmt.Errorf("gpu usage service not configured")
-	}
-
-	// Try to acquire distributed lock
-	if j.distributedLock != nil {
-		acquired, err := j.distributedLock.TryLock(ctx)
-		if err != nil || !acquired {
-			logger.DebugCtx(ctx, "another instance is running GPU daily aggregation, skipping this cycle")
-			return nil
-		}
-		defer j.distributedLock.Unlock(ctx)
-	}
-
-	logger.DebugCtx(ctx, "running GPU daily aggregation job")
-	// Aggregate the previous day
-	now := time.Now()
-	yesterday := now.AddDate(0, 0, -1)
-	startTime := time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 0, 0, 0, 0, yesterday.Location())
-	endTime := startTime.AddDate(0, 0, 1)
-
-	return j.gpuUsageService.AggregateStatistics(ctx, startTime, endTime, "daily")
-}
-
-// gpuDataCleanupJob cleans up old GPU usage statistics data
-type gpuDataCleanupJob struct {
-	interval        time.Duration
-	gpuUsageService *service.GPUUsageService
-	distributedLock autoscaler.DistributedLock
-}
-
-func newGPUDataCleanupJob(interval time.Duration, svc *service.GPUUsageService, lock autoscaler.DistributedLock) jobs.Job {
-	return &gpuDataCleanupJob{
-		interval:        interval,
-		gpuUsageService: svc,
-		distributedLock: lock,
-	}
-}
-
-func (j *gpuDataCleanupJob) Name() string {
-	return "gpu-data-cleanup"
-}
-
-func (j *gpuDataCleanupJob) Interval() time.Duration {
-	return j.interval
-}
-
-func (j *gpuDataCleanupJob) Run(ctx context.Context) error {
-	if j.gpuUsageService == nil {
-		return fmt.Errorf("gpu usage service not configured")
-	}
-
-	// Try to acquire distributed lock
-	if j.distributedLock != nil {
-		acquired, err := j.distributedLock.TryLock(ctx)
-		if err != nil || !acquired {
-			logger.DebugCtx(ctx, "another instance is running GPU data cleanup, skipping this cycle")
-			return nil
-		}
-		defer j.distributedLock.Unlock(ctx)
-	}
-
-	logger.InfoCtx(ctx, "running GPU data cleanup job")
-	return j.gpuUsageService.CleanupOldStatistics(ctx)
-}
-
 // statisticsRefreshJob periodically refreshes task statistics from the tasks table
 type statisticsRefreshJob struct {
 	interval          time.Duration
@@ -514,4 +334,185 @@ func (j *statisticsRefreshJob) Run(ctx context.Context) error {
 
 	logger.InfoCtx(ctx, "running statistics refresh job")
 	return j.statisticsService.RefreshAllStatistics(ctx)
+}
+
+
+// minuteAggregationJob aggregates monitoring data every minute
+type minuteAggregationJob struct {
+	interval          time.Duration
+	monitoringService *service.MonitoringService
+	distributedLock   autoscaler.DistributedLock
+}
+
+func newMinuteAggregationJob(interval time.Duration, svc *service.MonitoringService, lock autoscaler.DistributedLock) jobs.Job {
+	return &minuteAggregationJob{
+		interval:          interval,
+		monitoringService: svc,
+		distributedLock:   lock,
+	}
+}
+
+func (j *minuteAggregationJob) Name() string { return "monitoring-minute-aggregation" }
+
+func (j *minuteAggregationJob) Interval() time.Duration { return j.interval }
+
+func (j *minuteAggregationJob) Run(ctx context.Context) error {
+	if j.monitoringService == nil {
+		return fmt.Errorf("monitoring service not configured")
+	}
+	if j.distributedLock != nil {
+		acquired, err := j.distributedLock.TryLock(ctx)
+		if err != nil || !acquired {
+			return nil
+		}
+		defer j.distributedLock.Unlock(ctx)
+	}
+	return j.monitoringService.AggregateMinuteStats(ctx)
+}
+
+// hourlyAggregationJob aggregates monitoring data every hour
+type hourlyAggregationJob struct {
+	interval          time.Duration
+	monitoringService *service.MonitoringService
+	distributedLock   autoscaler.DistributedLock
+}
+
+func newHourlyAggregationJob(interval time.Duration, svc *service.MonitoringService, lock autoscaler.DistributedLock) jobs.Job {
+	return &hourlyAggregationJob{
+		interval:          interval,
+		monitoringService: svc,
+		distributedLock:   lock,
+	}
+}
+
+func (j *hourlyAggregationJob) Name() string { return "monitoring-hourly-aggregation" }
+
+func (j *hourlyAggregationJob) Interval() time.Duration { return j.interval }
+
+func (j *hourlyAggregationJob) Run(ctx context.Context) error {
+	if j.monitoringService == nil {
+		return fmt.Errorf("monitoring service not configured")
+	}
+	if j.distributedLock != nil {
+		acquired, err := j.distributedLock.TryLock(ctx)
+		if err != nil || !acquired {
+			return nil
+		}
+		defer j.distributedLock.Unlock(ctx)
+	}
+	return j.monitoringService.AggregateHourlyStats(ctx)
+}
+
+// dailyAggregationJob aggregates monitoring data every day
+type dailyAggregationJob struct {
+	interval          time.Duration
+	monitoringService *service.MonitoringService
+	distributedLock   autoscaler.DistributedLock
+}
+
+func newDailyAggregationJob(interval time.Duration, svc *service.MonitoringService, lock autoscaler.DistributedLock) jobs.Job {
+	return &dailyAggregationJob{
+		interval:          interval,
+		monitoringService: svc,
+		distributedLock:   lock,
+	}
+}
+
+func (j *dailyAggregationJob) Name() string { return "monitoring-daily-aggregation" }
+
+func (j *dailyAggregationJob) Interval() time.Duration { return j.interval }
+
+func (j *dailyAggregationJob) Run(ctx context.Context) error {
+	if j.monitoringService == nil {
+		return fmt.Errorf("monitoring service not configured")
+	}
+	if j.distributedLock != nil {
+		acquired, err := j.distributedLock.TryLock(ctx)
+		if err != nil || !acquired {
+			return nil
+		}
+		defer j.distributedLock.Unlock(ctx)
+	}
+	return j.monitoringService.AggregateDailyStats(ctx)
+}
+
+// snapshotCollectionJob collects worker resource snapshots
+type snapshotCollectionJob struct {
+	interval        time.Duration
+	collector       *monitoring.Collector
+	distributedLock autoscaler.DistributedLock
+}
+
+func newSnapshotCollectionJob(interval time.Duration, collector *monitoring.Collector, lock autoscaler.DistributedLock) jobs.Job {
+	return &snapshotCollectionJob{interval: interval, collector: collector, distributedLock: lock}
+}
+
+func (j *snapshotCollectionJob) Name() string { return "monitoring-snapshot-collection" }
+
+func (j *snapshotCollectionJob) Interval() time.Duration { return j.interval }
+
+func (j *snapshotCollectionJob) Run(ctx context.Context) error {
+	if j.collector == nil {
+		return nil
+	}
+	if j.distributedLock != nil {
+		acquired, err := j.distributedLock.TryLock(ctx)
+		if err != nil || !acquired {
+			return nil
+		}
+		defer j.distributedLock.Unlock(ctx)
+	}
+	return j.collector.CollectSnapshots(ctx)
+}
+
+
+// dataRetentionCleanupJob cleans up old data (tasks, task_events, worker_events) daily
+type dataRetentionCleanupJob struct {
+	interval        time.Duration
+	repo            *mysqlstore.Repository
+	distributedLock autoscaler.DistributedLock
+}
+
+func newDataRetentionCleanupJob(interval time.Duration, repo *mysqlstore.Repository, lock autoscaler.DistributedLock) jobs.Job {
+	return &dataRetentionCleanupJob{interval: interval, repo: repo, distributedLock: lock}
+}
+
+func (j *dataRetentionCleanupJob) Name() string { return "data-retention-cleanup" }
+
+func (j *dataRetentionCleanupJob) Interval() time.Duration { return j.interval }
+
+func (j *dataRetentionCleanupJob) Run(ctx context.Context) error {
+	if j.repo == nil {
+		return nil
+	}
+	if j.distributedLock != nil {
+		acquired, err := j.distributedLock.TryLock(ctx)
+		if err != nil || !acquired {
+			return nil
+		}
+		defer j.distributedLock.Unlock(ctx)
+	}
+
+	retentionDays := 10
+	before := time.Now().AddDate(0, 0, -retentionDays)
+	
+	// Clean old completed/failed tasks
+	taskRows, _ := j.repo.Task.CleanupOldTasks(ctx, before)
+	if taskRows > 0 {
+		logger.InfoCtx(ctx, "cleaned up %d old tasks (older than %d days)", taskRows, retentionDays)
+	}
+
+	// Clean old task events
+	eventRows, _ := j.repo.TaskEvent.CleanupOldEvents(ctx, before)
+	if eventRows > 0 {
+		logger.InfoCtx(ctx, "cleaned up %d old task events (older than %d days)", eventRows, retentionDays)
+	}
+
+	// Clean old worker events
+	workerEventRows, _ := j.repo.Monitoring.CleanupOldWorkerEvents(ctx, before)
+	if workerEventRows > 0 {
+		logger.InfoCtx(ctx, "cleaned up %d old worker events (older than %d days)", workerEventRows, retentionDays)
+	}
+
+	return nil
 }

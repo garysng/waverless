@@ -21,7 +21,6 @@ import {
 import type { CollapseProps } from 'antd';
 import yaml from 'js-yaml';
 import Editor from '@monaco-editor/react';
-import type { editor } from 'monaco-editor';
 
 const { Text } = Typography;
 const { Option } = Select;
@@ -507,7 +506,7 @@ const PlatformConfigEditor: React.FC<PlatformConfigEditorProps> = ({
             height="100%"
             language="json"
             value={jsonText}
-            onChange={(value) => handleJsonChange(value || '')}
+            onChange={(value: string | undefined) => handleJsonChange(value || '')}
             theme="vs-light"
             options={{
               readOnly: false,
@@ -591,7 +590,7 @@ const PlatformConfigEditor: React.FC<PlatformConfigEditorProps> = ({
             height="100%"
             language="yaml"
             value={yamlText}
-            onChange={(value) => handleYamlChange(value || '')}
+            onChange={(value: string | undefined) => handleYamlChange(value || '')}
             theme="vs-light"
             options={{
               readOnly: false,
