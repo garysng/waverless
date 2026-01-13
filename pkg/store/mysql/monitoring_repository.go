@@ -535,8 +535,20 @@ func (r *MonitoringRepository) CountWorkerEvents(ctx context.Context, workerID, 
 	r.ds.DB(ctx).Model(&model.WorkerEvent{}).Where("worker_id = ? AND event_type = ?", workerID, eventType).Count(count)
 }
 
-// CleanupOldWorkerEvents removes worker events older than retention period
+// CleanupOldWorkerEvents removes worker events older than retention period in batches
 func (r *MonitoringRepository) CleanupOldWorkerEvents(ctx context.Context, before time.Time) (int64, error) {
-	result := r.ds.DB(ctx).Where("event_time < ?", before).Delete(&model.WorkerEvent{})
-	return result.RowsAffected, result.Error
+	const batchSize = 5000
+	var total int64
+	for {
+		result := r.ds.DB(ctx).Where("event_time < ?", before).Limit(batchSize).Delete(&model.WorkerEvent{})
+		if result.Error != nil {
+			return total, result.Error
+		}
+		total += result.RowsAffected
+		if result.RowsAffected < batchSize {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return total, nil
 }

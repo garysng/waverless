@@ -77,8 +77,20 @@ func generateEventID() string {
 }
 
 
-// CleanupOldEvents removes task events older than the given time
+// CleanupOldEvents removes task events older than the given time in batches
 func (r *TaskEventRepository) CleanupOldEvents(ctx context.Context, before time.Time) (int64, error) {
-	result := r.ds.DB(ctx).Where("event_time < ?", before).Delete(&TaskEvent{})
-	return result.RowsAffected, result.Error
+	const batchSize = 5000
+	var total int64
+	for {
+		result := r.ds.DB(ctx).Where("event_time < ?", before).Limit(batchSize).Delete(&TaskEvent{})
+		if result.Error != nil {
+			return total, result.Error
+		}
+		total += result.RowsAffected
+		if result.RowsAffected < batchSize {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return total, nil
 }

@@ -32,6 +32,10 @@ logger:
   output: console  # console, file, both
   file:
     path: "logs/waverless.log"
+    max_size: 100      # MB per file
+    max_backups: 3     # number of backup files
+    max_age: 7         # days to keep
+    compress: false    # compress rotated files
 
 k8s:
   enabled: true

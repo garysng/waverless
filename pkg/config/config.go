@@ -79,7 +79,11 @@ type LoggerConfig struct {
 
 // LoggerFileConfig logger file configuration
 type LoggerFileConfig struct {
-	Path string `yaml:"path"`
+	Path       string `yaml:"path"`
+	MaxSize    int    `yaml:"max_size"`     // MB per file (default: 100)
+	MaxBackups int    `yaml:"max_backups"`  // max backup files (default: 3)
+	MaxAge     int    `yaml:"max_age"`      // days to keep (default: 7)
+	Compress   bool   `yaml:"compress"`     // compress rotated files (default: false)
 }
 
 // K8sConfig K8s configuration
