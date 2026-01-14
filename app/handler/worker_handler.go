@@ -115,7 +115,20 @@ func (h *WorkerHandler) PullJobs(c *gin.Context) {
 		return
 	}
 
+	// Parse jobs_in_progress: support both task ID list and count
 	jobsInProgress := c.QueryArray("job_id")
+	jobsInProgressCount := 0
+	
+	if len(jobsInProgress) == 0 {
+		// Fallback: check job_in_progress parameter (RunPod SDK compatibility)
+		if jobInProgressParam := c.Query("job_in_progress"); jobInProgressParam != "" {
+			if _, err := fmt.Sscanf(jobInProgressParam, "%d", &jobsInProgressCount); err != nil {
+				// Not a number, treat as task ID
+				jobsInProgress = []string{jobInProgressParam}
+			}
+		}
+	}
+
 	batchSize := 1
 	if bs := c.Query("batch_size"); bs != "" {
 		if _, err := fmt.Sscanf(bs, "%d", &batchSize); err != nil {
@@ -124,9 +137,10 @@ func (h *WorkerHandler) PullJobs(c *gin.Context) {
 	}
 
 	req := &model.JobPullRequest{
-		WorkerID:       workerID,
-		JobsInProgress: jobsInProgress,
-		BatchSize:      batchSize,
+		WorkerID:            workerID,
+		JobsInProgress:      jobsInProgress,
+		JobsInProgressCount: jobsInProgressCount,
+		BatchSize:           batchSize,
 	}
 
 	resp, err := h.workerService.PullJobs(c.Request.Context(), req, endpoint)

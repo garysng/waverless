@@ -40,9 +40,10 @@ type HeartbeatRequest struct {
 
 // JobPullRequest job pull request
 type JobPullRequest struct {
-	WorkerID       string   `json:"worker_id" binding:"required"`
-	JobsInProgress []string `json:"job_in_progress"` // Consistent with runpod
-	BatchSize      int      `json:"batch_size"`      // Batch pull count
+	WorkerID            string   `json:"worker_id" binding:"required"`
+	JobsInProgress      []string `json:"job_in_progress"`       // Task ID list
+	JobsInProgressCount int      `json:"job_in_progress_count"` // Task count (when IDs not available)
+	BatchSize           int      `json:"batch_size"`            // Batch pull count
 }
 
 // JobPullResponse job pull response

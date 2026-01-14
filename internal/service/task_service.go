@@ -60,6 +60,11 @@ func (s *TaskService) SubmitTask(ctx context.Context, req *model.SubmitRequest) 
 		endpoint = "default"
 	}
 
+	// Check if endpoint exists
+	if endpointMeta, err := s.endpointService.GetEndpointOnly(ctx, endpoint); err != nil || endpointMeta == nil {
+		return nil, fmt.Errorf("endpoint '%s' not found", endpoint)
+	}
+
 	task := &model.Task{
 		ID:         taskID,
 		Endpoint:   endpoint,
@@ -412,7 +417,7 @@ func (s *TaskService) CheckSubmitEligibility(ctx context.Context, endpoint strin
 
 // ListTasks retrieves a list of tasks with optional filtering
 // OPTIMIZATION: Excludes input field to avoid fetching potentially large data (e.g., base64 images)
-func (s *TaskService) ListTasks(ctx context.Context, status string, endpoint string, taskID string, limit int, offset int) ([]*model.TaskResponse, int64, error) {
+func (s *TaskService) ListTasks(ctx context.Context, status string, endpoint string, taskID string, workerID string, limit int, offset int) ([]*model.TaskResponse, int64, error) {
 	// Build filters
 	filters := make(map[string]interface{})
 	if status != "" {
@@ -420,6 +425,9 @@ func (s *TaskService) ListTasks(ctx context.Context, status string, endpoint str
 	}
 	if endpoint != "" {
 		filters["endpoint"] = endpoint
+	}
+	if workerID != "" {
+		filters["worker_id"] = workerID
 	}
 
 	// Get total count with same filters

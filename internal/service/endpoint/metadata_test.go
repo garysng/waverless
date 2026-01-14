@@ -194,7 +194,7 @@ func (f *fakeTaskRepo) Create(ctx context.Context, task *mysql.Task) error      
 func (f *fakeTaskRepo) Get(ctx context.Context, taskID string) (*mysql.Task, error) { return nil, nil }
 func (f *fakeTaskRepo) Update(ctx context.Context, task *mysql.Task) error          { return nil }
 func (f *fakeWorkerRepo) Save(ctx context.Context, worker *model.Worker) error      { return nil }
-func (f *fakeWorkerRepo) UpdateHeartbeat(ctx context.Context, workerID, endpoint string, jobs []string) error {
+func (f *fakeWorkerRepo) UpdateHeartbeat(ctx context.Context, workerID, endpoint string, jobs []string, jobsCount int, version string) error {
 	return nil
 }
 func (f *fakeWorkerRepo) Delete(ctx context.Context, workerID string) error { return nil }

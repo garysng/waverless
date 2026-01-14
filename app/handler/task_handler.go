@@ -177,6 +177,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 	status := c.Query("status")
 	endpoint := c.Query("endpoint")
 	taskID := c.Query("task_id")
+	workerID := c.Query("worker_id")
 
 	limit := 100
 	if limitParam := c.Query("limit"); limitParam != "" {
@@ -192,7 +193,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		}
 	}
 
-	tasks, total, err := h.taskService.ListTasks(c.Request.Context(), status, endpoint, taskID, limit, offset)
+	tasks, total, err := h.taskService.ListTasks(c.Request.Context(), status, endpoint, taskID, workerID, limit, offset)
 	if err != nil {
 		logger.ErrorCtx(c.Request.Context(), "failed to list tasks: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

@@ -22,9 +22,12 @@ func NewWorkerRepository(ds *Datastore) *WorkerRepository {
 }
 
 // UpdateHeartbeat updates worker heartbeat, status and jobs (sets status to ONLINE/BUSY)
-func (r *WorkerRepository) UpdateHeartbeat(ctx context.Context, workerID, endpoint string, jobsInProgress []string, version string) error {
+func (r *WorkerRepository) UpdateHeartbeat(ctx context.Context, workerID, endpoint string, jobsInProgress []string, jobsInProgressCount int, version string) error {
 	now := time.Now()
 	currentJobs := len(jobsInProgress)
+	if currentJobs == 0 && jobsInProgressCount > 0 {
+		currentJobs = jobsInProgressCount
+	}
 
 	status := constants.WorkerStatusOnline
 	if currentJobs > 0 {
