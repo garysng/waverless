@@ -61,7 +61,7 @@ func (s *WorkerService) HandleHeartbeat(ctx context.Context, req *model.Heartbea
 	}
 
 	// Update heartbeat in MySQL
-	if err := s.workerRepo.UpdateHeartbeat(ctx, req.WorkerID, endpoint, req.JobsInProgress, req.Version); err != nil {
+	if err := s.workerRepo.UpdateHeartbeat(ctx, req.WorkerID, endpoint, req.JobsInProgress, len(req.JobsInProgress), req.Version); err != nil {
 		return fmt.Errorf("failed to update heartbeat: %w", err)
 	}
 
@@ -93,7 +93,7 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 	}
 
 	// Update heartbeat (preserve existing version since PullJobs doesn't have version)
-	if err := s.workerRepo.UpdateHeartbeat(ctx, req.WorkerID, endpoint, req.JobsInProgress, ""); err != nil {
+	if err := s.workerRepo.UpdateHeartbeat(ctx, req.WorkerID, endpoint, req.JobsInProgress, req.JobsInProgressCount, ""); err != nil {
 		logger.ErrorCtx(ctx, "failed to update heartbeat: %v", err)
 	}
 
@@ -126,19 +126,24 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 		batchSize = 1
 	}
 
-	concurrency := worker.Concurrency
-	if concurrency <= 0 {
-		concurrency = config.GlobalConfig.Worker.DefaultConcurrency
-	}
+	// concurrency := worker.Concurrency
+	// if concurrency <= 0 {
+	// 	concurrency = config.GlobalConfig.Worker.DefaultConcurrency
+	// }
+	// Calculate available slots: use JobsInProgressCount if JobsInProgress is empty
+	// currentJobs := len(req.JobsInProgress)
+	// if currentJobs == 0 && req.JobsInProgressCount > 0 {
+	// 	currentJobs = req.JobsInProgressCount
+	// }
 
-	availableSlots := concurrency - len(req.JobsInProgress)
-	if availableSlots <= 0 {
-		return &model.JobPullResponse{Jobs: []model.JobInfo{}}, nil
-	}
+	// availableSlots := concurrency - currentJobs
+	// if availableSlots <= 0 {
+	// 	return &model.JobPullResponse{Jobs: []model.JobInfo{}}, nil
+	// }
 
-	if batchSize > availableSlots {
-		batchSize = availableSlots
-	}
+	// if batchSize > availableSlots {
+	// 	batchSize = availableSlots
+	// }
 
 	// Calculate idle duration before pulling tasks (if worker was idle)
 	var idleDurationMs int64

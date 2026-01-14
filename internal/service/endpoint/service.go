@@ -52,6 +52,14 @@ func (s *Service) GetEndpoint(ctx context.Context, name string) (*interfaces.End
 	return s.metadata.Get(ctx, name)
 }
 
+// GetEndpointOnly fetches metadata information without merging autoscaler config.
+func (s *Service) GetEndpointOnly(ctx context.Context, name string) (*mysql.Endpoint, error) {
+	if s.metadata == nil {
+		return nil, fmt.Errorf("metadata manager not configured")
+	}
+	return s.metadata.GetEndpoint(ctx, name)
+}
+
 // ListEndpoints lists all endpoints, combining metadata and autoscaler config.
 func (s *Service) ListEndpoints(ctx context.Context) ([]*interfaces.EndpointMetadata, error) {
 	if s.metadata == nil {

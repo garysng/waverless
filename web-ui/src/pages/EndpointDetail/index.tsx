@@ -573,14 +573,12 @@ const WorkersTab = ({ workers, endpoint }: { workers: WorkerWithPodInfo[]; endpo
 
   const { data: tasksData } = useQuery({
     queryKey: ['worker-tasks', endpoint, selectedWorker?.id],
-    queryFn: async () => (await api.tasks.list({ endpoint, limit: 100 })).data,
+    queryFn: async () => (await api.tasks.list({ endpoint, worker_id: selectedWorker?.id, limit: 100 })).data,
     enabled: !!selectedWorker && drawerOpen && drawerTab === 'tasks',
   });
 
-  // Filter tasks by worker - check both workerId and worker_id
-  const workerTasks = tasksData?.tasks?.filter((t: any) => 
-    (t.workerId === selectedWorker?.id) || (t.worker_id === selectedWorker?.id)
-  ) || [];
+  // Use tasks from API response directly (already filtered by worker_id)
+  const workerTasks = tasksData?.tasks || [];
   const active = sortedWorkers.filter(w => w.current_jobs > 0).length;
 
   const formatTime = (t: string) => { if (!t) return '-'; const d = new Date(t); const s = Math.floor((Date.now() - d.getTime()) / 1000); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s/60)}m ago` : d.toLocaleString(); };

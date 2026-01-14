@@ -124,6 +124,24 @@ func (m *MetadataManager) Get(ctx context.Context, name string) (*interfaces.End
 	return meta, nil
 }
 
+func (m *MetadataManager) GetEndpoint(ctx context.Context, name string) (*mysql.Endpoint, error) {
+	if m.endpointRepo == nil {
+		return nil, fmt.Errorf("endpoint repository not configured")
+	}
+
+	mysqlEndpoint, err := m.endpointRepo.Get(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if mysqlEndpoint == nil {
+		return nil, nil
+	}
+	if mysqlEndpoint.Status == "deleted" {
+		return nil, nil
+	}
+	return mysqlEndpoint, nil
+}
+
 // List returns all stored endpoints.
 func (m *MetadataManager) List(ctx context.Context) ([]*interfaces.EndpointMetadata, error) {
 	if m.endpointRepo == nil {
