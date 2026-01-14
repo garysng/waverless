@@ -177,6 +177,7 @@ export interface TaskListParams {
   endpoint?: string;
   status?: string;
   task_id?: string;
+  worker_id?: string;
   limit?: number;
   offset?: number;
 }
