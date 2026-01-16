@@ -231,6 +231,11 @@ func (s *WorkerService) GetWorker(ctx context.Context, workerID string) (*model.
 	return s.toDomainWorker(mw), nil
 }
 
+// GetWorkerByID gets a worker by database ID (regardless of status)
+func (s *WorkerService) GetWorkerByID(ctx context.Context, id int64) (*mysqlModel.Worker, error) {
+	return s.workerRepo.GetByID(ctx, id)
+}
+
 // GetWorkerByPodName finds a worker by its pod name
 func (s *WorkerService) GetWorkerByPodName(ctx context.Context, endpoint, podName string) (*model.Worker, error) {
 	mw, err := s.workerRepo.GetByPodName(ctx, endpoint, podName)
