@@ -1551,6 +1551,13 @@ func (m *Manager) DeleteApp(ctx context.Context, name string) error {
 		fmt.Printf("Warning: failed to delete service %s: %v\n", name, err)
 	}
 
+	// Try to delete registry secret (if exists)
+	secretName := fmt.Sprintf("registry-%s", name)
+	err = m.client.CoreV1().Secrets(m.namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		fmt.Printf("Warning: failed to delete registry secret %s: %v\n", secretName, err)
+	}
+
 	return nil
 }
 
