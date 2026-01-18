@@ -70,6 +70,13 @@ func (h *EndpointHandler) CreateEndpoint(c *gin.Context) {
 		ShmSize:      req.ShmSize,
 		EnablePtrace: req.EnablePtrace,
 	}
+	if req.RegistryCredential != nil {
+		providerReq.RegistryCredential = &interfaces.RegistryCredential{
+			Registry: req.RegistryCredential.Registry,
+			Username: req.RegistryCredential.Username,
+			Password: req.RegistryCredential.Password,
+		}
+	}
 
 	metadata := h.buildMetadataFromRequest(c, req)
 

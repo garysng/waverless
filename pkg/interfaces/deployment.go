@@ -91,16 +91,24 @@ type VolumeMount struct {
 
 // DeployRequest deployment request
 type DeployRequest struct {
-	Endpoint     string            `json:"endpoint"`               // Application name/endpoint
-	SpecName     string            `json:"specName"`               // Spec name
-	Image        string            `json:"image"`                  // Docker image
-	Replicas     int               `json:"replicas"`               // Replica count
-	TaskTimeout  int               `json:"taskTimeout"`            // Task execution timeout in seconds (0 = use global default)
-	Env          map[string]string `json:"env"`                    // Environment variables
-	Labels       map[string]string `json:"labels"`                 // Labels
-	VolumeMounts []VolumeMount     `json:"volumeMounts,omitempty"` // PVC volume mounts
-	ShmSize      string            `json:"shmSize,omitempty"`      // Shared memory size (e.g., "1Gi", "512Mi")
-	EnablePtrace bool              `json:"enablePtrace,omitempty"` // Enable SYS_PTRACE capability for debugging (only for fixed resource pools)
+	Endpoint           string              `json:"endpoint"`               // Application name/endpoint
+	SpecName           string              `json:"specName"`               // Spec name
+	Image              string              `json:"image"`                  // Docker image
+	Replicas           int                 `json:"replicas"`               // Replica count
+	TaskTimeout        int                 `json:"taskTimeout"`            // Task execution timeout in seconds (0 = use global default)
+	Env                map[string]string   `json:"env"`                    // Environment variables
+	Labels             map[string]string   `json:"labels"`                 // Labels
+	VolumeMounts       []VolumeMount       `json:"volumeMounts,omitempty"` // PVC volume mounts
+	ShmSize            string              `json:"shmSize,omitempty"`      // Shared memory size (e.g., "1Gi", "512Mi")
+	EnablePtrace       bool                `json:"enablePtrace,omitempty"` // Enable SYS_PTRACE capability for debugging (only for fixed resource pools)
+	RegistryCredential *RegistryCredential `json:"registryCredential,omitempty"`
+}
+
+// RegistryCredential for private container registries
+type RegistryCredential struct {
+	Registry string `json:"registry"`
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 // DeployResponse deployment response
