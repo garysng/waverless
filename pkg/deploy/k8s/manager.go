@@ -293,6 +293,9 @@ type DeployAppRequest struct {
 	EnablePtrace    bool                     `json:"enablePtrace,omitempty"`      // Enable SYS_PTRACE capability for debugging (only for fixed resource pools)
 	Env             map[string]string        `json:"env,omitempty"`               // Custom environment variables
 
+	// Registry credential for private images
+	RegistryCredential *RegistryCredential `json:"registryCredential,omitempty"`
+
 	// Auto-scaling configuration (optional)
 	MinReplicas       int   `json:"minReplicas,omitempty"`       // Minimum replica count (default 0)
 	MaxReplicas       int   `json:"maxReplicas,omitempty"`       // Maximum replica count (default 10)
@@ -304,6 +307,13 @@ type DeployAppRequest struct {
 	EnableDynamicPrio *bool `json:"enableDynamicPrio,omitempty"` // Enable dynamic priority (default true)
 	HighLoadThreshold int   `json:"highLoadThreshold,omitempty"` // High load threshold for priority boost (default 10)
 	PriorityBoost     int   `json:"priorityBoost,omitempty"`     // Priority boost amount when high load (default 20)
+}
+
+// RegistryCredential for private container registries
+type RegistryCredential struct {
+	Registry string `json:"registry"` // e.g., "docker.io", "ghcr.io"
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 // DeployApp deploys an application
@@ -322,11 +332,21 @@ func (m *Manager) DeployApp(ctx context.Context, req *DeployAppRequest) error {
 		return err
 	}
 
+	// Create registry secret if credential provided
+	var imagePullSecretName string
+	if req.RegistryCredential != nil {
+		imagePullSecretName = fmt.Sprintf("registry-%s", req.Endpoint)
+		if err := m.createRegistrySecret(ctx, imagePullSecretName, req.RegistryCredential); err != nil {
+			return fmt.Errorf("failed to create registry secret: %w", err)
+		}
+	}
+
 	// Build render context
 	renderCtx, err := m.buildRenderContext(req, spec)
 	if err != nil {
 		return err
 	}
+	renderCtx.ImagePullSecret = imagePullSecretName
 
 	// Render Deployment template
 	yamlContent, err := m.renderer.Render("deployment.yaml", renderCtx)
@@ -506,6 +526,53 @@ func (m *Manager) applyYAML(ctx context.Context, yamlContent string) error {
 	}
 
 	return nil
+}
+
+// createRegistrySecret creates a docker-registry type secret for private image pulls
+func (m *Manager) createRegistrySecret(ctx context.Context, name string, cred *RegistryCredential) error {
+	// Build docker config JSON
+	registry := cred.Registry
+	if registry == "" {
+		registry = "https://index.docker.io/v1/"
+	} else if !strings.HasPrefix(registry, "http") {
+		registry = "https://" + registry
+	}
+
+	dockerConfig := map[string]interface{}{
+		"auths": map[string]interface{}{
+			registry: map[string]string{
+				"username": cred.Username,
+				"password": cred.Password,
+			},
+		},
+	}
+	configJSON, _ := json.Marshal(dockerConfig)
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: m.namespace,
+		},
+		Type: corev1.SecretTypeDockerConfigJson,
+		Data: map[string][]byte{
+			corev1.DockerConfigJsonKey: configJSON,
+		},
+	}
+
+	secrets := m.client.CoreV1().Secrets(m.namespace)
+	existing, err := secrets.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			return err
+		}
+		_, err = secrets.Create(ctx, secret, metav1.CreateOptions{})
+		return err
+	}
+
+	// Update existing
+	secret.ResourceVersion = existing.ResourceVersion
+	_, err = secrets.Update(ctx, secret, metav1.UpdateOptions{})
+	return err
 }
 
 // applyDeployment applies Deployment
@@ -1198,7 +1265,8 @@ func (m *Manager) handleDeploymentUpdate(oldObj, newObj interface{}) {
 
 	// Notify status change if replicas changed
 	if oldDep.Status.ReadyReplicas != newDep.Status.ReadyReplicas ||
-		oldDep.Status.AvailableReplicas != newDep.Status.AvailableReplicas {
+		oldDep.Status.AvailableReplicas != newDep.Status.AvailableReplicas ||
+		*oldDep.Spec.Replicas != *newDep.Spec.Replicas {
 		m.syncDeploymentStatus(newDep)
 	}
 
