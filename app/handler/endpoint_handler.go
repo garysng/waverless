@@ -20,7 +20,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// EndpointHandler handles endpoint lifecycle APIs (metadata + K8s deployment)
+// EndpointHandler handles endpoint lifecycle APIs (metadata + deployment)
+// Supports multiple deployment providers: K8s, Novita, etc.
 type EndpointHandler struct {
 	deploymentProvider interfaces.DeploymentProvider
 	endpointService    *endpointsvc.Service

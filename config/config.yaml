@@ -64,3 +64,11 @@ providers:
   metadata: mysql               # Metadata storage: mysql (persistent), redis (ephemeral)
   # MySQL stores: endpoints, tasks, autoscaler configs, scaling events
   # Redis stores: worker heartbeats, task queues, distributed locks, cache
+
+# Novita Serverless Configuration
+novita:
+  enabled: false  # Enable Novita serverless provider
+  api_key: ""     # Your Novita API key (Bearer token)
+  base_url: "https://api.novita.ai"  # Novita API base URL
+  config_dir: "./config"  # Configuration directory (contains specs.yaml and templates/)
+  poll_interval: 10  # Poll interval for status updates (seconds, default: 10)
