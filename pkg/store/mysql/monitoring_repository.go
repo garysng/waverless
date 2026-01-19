@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"waverless/pkg/store/mysql/model"
@@ -21,6 +22,16 @@ func toInt(v interface{}) int {
 		return int(n)
 	case int:
 		return n
+	case []byte:
+		if f, err := strconv.ParseFloat(string(n), 64); err == nil {
+			return int(f)
+		}
+		return 0
+	case string:
+		if f, err := strconv.ParseFloat(n, 64); err == nil {
+			return int(f)
+		}
+		return 0
 	default:
 		return 0
 	}
@@ -37,6 +48,16 @@ func toInt64(v interface{}) int64 {
 		return int64(n)
 	case int:
 		return int64(n)
+	case []byte:
+		if f, err := strconv.ParseFloat(string(n), 64); err == nil {
+			return int64(f)
+		}
+		return 0
+	case string:
+		if f, err := strconv.ParseFloat(n, 64); err == nil {
+			return int64(f)
+		}
+		return 0
 	default:
 		return 0
 	}
@@ -53,6 +74,16 @@ func toFloat(v interface{}) float64 {
 		return float64(n)
 	case int:
 		return float64(n)
+	case []byte:
+		if f, err := strconv.ParseFloat(string(n), 64); err == nil {
+			return f
+		}
+		return 0
+	case string:
+		if f, err := strconv.ParseFloat(n, 64); err == nil {
+			return f
+		}
+		return 0
 	default:
 		return 0
 	}

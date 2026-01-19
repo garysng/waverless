@@ -15,6 +15,12 @@ type Job interface {
 	Run(ctx context.Context) error
 }
 
+// AlignedJob is a job that runs at aligned time boundaries (e.g., on the hour).
+type AlignedJob interface {
+	Job
+	AlignToInterval() bool
+}
+
 // Manager orchestrates the lifecycle of background jobs.
 type Manager struct {
 	ctx     context.Context
@@ -81,8 +87,26 @@ func (m *Manager) runJob(job Job) {
 		interval = time.Minute
 	}
 
-	// Run immediately once.
-	m.executeJob(job)
+	// Check if job should align to interval boundaries
+	alignedJob, shouldAlign := job.(AlignedJob)
+	if shouldAlign && alignedJob.AlignToInterval() {
+		// Wait until next aligned time before first run
+		now := time.Now()
+		next := now.Truncate(interval).Add(interval)
+		waitDuration := next.Sub(now)
+		
+		logger.InfoCtx(m.ctx, "job %s will start at next aligned time: %v (in %v)", job.Name(), next.Format("15:04:05"), waitDuration)
+		
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-time.After(waitDuration):
+			m.executeJob(job)
+		}
+	} else {
+		// Run immediately once.
+		m.executeJob(job)
+	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
