@@ -55,8 +55,11 @@ const ServerlessPage = () => {
 
   const openCreateModal = (spec: SpecInfo) => {
     setSelectedSpec(spec);
+    const maxGpu = parseInt(spec.resources?.gpu || '1') || 1;
     form.setFieldsValue({
       specName: spec.name,
+      gpuCount: 1,
+      maxGpuCount: maxGpu,
       replicas: 1,
       taskTimeout: 3600,
       maxPendingTasks: 100,
@@ -88,6 +91,7 @@ const ServerlessPage = () => {
         image: values.image,
         imagePrefix: values.imagePrefix || undefined,
         specName: values.specName,
+        gpuCount: values.gpuCount || 1,
         replicas: values.replicas,
         taskTimeout: values.taskTimeout || 0,
         maxPendingTasks: values.maxPendingTasks || undefined,
@@ -145,7 +149,7 @@ const ServerlessPage = () => {
             {gpuSpecs.map((spec: SpecInfo) => (
               <div key={spec.name} className="spec-card" onClick={() => openCreateModal(spec)}>
                 <div className="spec-header">
-                  <span className="spec-vram">{spec.resources.gpu}× GPU</span>
+                  <span className="spec-vram">Up to {spec.resources.gpu}× GPU</span>
                   <span className="spec-gpu">{spec.resources.gpuType}</span>
                 </div>
                 <div className="spec-desc">
@@ -224,6 +228,12 @@ const ServerlessPage = () => {
           <Form.Item name="specName" label="Hardware Spec">
             <Select disabled><Select.Option value={selectedSpec?.name}>{selectedSpec?.displayName || selectedSpec?.name}</Select.Option></Select>
           </Form.Item>
+
+          {selectedSpec?.category === 'gpu' && (
+            <Form.Item name="gpuCount" label="GPU Count" tooltip={`Max ${selectedSpec?.resources?.gpu || 1} GPUs. Resources scale with GPU count.`}>
+              <InputNumber min={1} max={parseInt(selectedSpec?.resources?.gpu || '1') || 1} style={{ width: '100%' }} />
+            </Form.Item>
+          )}
 
           <Row gutter={16}>
             <Col span={8}><Form.Item name="replicas" label="Replicas"><InputNumber min={0} max={100} style={{ width: '100%' }} /></Form.Item></Col>
