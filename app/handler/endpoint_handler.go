@@ -53,8 +53,8 @@ func (h *EndpointHandler) CreateEndpoint(c *gin.Context) {
 		return
 	}
 
-	logger.InfoCtx(c.Request.Context(), "[INFO] Creating endpoint: endpoint=%s, spec=%s, image=%s, replicas=%d, taskTimeout=%d",
-		req.Endpoint, req.SpecName, req.Image, req.Replicas, req.TaskTimeout)
+	logger.InfoCtx(c.Request.Context(), "[INFO] Creating endpoint: endpoint=%s, spec=%s, image=%s, replicas=%d, gpuCount=%d, taskTimeout=%d",
+		req.Endpoint, req.SpecName, req.Image, req.Replicas, req.GpuCount, req.TaskTimeout)
 
 	if req.TaskTimeout == 0 {
 		req.TaskTimeout = 3600
@@ -64,6 +64,7 @@ func (h *EndpointHandler) CreateEndpoint(c *gin.Context) {
 		SpecName:     req.SpecName,
 		Image:        req.Image,
 		Replicas:     req.Replicas,
+		GpuCount:     req.GpuCount,
 		TaskTimeout:  req.TaskTimeout,
 		Env:          req.Env,
 		VolumeMounts: req.VolumeMounts,
@@ -126,6 +127,7 @@ func (h *EndpointHandler) PreviewDeploymentYAML(c *gin.Context) {
 		SpecName:     req.SpecName,
 		Image:        req.Image,
 		Replicas:     req.Replicas,
+		GpuCount:     req.GpuCount,
 		TaskTimeout:  req.TaskTimeout,
 		Env:          req.Env,
 		VolumeMounts: req.VolumeMounts,
@@ -522,6 +524,7 @@ func (h *EndpointHandler) buildMetadataFromRequest(c *gin.Context, req k8s.Deplo
 			Image:             req.Image,
 			ImagePrefix:       req.ImagePrefix,
 			Replicas:          req.Replicas,
+			GpuCount:          req.GpuCount,
 			TaskTimeout:       req.TaskTimeout,
 			MaxPendingTasks:   maxPendingTasks,
 			Env:               req.Env,
@@ -544,6 +547,9 @@ func (h *EndpointHandler) buildMetadataFromRequest(c *gin.Context, req k8s.Deplo
 	metadata.SpecName = req.SpecName
 	metadata.Image = req.Image
 	metadata.Replicas = req.Replicas
+	if req.GpuCount > 0 {
+		metadata.GpuCount = req.GpuCount
+	}
 	metadata.TaskTimeout = req.TaskTimeout
 	if req.MaxPendingTasks > 0 {
 		metadata.MaxPendingTasks = req.MaxPendingTasks

@@ -286,6 +286,7 @@ type DeployAppRequest struct {
 	Image           string                   `json:"image" binding:"required"`    // Image
 	ImagePrefix     string                   `json:"imagePrefix,omitempty"`       // Image prefix for matching updates (e.g., "wavespeed/model-deploy:wan_i2v-default-")
 	Replicas        int                      `json:"replicas,omitempty"`          // Replica count (default 1)
+	GpuCount        int                      `json:"gpuCount,omitempty"`          // GPU count (1-N, resources = per-gpu-config * gpuCount)
 	TaskTimeout     int                      `json:"taskTimeout,omitempty"`       // Task execution timeout in seconds (0 = use global default)
 	MaxPendingTasks int                      `json:"maxPendingTasks,omitempty"`   // Maximum allowed pending tasks before warning clients (default 1)
 	VolumeMounts    []interfaces.VolumeMount `json:"volumeMounts,omitempty"`      // PVC volume mounts
@@ -439,10 +440,25 @@ func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) 
 		ctx.Replicas = 1
 	}
 
-	// GPU count
+	// GPU count: use request gpuCount if specified, otherwise use spec default
 	if ctx.IsGpu {
-		// Parse GPU count string (e.g., "1" -> 1)
-		fmt.Sscanf(spec.Resources.GPU, "%d", &ctx.GpuCount)
+		var maxGpu int
+		fmt.Sscanf(spec.Resources.GPU, "%d", &maxGpu)
+		
+		if req.GpuCount > 0 {
+			// Validate: requested gpuCount must not exceed spec's max
+			if req.GpuCount > maxGpu {
+				return nil, fmt.Errorf("requested gpuCount %d exceeds spec max %d", req.GpuCount, maxGpu)
+			}
+			ctx.GpuCount = req.GpuCount
+		} else {
+			// Default to 1 GPU if not specified
+			ctx.GpuCount = 1
+		}
+		
+		// Scale resources by gpuCount (spec defines per-GPU resources)
+		ctx.CpuLimit = multiplyResource(spec.Resources.CPU, ctx.GpuCount)
+		ctx.MemoryRequest = multiplyResource(spec.Resources.Memory, ctx.GpuCount)
 	}
 
 	// Calculate termination grace period
@@ -2374,4 +2390,23 @@ func (m *Manager) ExecPodCommand(ctx context.Context, podName, endpoint string, 
 	})
 
 	return stdout.String(), stderr.String(), err
+}
+
+// multiplyResource multiplies a K8s resource string by a factor
+// Supports formats: "4" (cores), "8Gi", "16G", "1024Mi", "1024M"
+func multiplyResource(resource string, factor int) string {
+	if factor <= 1 || resource == "" {
+		return resource
+	}
+	
+	// Try to parse as number with unit suffix
+	var value int
+	var unit string
+	
+	n, _ := fmt.Sscanf(resource, "%d%s", &value, &unit)
+	if n >= 1 {
+		return fmt.Sprintf("%d%s", value*factor, unit)
+	}
+	
+	return resource
 }

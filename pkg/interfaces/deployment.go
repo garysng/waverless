@@ -95,6 +95,7 @@ type DeployRequest struct {
 	SpecName           string              `json:"specName"`               // Spec name
 	Image              string              `json:"image"`                  // Docker image
 	Replicas           int                 `json:"replicas"`               // Replica count
+	GpuCount           int                 `json:"gpuCount"`               // GPU count (1-N, resources = per-gpu-config * gpuCount)
 	TaskTimeout        int                 `json:"taskTimeout"`            // Task execution timeout in seconds (0 = use global default)
 	Env                map[string]string   `json:"env"`                    // Environment variables
 	Labels             map[string]string   `json:"labels"`                 // Labels

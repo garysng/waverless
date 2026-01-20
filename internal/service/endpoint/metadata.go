@@ -72,6 +72,7 @@ func (m *MetadataManager) Save(ctx context.Context, endpoint *interfaces.Endpoin
 		existing.ImageLastChecked = mysqlEndpoint.ImageLastChecked
 		existing.LatestImage = mysqlEndpoint.LatestImage
 		existing.Replicas = mysqlEndpoint.Replicas
+		existing.GpuCount = mysqlEndpoint.GpuCount
 		existing.TaskTimeout = mysqlEndpoint.TaskTimeout
 		existing.EnablePtrace = mysqlEndpoint.EnablePtrace
 		existing.Env = mysqlEndpoint.Env
@@ -249,6 +250,7 @@ func toMySQLEndpoint(endpoint *interfaces.EndpointMetadata) *mysql.Endpoint {
 		ImageLastChecked: endpoint.ImageLastChecked,
 		LatestImage:      endpoint.LatestImage,
 		Replicas:         endpoint.Replicas,
+		GpuCount:         endpoint.GpuCount,
 		TaskTimeout:      endpoint.TaskTimeout,
 		EnablePtrace:     endpoint.EnablePtrace,
 		Env:              mysql.StringMapToJSONMap(endpoint.Env),
@@ -270,6 +272,7 @@ func fromMySQLEndpoint(endpoint *mysql.Endpoint) *interfaces.EndpointMetadata {
 		ImageLastChecked: endpoint.ImageLastChecked,
 		LatestImage:      endpoint.LatestImage,
 		Replicas:         endpoint.Replicas,
+		GpuCount:         endpoint.GpuCount,
 		TaskTimeout:      endpoint.TaskTimeout,
 		EnablePtrace:     endpoint.EnablePtrace,
 		MaxPendingTasks:  endpoint.MaxPendingTasks,
