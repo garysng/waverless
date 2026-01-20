@@ -70,6 +70,7 @@ type EndpointMetadata struct {
 	ImageLastChecked *time.Time `json:"imageLastChecked"` // Last time image was checked for updates
 	LatestImage      string     `json:"latestImage"`      // Latest available image if update is available
 	Replicas         int        `json:"replicas"`         // Replica count
+	GpuCount         int        `json:"gpuCount"`         // GPU count per replica (resources = per-gpu-config * gpuCount)
 
 	// Auto-scaling configuration
 	MinReplicas       int     `json:"minReplicas"`                 // Minimum replica count (default 0)

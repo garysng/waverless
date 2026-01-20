@@ -213,6 +213,16 @@ func (r *WorkerRepository) Get(ctx context.Context, workerID string) (*model.Wor
 	return &worker, nil
 }
 
+// GetByID gets a worker by database ID (regardless of status)
+func (r *WorkerRepository) GetByID(ctx context.Context, id int64) (*model.Worker, error) {
+	var worker model.Worker
+	err := r.ds.DB(ctx).Where("id = ?", id).First(&worker).Error
+	if err != nil {
+		return nil, err
+	}
+	return &worker, nil
+}
+
 // GetByPodName gets a worker by pod name and endpoint
 func (r *WorkerRepository) GetByPodName(ctx context.Context, endpoint, podName string) (*model.Worker, error) {
 	var worker model.Worker
@@ -259,12 +269,14 @@ func (r *WorkerRepository) GetStaleWorkers(ctx context.Context, threshold time.T
 
 // MarkOfflineByPodName marks a specific worker as offline by pod name
 func (r *WorkerRepository) MarkOfflineByPodName(ctx context.Context, podName string) error {
+	now := time.Now()
 	return r.ds.DB(ctx).Model(&model.Worker{}).
 		Where("pod_name = ?", podName).
 		Updates(map[string]interface{}{
-			"status":       constants.WorkerStatusOffline,
-			"current_jobs": 0,
-			"updated_at":   time.Now(),
+			"status":        constants.WorkerStatusOffline,
+			"current_jobs":  0,
+			"terminated_at": now,
+			"updated_at":    now,
 		}).Error
 }
 

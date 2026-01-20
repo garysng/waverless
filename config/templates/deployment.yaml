@@ -134,6 +134,9 @@ spec:
           protocol: TCP
       imagePullSecrets:
       - name: dockerhub-secret
+{{- if .ImagePullSecret}}
+      - name: {{.ImagePullSecret}}
+{{- end}}
 {{- if or .Volumes .ShmSize}}
       volumes:
 {{- if .ShmSize}}

@@ -14,6 +14,7 @@ type Endpoint struct {
 	ImageLastChecked *time.Time `gorm:"column:image_last_checked;type:datetime(3)" json:"image_last_checked"`
 	LatestImage      string     `gorm:"column:latest_image;type:varchar(500);not null;default:''" json:"latest_image"`
 	Replicas         int        `gorm:"column:replicas;type:int;not null;default:1" json:"replicas"`
+	GpuCount         int        `gorm:"column:gpu_count;type:int;not null;default:1" json:"gpu_count"`
 	TaskTimeout      int        `gorm:"column:task_timeout;type:int;not null;default:0" json:"task_timeout"`
 	EnablePtrace     bool       `gorm:"column:enable_ptrace;type:tinyint(1);not null;default:0" json:"enable_ptrace"`
 	MaxPendingTasks  int        `gorm:"column:max_pending_tasks;type:int;not null;default:1" json:"max_pending_tasks"`

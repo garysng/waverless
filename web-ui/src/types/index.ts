@@ -4,6 +4,7 @@ export interface AppInfo {
   type: string;
   status: string;
   replicas?: number;
+  gpuCount?: number; // GPU count per replica
   readyReplicas?: number;
   availableReplicas?: number;
   image: string;
@@ -101,6 +102,7 @@ export interface DeployRequest {
   image: string;
   imagePrefix?: string; // Image prefix for matching updates (e.g., "wavespeed/model-deploy:wan_i2v-default-")
   replicas: number;
+  gpuCount?: number; // GPU count per replica (1-N, resources = per-gpu-config * gpuCount)
   taskTimeout?: number;
   maxPendingTasks?: number; // Maximum allowed pending tasks before warning clients
   env?: Record<string, string>; // Custom environment variables

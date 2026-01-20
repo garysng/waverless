@@ -286,12 +286,16 @@ type DeployAppRequest struct {
 	Image           string                   `json:"image" binding:"required"`    // Image
 	ImagePrefix     string                   `json:"imagePrefix,omitempty"`       // Image prefix for matching updates (e.g., "wavespeed/model-deploy:wan_i2v-default-")
 	Replicas        int                      `json:"replicas,omitempty"`          // Replica count (default 1)
+	GpuCount        int                      `json:"gpuCount,omitempty"`          // GPU count (1-N, resources = per-gpu-config * gpuCount)
 	TaskTimeout     int                      `json:"taskTimeout,omitempty"`       // Task execution timeout in seconds (0 = use global default)
 	MaxPendingTasks int                      `json:"maxPendingTasks,omitempty"`   // Maximum allowed pending tasks before warning clients (default 1)
 	VolumeMounts    []interfaces.VolumeMount `json:"volumeMounts,omitempty"`      // PVC volume mounts
 	ShmSize         string                   `json:"shmSize,omitempty"`           // Shared memory size (e.g., "1Gi", "512Mi")
 	EnablePtrace    bool                     `json:"enablePtrace,omitempty"`      // Enable SYS_PTRACE capability for debugging (only for fixed resource pools)
 	Env             map[string]string        `json:"env,omitempty"`               // Custom environment variables
+
+	// Registry credential for private images
+	RegistryCredential *RegistryCredential `json:"registryCredential,omitempty"`
 
 	// Auto-scaling configuration (optional)
 	MinReplicas       int   `json:"minReplicas,omitempty"`       // Minimum replica count (default 0)
@@ -304,6 +308,13 @@ type DeployAppRequest struct {
 	EnableDynamicPrio *bool `json:"enableDynamicPrio,omitempty"` // Enable dynamic priority (default true)
 	HighLoadThreshold int   `json:"highLoadThreshold,omitempty"` // High load threshold for priority boost (default 10)
 	PriorityBoost     int   `json:"priorityBoost,omitempty"`     // Priority boost amount when high load (default 20)
+}
+
+// RegistryCredential for private container registries
+type RegistryCredential struct {
+	Registry string `json:"registry"` // e.g., "docker.io", "ghcr.io"
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 // DeployApp deploys an application
@@ -322,11 +333,21 @@ func (m *Manager) DeployApp(ctx context.Context, req *DeployAppRequest) error {
 		return err
 	}
 
+	// Create registry secret if credential provided
+	var imagePullSecretName string
+	if req.RegistryCredential != nil {
+		imagePullSecretName = fmt.Sprintf("registry-%s", req.Endpoint)
+		if err := m.createRegistrySecret(ctx, imagePullSecretName, req.RegistryCredential); err != nil {
+			return fmt.Errorf("failed to create registry secret: %w", err)
+		}
+	}
+
 	// Build render context
 	renderCtx, err := m.buildRenderContext(req, spec)
 	if err != nil {
 		return err
 	}
+	renderCtx.ImagePullSecret = imagePullSecretName
 
 	// Render Deployment template
 	yamlContent, err := m.renderer.Render("deployment.yaml", renderCtx)
@@ -419,10 +440,25 @@ func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) 
 		ctx.Replicas = 1
 	}
 
-	// GPU count
+	// GPU count: use request gpuCount if specified, otherwise use spec default
 	if ctx.IsGpu {
-		// Parse GPU count string (e.g., "1" -> 1)
-		fmt.Sscanf(spec.Resources.GPU, "%d", &ctx.GpuCount)
+		var maxGpu int
+		fmt.Sscanf(spec.Resources.GPU, "%d", &maxGpu)
+		
+		if req.GpuCount > 0 {
+			// Validate: requested gpuCount must not exceed spec's max
+			if req.GpuCount > maxGpu {
+				return nil, fmt.Errorf("requested gpuCount %d exceeds spec max %d", req.GpuCount, maxGpu)
+			}
+			ctx.GpuCount = req.GpuCount
+		} else {
+			// Default to 1 GPU if not specified
+			ctx.GpuCount = 1
+		}
+		
+		// Scale resources by gpuCount (spec defines per-GPU resources)
+		ctx.CpuLimit = multiplyResource(spec.Resources.CPU, ctx.GpuCount)
+		ctx.MemoryRequest = multiplyResource(spec.Resources.Memory, ctx.GpuCount)
 	}
 
 	// Calculate termination grace period
@@ -506,6 +542,53 @@ func (m *Manager) applyYAML(ctx context.Context, yamlContent string) error {
 	}
 
 	return nil
+}
+
+// createRegistrySecret creates a docker-registry type secret for private image pulls
+func (m *Manager) createRegistrySecret(ctx context.Context, name string, cred *RegistryCredential) error {
+	// Build docker config JSON
+	registry := cred.Registry
+	if registry == "" {
+		registry = "https://index.docker.io/v1/"
+	} else if !strings.HasPrefix(registry, "http") {
+		registry = "https://" + registry
+	}
+
+	dockerConfig := map[string]interface{}{
+		"auths": map[string]interface{}{
+			registry: map[string]string{
+				"username": cred.Username,
+				"password": cred.Password,
+			},
+		},
+	}
+	configJSON, _ := json.Marshal(dockerConfig)
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: m.namespace,
+		},
+		Type: corev1.SecretTypeDockerConfigJson,
+		Data: map[string][]byte{
+			corev1.DockerConfigJsonKey: configJSON,
+		},
+	}
+
+	secrets := m.client.CoreV1().Secrets(m.namespace)
+	existing, err := secrets.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			return err
+		}
+		_, err = secrets.Create(ctx, secret, metav1.CreateOptions{})
+		return err
+	}
+
+	// Update existing
+	secret.ResourceVersion = existing.ResourceVersion
+	_, err = secrets.Update(ctx, secret, metav1.UpdateOptions{})
+	return err
 }
 
 // applyDeployment applies Deployment
@@ -1198,7 +1281,8 @@ func (m *Manager) handleDeploymentUpdate(oldObj, newObj interface{}) {
 
 	// Notify status change if replicas changed
 	if oldDep.Status.ReadyReplicas != newDep.Status.ReadyReplicas ||
-		oldDep.Status.AvailableReplicas != newDep.Status.AvailableReplicas {
+		oldDep.Status.AvailableReplicas != newDep.Status.AvailableReplicas ||
+		*oldDep.Spec.Replicas != *newDep.Spec.Replicas {
 		m.syncDeploymentStatus(newDep)
 	}
 
@@ -1481,6 +1565,13 @@ func (m *Manager) DeleteApp(ctx context.Context, name string) error {
 	if err != nil && !errors.IsNotFound(err) {
 		// Log warning but don't fail - service might not exist
 		fmt.Printf("Warning: failed to delete service %s: %v\n", name, err)
+	}
+
+	// Try to delete registry secret (if exists)
+	secretName := fmt.Sprintf("registry-%s", name)
+	err = m.client.CoreV1().Secrets(m.namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		fmt.Printf("Warning: failed to delete registry secret %s: %v\n", secretName, err)
 	}
 
 	return nil
@@ -2299,4 +2390,23 @@ func (m *Manager) ExecPodCommand(ctx context.Context, podName, endpoint string, 
 	})
 
 	return stdout.String(), stderr.String(), err
+}
+
+// multiplyResource multiplies a K8s resource string by a factor
+// Supports formats: "4" (cores), "8Gi", "16G", "1024Mi", "1024M"
+func multiplyResource(resource string, factor int) string {
+	if factor <= 1 || resource == "" {
+		return resource
+	}
+	
+	// Try to parse as number with unit suffix
+	var value int
+	var unit string
+	
+	n, _ := fmt.Sscanf(resource, "%d%s", &value, &unit)
+	if n >= 1 {
+		return fmt.Sprintf("%d%s", value*factor, unit)
+	}
+	
+	return resource
 }
