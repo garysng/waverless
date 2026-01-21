@@ -1489,7 +1489,9 @@ func deploymentToAppInfo(deployment *appsv1.Deployment) *AppInfo {
 		info.Image = deployment.Spec.Template.Spec.Containers[0].Image
 	}
 
-	if deployment.Status.AvailableReplicas == *deployment.Spec.Replicas {
+	if *deployment.Spec.Replicas == 0 {
+		info.Status = "Stopped"
+	} else if deployment.Status.AvailableReplicas == *deployment.Spec.Replicas {
 		info.Status = "Running"
 	} else {
 		info.Status = "Pending"
