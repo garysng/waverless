@@ -58,10 +58,16 @@ type SpecRepositoryInterface interface {
 	ListSpecsByCategory(ctx context.Context, category string) ([]*interfaces.SpecInfo, error)
 }
 
+// CapacityManagerInterface 容量管理器接口
+type CapacityManagerInterface interface {
+	GetStatus(specName string) interfaces.CapacityStatus
+}
+
 // SpecManager 规格管理器
 type SpecManager struct {
 	specs       map[string]*ResourceSpec
-	specRepo    SpecRepositoryInterface // Database repository (optional, takes priority if available)
+	specRepo    SpecRepositoryInterface    // Database repository (optional, takes priority if available)
+	capacityMgr CapacityManagerInterface   // Capacity manager (optional)
 }
 
 // NewSpecManager 创建规格管理器
@@ -90,6 +96,19 @@ func NewSpecManager(configPath string) (*SpecManager, error) {
 // SetSpecRepository sets the spec repository for database access
 func (m *SpecManager) SetSpecRepository(repo SpecRepositoryInterface) {
 	m.specRepo = repo
+}
+
+// SetCapacityManager sets the capacity manager
+func (m *SpecManager) SetCapacityManager(capacityMgr CapacityManagerInterface) {
+	m.capacityMgr = capacityMgr
+}
+
+// GetCapacityStatus 获取规格的容量状态
+func (m *SpecManager) GetCapacityStatus(specName string) interfaces.CapacityStatus {
+	if m.capacityMgr != nil {
+		return m.capacityMgr.GetStatus(specName)
+	}
+	return interfaces.CapacityAvailable
 }
 
 // GetSpec 获取规格 (优先从数据库读取，如果数据库不可用则从内存读取)
@@ -177,6 +196,45 @@ func (s *ResourceSpec) GetPlatformConfig(platform string) PlatformConfig {
 		}
 	}
 	return PlatformConfig{}
+}
+
+// GetNodePoolToSpecMapping 获取 nodepool -> spec 的映射 (用于 Karpenter)
+func (m *SpecManager) GetNodePoolToSpecMapping(platform string) map[string]string {
+	mapping := make(map[string]string)
+	specs := m.ListSpecs()
+	for _, spec := range specs {
+		platformConfig := spec.GetPlatformConfig(platform)
+		if nodePool, ok := platformConfig.NodeSelector["karpenter.sh/nodepool"]; ok {
+			mapping[nodePool] = spec.Name
+		}
+	}
+	return mapping
+}
+
+// GetSpecToNodePoolMapping 获取 spec -> nodepool 的映射
+func (m *SpecManager) GetSpecToNodePoolMapping(platform string) map[string]string {
+	mapping := make(map[string]string)
+	specs := m.ListSpecs()
+	for _, spec := range specs {
+		platformConfig := spec.GetPlatformConfig(platform)
+		if nodePool, ok := platformConfig.NodeSelector["karpenter.sh/nodepool"]; ok {
+			mapping[spec.Name] = nodePool
+		}
+	}
+	return mapping
+}
+
+// GetSpecToInstanceTypeMapping 获取 spec -> instance type 的映射 (用于 Spot 价格查询)
+func (m *SpecManager) GetSpecToInstanceTypeMapping(platform string) map[string]string {
+	mapping := make(map[string]string)
+	specs := m.ListSpecs()
+	for _, spec := range specs {
+		platformConfig := spec.GetPlatformConfig(platform)
+		if instanceType, ok := platformConfig.NodeSelector["node.kubernetes.io/instance-type"]; ok {
+			mapping[spec.Name] = instanceType
+		}
+	}
+	return mapping
 }
 
 // convertSpecInfoToResourceSpec converts interfaces.SpecInfo to k8s.ResourceSpec

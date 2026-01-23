@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -183,6 +184,35 @@ func (p *K8sDeploymentProvider) ListSpecs(ctx context.Context) ([]*interfaces.Sp
 	return result, nil
 }
 
+// ListSpecsWithCapacity 列出可用规格（带容量状态）
+func (p *K8sDeploymentProvider) ListSpecsWithCapacity(ctx context.Context) ([]*interfaces.SpecWithCapacity, error) {
+	specs := p.manager.ListSpecs()
+	result := make([]*interfaces.SpecWithCapacity, len(specs))
+	for i, spec := range specs {
+		platforms := make(map[string]interface{}, len(spec.Platforms))
+		for k, v := range spec.Platforms {
+			platforms[k] = v
+		}
+		result[i] = &interfaces.SpecWithCapacity{
+			SpecInfo: &interfaces.SpecInfo{
+				Name:        spec.Name,
+				DisplayName: spec.DisplayName,
+				Category:    spec.Category,
+				Resources: interfaces.ResourceRequirements{
+					GPU:              spec.Resources.GPU,
+					GPUType:          spec.Resources.GpuType,
+					CPU:              spec.Resources.CPU,
+					Memory:           spec.Resources.Memory,
+					EphemeralStorage: spec.Resources.EphemeralStorage,
+				},
+				Platforms: platforms,
+			},
+			Capacity: p.manager.GetCapacityStatus(spec.Name),
+		}
+	}
+	return result, nil
+}
+
 // GetSpec 获取规格详情
 func (p *K8sDeploymentProvider) GetSpec(ctx context.Context, specName string) (*interfaces.SpecInfo, error) {
 	spec, err := p.manager.GetSpec(specName)
@@ -245,6 +275,21 @@ func (p *K8sDeploymentProvider) UpdateDeployment(ctx context.Context, req *inter
 // GetSpecManager 获取规格管理器（用于自动扩缩容）
 func (p *K8sDeploymentProvider) GetSpecManager() *SpecManager {
 	return p.manager.specManager
+}
+
+// GetDynamicClient 获取 dynamic client（用于 CRD 操作）
+func (p *K8sDeploymentProvider) GetDynamicClient() dynamic.Interface {
+	return p.manager.GetDynamicClient()
+}
+
+// GetPodCountsBySpec 按 spec 统计 Pod 数量
+func (p *K8sDeploymentProvider) GetPodCountsBySpec(ctx context.Context) (map[string]PodCounts, error) {
+	return p.manager.GetPodCountsBySpec(ctx)
+}
+
+// GetInstanceTypesFromNodePool 从 NodePool 获取 instance types
+func (p *K8sDeploymentProvider) GetInstanceTypesFromNodePool(ctx context.Context, nodePoolName string) ([]string, error) {
+	return p.manager.GetInstanceTypesFromNodePool(ctx, nodePoolName)
 }
 
 // GetDefaultEnv 获取默认环境变量（从 wavespeed-config ConfigMap 读取）

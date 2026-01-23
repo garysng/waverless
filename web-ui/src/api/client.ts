@@ -121,7 +121,9 @@ export const api = {
   // Specs (CRUD from database)
   specs: {
     list: (category?: string) => client.get<SpecInfo[]>('/specs', { params: { category } }),
+    listWithCapacity: () => client.get<SpecInfo[]>('/specs/capacity'),
     get: (name: string) => client.get<SpecInfo>(`/specs/${name}`),
+    getCapacity: (name: string) => client.get<{ specName: string; status: string }>(`/specs/${name}/capacity`),
     create: (data: {
       name: string;
       displayName: string;

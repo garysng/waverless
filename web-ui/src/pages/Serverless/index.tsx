@@ -13,11 +13,11 @@ const ServerlessPage = () => {
   const [selectedSpec, setSelectedSpec] = useState<SpecInfo | null>(null);
   const [form] = Form.useForm();
 
-  // Fetch specs
+  // Fetch specs with capacity
   const { data: specs, isLoading } = useQuery({
-    queryKey: ['specs'],
+    queryKey: ['specs-capacity'],
     queryFn: async () => {
-      const res = await api.specs.list();
+      const res = await api.specs.listWithCapacity();
       return res.data || [];
     },
   });
@@ -147,10 +147,15 @@ const ServerlessPage = () => {
         <div className="card-body">
           <div className="specs-grid">
             {gpuSpecs.map((spec: SpecInfo) => (
-              <div key={spec.name} className="spec-card" onClick={() => openCreateModal(spec)}>
+              <div key={spec.name} className={`spec-card ${spec.capacity === 'sold_out' ? 'sold-out' : ''}`} onClick={() => openCreateModal(spec)}>
                 <div className="spec-header">
                   <span className="spec-vram">Up to {spec.resources.gpu}× GPU</span>
                   <span className="spec-gpu">{spec.resources.gpuType}</span>
+                  {spec.capacity && (
+                    <span className={`capacity-badge ${spec.capacity}`}>
+                      {spec.capacity === 'available' ? 'Available' : spec.capacity === 'limited' ? 'Limited' : 'Sold Out'}
+                    </span>
+                  )}
                 </div>
                 <div className="spec-desc">
                   {spec.displayName || spec.name}
@@ -158,6 +163,7 @@ const ServerlessPage = () => {
                 <div className="spec-footer">
                   <span className="spec-resources">
                     {spec.resources.cpu} CPU • {spec.resources.memory}
+                    {spec.spotPrice ? ` • $${spec.spotPrice.toFixed(2)}/hr` : ''}
                   </span>
                   <button className="btn btn-primary">
                     <PlusOutlined /> Create
@@ -183,14 +189,21 @@ const ServerlessPage = () => {
           <div className="card-body">
             <div className="specs-grid">
               {cpuSpecs.map((spec: SpecInfo) => (
-                <div key={spec.name} className="spec-card" onClick={() => openCreateModal(spec)}>
+                <div key={spec.name} className={`spec-card ${spec.capacity === 'sold_out' ? 'sold-out' : ''}`} onClick={() => openCreateModal(spec)}>
                   <div className="spec-header">
                     <span className="spec-vram">{spec.resources.cpu} CPU</span>
                     <span className="spec-gpu">{spec.resources.memory}</span>
+                    {spec.capacity && (
+                      <span className={`capacity-badge ${spec.capacity}`}>
+                        {spec.capacity === 'available' ? 'Available' : spec.capacity === 'limited' ? 'Limited' : 'Sold Out'}
+                      </span>
+                    )}
                   </div>
                   <div className="spec-desc">{spec.displayName || spec.name}</div>
                   <div className="spec-footer">
-                    <span className="spec-resources">CPU Only</span>
+                    <span className="spec-resources">
+                      CPU Only{spec.spotPrice ? ` • $${spec.spotPrice.toFixed(2)}/hr` : ''}
+                    </span>
                     <button className="btn btn-primary">
                       <PlusOutlined /> Create
                     </button>

@@ -55,6 +55,12 @@ export interface SpecInfo {
   resourceType?: string; // fixed, serverless
   resources: ResourceRequirements;
   platforms: Record<string, PlatformConfig>;
+  // Capacity info
+  capacity?: 'available' | 'limited' | 'sold_out';
+  spotScore?: number;
+  spotPrice?: number;
+  runningCount?: number;
+  pendingCount?: number;
 }
 
 export interface ResourceRequirements {
