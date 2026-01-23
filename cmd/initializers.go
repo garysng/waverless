@@ -15,6 +15,7 @@ import (
 	"waverless/pkg/capacity"
 	"waverless/pkg/config"
 	"waverless/pkg/deploy/k8s"
+	"waverless/pkg/deploy/novita"
 	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
 	"waverless/pkg/monitoring"
@@ -125,6 +126,14 @@ func (app *Application) initServices() error {
 		}
 	}
 
+	// Get Novita deployment provider for status sync
+	var novitaDeployProvider *novita.NovitaDeploymentProvider
+	if app.config.Novita.Enabled {
+		if novitaProv, ok := app.deploymentProvider.(*novita.NovitaDeploymentProvider); ok {
+			novitaDeployProvider = novitaProv
+		}
+	}
+
 	// Initialize worker service (MySQL-based)
 	app.workerService = service.NewWorkerService(
 		app.mysqlRepo.Worker,
@@ -206,6 +215,12 @@ func (app *Application) initServices() error {
 	// Setup capacity manager (when K8s is enabled)
 	if err := app.setupCapacityManager(k8sDeployProvider); err != nil {
 		logger.WarnCtx(app.ctx, "Failed to setup capacity manager: %v (non-critical, continuing)", err)
+	}
+
+	// Setup Novita status watcher for endpoint status sync (when Novita is enabled)
+	if err := app.setupNovitaStatusWatcher(novitaDeployProvider); err != nil {
+		logger.WarnCtx(app.ctx, "Failed to setup Novita status watcher: %v (non-critical, continuing)", err)
+		// Non-critical feature, continue startup
 	}
 
 	return nil
@@ -314,6 +329,49 @@ func (app *Application) setupSpotInterruptionWatcher(k8sProvider *k8s.K8sDeploym
 	}
 
 	logger.InfoCtx(app.ctx, "✅ Spot interruption watcher setup complete")
+	return nil
+}
+
+// setupNovitaStatusWatcher sets up Novita status watcher for endpoint status sync
+func (app *Application) setupNovitaStatusWatcher(novitaProvider *novita.NovitaDeploymentProvider) error {
+	if novitaProvider == nil {
+		logger.InfoCtx(app.ctx, "Novita provider not available, skipping status watcher setup")
+		return nil
+	}
+
+	logger.InfoCtx(app.ctx, "Setting up Novita status watcher for endpoint status sync...")
+
+	// Register replica watch callback to sync status to database
+	err := novitaProvider.WatchReplicas(app.ctx, func(event interfaces.ReplicaEvent) {
+		endpoint := event.Name
+
+		// Calculate status based on replica state
+		status := "Pending"
+		if event.AvailableReplicas == event.DesiredReplicas && event.DesiredReplicas > 0 {
+			status = "Running"
+		} else if event.DesiredReplicas == 0 {
+			status = "Stopped"
+		}
+
+		// Update endpoint runtime state in database
+		if app.mysqlRepo != nil && app.mysqlRepo.Endpoint != nil {
+			runtimeState := map[string]interface{}{
+				"replicas":          event.DesiredReplicas,
+				"readyReplicas":     event.ReadyReplicas,
+				"availableReplicas": event.AvailableReplicas,
+			}
+
+			if err := app.mysqlRepo.Endpoint.UpdateRuntimeState(app.ctx, endpoint, status, runtimeState); err != nil {
+				logger.ErrorCtx(app.ctx, "Failed to update Novita endpoint runtime state: %v", err)
+			}
+		}
+	})
+
+	if err != nil {
+		logger.WarnCtx(app.ctx, "Failed to register Novita status watcher: %v", err)
+		return err
+	}
+
 	return nil
 }
 
@@ -439,12 +497,18 @@ func (app *Application) initHandlers() error {
 	app.statisticsHandler = handler.NewStatisticsHandler(app.statisticsService, app.workerService)
 	app.monitoringHandler = handler.NewMonitoringHandler(app.monitoringService)
 
-	// Initialize K8s Handler (Endpoint Handler)
-	if app.config.K8s.Enabled {
+	// Initialize Endpoint Handler (for K8s or Novita)
+	if app.config.K8s.Enabled || app.config.Novita.Enabled {
 		if app.deploymentProvider == nil {
-			logger.ErrorCtx(app.ctx, "K8s is enabled but deployment provider is nil")
+			logger.ErrorCtx(app.ctx, "Deployment provider is enabled but provider is nil")
 		} else {
 			app.endpointHandler = handler.NewEndpointHandler(app.deploymentProvider, app.endpointService, app.workerService)
+			if app.config.K8s.Enabled {
+				logger.InfoCtx(app.ctx, "Endpoint handler initialized for K8s")
+			}
+			if app.config.Novita.Enabled {
+				logger.InfoCtx(app.ctx, "Endpoint handler initialized for Novita")
+			}
 		}
 	}
 

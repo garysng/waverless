@@ -82,7 +82,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 		v2.POST("/job-stream/:worker_id/:task_id", r.workerHandler.SubmitResult)
 	}
 
-	// API v1 - K8s application management interface (if enabled)
+	// API v1 - Endpoint management interface (K8s or Novita, if enabled)
 	if r.endpointHandler != nil {
 		api := engine.Group("/api/v1")
 		{

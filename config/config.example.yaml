@@ -84,6 +84,14 @@ notification:
   feishu_webhook_url: ""  # Example: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx"
 
 providers:
-  deployment: "k8s"  # k8s, docker
+  deployment: "k8s"  # k8s, docker, novita
   queue: "redis"     # redis, mysql
   metadata: "mysql"  # redis, mysql
+
+# Novita Serverless Configuration
+novita:
+  enabled: false  # Enable Novita serverless provider
+  api_key: ""     # Your Novita API key (Bearer token)
+  base_url: "https://api.novita.ai"  # Novita API base URL
+  config_dir: "./config"  # Configuration directory (contains specs.yaml and templates/)
+  poll_interval: 10  # Poll interval for status updates (seconds, default: 10)

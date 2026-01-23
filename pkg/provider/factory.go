@@ -7,6 +7,7 @@ import (
 	"waverless/pkg/config"
 	"waverless/pkg/deploy/docker"
 	"waverless/pkg/deploy/k8s"
+	"waverless/pkg/deploy/novita"
 	"waverless/pkg/interfaces"
 )
 
@@ -37,6 +38,7 @@ func init() {
 	RegisterDeploymentProvider("k8s", k8s.NewK8sDeploymentProvider)
 	RegisterDeploymentProvider("kubernetes", k8s.NewK8sDeploymentProvider)
 	RegisterDeploymentProvider("docker", docker.NewDockerDeploymentProvider)
+	RegisterDeploymentProvider("novita", novita.NewNovitaDeploymentProvider)
 }
 
 func (f *ProviderFactory) CreateDeploymentProvider(providerType string) (interfaces.DeploymentProvider, error) {
