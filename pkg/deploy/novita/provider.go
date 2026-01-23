@@ -20,6 +20,10 @@ type clientInterface interface {
 	ListEndpoints(ctx context.Context) (*ListEndpointsResponse, error)
 	UpdateEndpoint(ctx context.Context, req *UpdateEndpointRequest) error
 	DeleteEndpoint(ctx context.Context, endpointID string) error
+	// Registry Auth methods
+	CreateRegistryAuth(ctx context.Context, req *CreateRegistryAuthRequest) (*CreateRegistryAuthResponse, error)
+	ListRegistryAuths(ctx context.Context) (*ListRegistryAuthsResponse, error)
+	DeleteRegistryAuth(ctx context.Context, authID string) error
 }
 
 // replicaCallbackEntry represents a registered replica callback
@@ -101,6 +105,17 @@ func (p *NovitaDeploymentProvider) Deploy(ctx context.Context, req *interfaces.D
 	novitaReq, err := mapDeployRequestToNovita(req, specInfo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to map deploy request to Novita: %w", err)
+	}
+
+	// Handle registry credential - sync auth to Novita if provided
+	if req.RegistryCredential != nil {
+		authID, err := p.ensureRegistryAuth(ctx, req.RegistryCredential)
+		if err != nil {
+			return nil, fmt.Errorf("failed to ensure registry auth: %w", err)
+		}
+		// Set the auth ID in the request
+		novitaReq.Endpoint.Image.AuthID = authID
+		logger.Infof("Using registry auth ID: %s for image: %s", authID, req.Image)
 	}
 
 	// Create endpoint
@@ -550,6 +565,43 @@ func (p *NovitaDeploymentProvider) GetDefaultEnv(ctx context.Context) (map[strin
 	}
 
 	return defaultEnv, nil
+}
+
+// ensureRegistryAuth ensures a registry auth exists in Novita
+// Returns the auth ID (existing or newly created)
+func (p *NovitaDeploymentProvider) ensureRegistryAuth(ctx context.Context, cred *interfaces.RegistryCredential) (string, error) {
+	if cred == nil {
+		return "", fmt.Errorf("registry credential is nil")
+	}
+
+	// List existing registry auths
+	listResp, err := p.client.ListRegistryAuths(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to list registry auths: %w", err)
+	}
+	// Check if auth already exists by matching registry name
+	for _, auth := range listResp.Data {
+		if auth.Name == cred.Registry {
+			logger.Infof("Found existing registry auth for %s (ID: %s)", cred.Registry, auth.ID)
+			return auth.ID, nil
+		}
+	}
+
+	// Auth doesn't exist, create new one
+	logger.Infof("Creating new registry auth for %s", cred.Registry)
+	createReq := &CreateRegistryAuthRequest{
+		Name:     cred.Registry,
+		Username: cred.Username,
+		Password: cred.Password,
+	}
+
+	createResp, err := p.client.CreateRegistryAuth(ctx, createReq)
+	if err != nil {
+		return "", fmt.Errorf("failed to create registry auth: %w", err)
+	}
+
+	logger.Infof("Created registry auth for %s (ID: %s)", cred.Registry, createResp.ID)
+	return createResp.ID, nil
 }
 
 // getEndpointID retrieves the Novita endpoint ID for a given endpoint name

@@ -230,3 +230,37 @@ type ErrorResponse struct {
 	Code    int    `json:"code"`    // Error code
 	Message string `json:"message"` // Error message
 }
+
+// ========================================
+// Container Registry Auth Types
+// ========================================
+
+// CreateRegistryAuthRequest represents the request to create a container registry auth
+type CreateRegistryAuthRequest struct {
+	Name     string `json:"name"`     // Auth name (registry URL)
+	Username string `json:"username"` // Username
+	Password string `json:"password"` // Password
+}
+
+// CreateRegistryAuthResponse represents the response from creating a registry auth
+type CreateRegistryAuthResponse struct {
+	ID string `json:"id"` // Created auth ID
+}
+
+// ListRegistryAuthsResponse represents the response from listing registry auths
+type ListRegistryAuthsResponse struct {
+	Data []RegistryAuthItem `json:"data"` // List of registry auths
+}
+
+// RegistryAuthItem represents a single registry auth item
+type RegistryAuthItem struct {
+	ID       string `json:"id"`       // Auth ID
+	Name     string `json:"name"`     // Auth name (registry URL)
+	Username string `json:"username"` // Username
+	Password string `json:"password"` // Password (may be masked)
+}
+
+// DeleteRegistryAuthRequest represents the request to delete a registry auth
+type DeleteRegistryAuthRequest struct {
+	ID string `json:"id"` // Auth ID to delete
+}

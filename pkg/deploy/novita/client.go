@@ -107,6 +107,52 @@ func (c *Client) DeleteEndpoint(ctx context.Context, endpointID string) error {
 	return err
 }
 
+// CreateRegistryAuth creates a new container registry authentication
+func (c *Client) CreateRegistryAuth(ctx context.Context, req *CreateRegistryAuthRequest) (*CreateRegistryAuthResponse, error) {
+	url := c.baseURL + "/gpu-instance/openapi/v1/repository/auth/save"
+
+	respData, err := c.doRequest(ctx, "POST", url, req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp CreateRegistryAuthResponse
+	if err := json.Unmarshal(respData, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse create registry auth response: %w", err)
+	}
+
+	return &resp, nil
+}
+
+// ListRegistryAuths lists all container registry authentications
+func (c *Client) ListRegistryAuths(ctx context.Context) (*ListRegistryAuthsResponse, error) {
+	url := c.baseURL + "/gpu-instance/openapi/v1/repository/auths"
+
+	respData, err := c.doRequest(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp ListRegistryAuthsResponse
+	if err := json.Unmarshal(respData, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse list registry auths response: %w", err)
+	}
+
+	return &resp, nil
+}
+
+// DeleteRegistryAuth deletes a container registry authentication
+func (c *Client) DeleteRegistryAuth(ctx context.Context, authID string) error {
+	url := c.baseURL + "/gpu-instance/openapi/v1/repository/auth/delete"
+
+	req := &DeleteRegistryAuthRequest{
+		ID: authID,
+	}
+
+	_, err := c.doRequest(ctx, "POST", url, req)
+	return err
+}
+
 // doRequest performs an HTTP request with proper authentication
 func (c *Client) doRequest(ctx context.Context, method, url string, body interface{}) ([]byte, error) {
 	var reqBody io.Reader
@@ -146,7 +192,7 @@ func (c *Client) doRequest(ctx context.Context, method, url string, body interfa
 	}
 
 	// Log response for debugging
-	logger.Debugf("Novita API Response: Status %d, Body: %s", resp.StatusCode, string(respData))
+	// logger.Debugf("Novita API Response: Status %d, Body: %s", resp.StatusCode, string(respData))
 
 	// Check for HTTP errors
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
