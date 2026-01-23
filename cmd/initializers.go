@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"waverless/internal/service"
 	endpointsvc "waverless/internal/service/endpoint"
 	"waverless/pkg/autoscaler"
+	"waverless/pkg/capacity"
 	"waverless/pkg/config"
 	"waverless/pkg/deploy/k8s"
 	"waverless/pkg/interfaces"
@@ -20,6 +22,9 @@ import (
 	mysqlstore "waverless/pkg/store/mysql"
 	redisstore "waverless/pkg/store/redis"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	appsv1 "k8s.io/api/apps/v1"
 
 	"github.com/gin-gonic/gin"
@@ -196,6 +201,11 @@ func (app *Application) initServices() error {
 	if err := app.startPodCleanupJob(k8sDeployProvider); err != nil {
 		logger.WarnCtx(app.ctx, "Failed to start pod cleanup job: %v (non-critical, continuing)", err)
 		// Non-critical feature, continue startup
+	}
+
+	// Setup capacity manager (when K8s is enabled)
+	if err := app.setupCapacityManager(k8sDeployProvider); err != nil {
+		logger.WarnCtx(app.ctx, "Failed to setup capacity manager: %v (non-critical, continuing)", err)
 	}
 
 	return nil
@@ -440,6 +450,9 @@ func (app *Application) initHandlers() error {
 
 	// Initialize Spec Handler
 	app.specHandler = handler.NewSpecHandler(app.specService)
+	if app.capacityMgr != nil && app.mysqlRepo != nil {
+		app.specHandler.SetCapacityManager(app.capacityMgr, app.mysqlRepo.SpecCapacity)
+	}
 
 	// Initialize Image Handler (for DockerHub webhook and image update checking)
 	if app.endpointService != nil {
@@ -582,4 +595,132 @@ func (app *Application) initHTTPServer() error {
 	}
 
 	return nil
+}
+
+// setupCapacityManager sets up capacity manager for spec availability tracking
+func (app *Application) setupCapacityManager(k8sProvider *k8s.K8sDeploymentProvider) error {
+	if k8sProvider == nil {
+		logger.InfoCtx(app.ctx, "K8s provider not available, skipping capacity manager setup")
+		return nil
+	}
+
+	logger.InfoCtx(app.ctx, "Setting up capacity manager for platform: %s", app.config.K8s.Platform)
+
+	// Ensure spec manager has database access
+	specMgr := k8sProvider.GetSpecManager()
+	if specMgr != nil && app.specService != nil {
+		specMgr.SetSpecRepository(app.specService)
+	}
+
+	// Select provider based on platform
+	var provider capacity.Provider
+	var spotChecker *capacity.AWSSpotChecker
+
+	switch app.config.K8s.Platform {
+	case "aws-eks":
+		// AWS EKS with Karpenter - use NodeClaim watch
+		dynamicClient := k8sProvider.GetDynamicClient()
+		if dynamicClient != nil && specMgr != nil {
+			nodePoolToSpec := specMgr.GetNodePoolToSpecMapping("aws-eks")
+			if len(nodePoolToSpec) > 0 {
+				logger.InfoCtx(app.ctx, "Using Karpenter provider with %d nodepool mappings: %v", len(nodePoolToSpec), nodePoolToSpec)
+				provider = capacity.NewProvider(capacity.ProviderKarpenter, dynamicClient, nodePoolToSpec)
+			} else {
+				logger.WarnCtx(app.ctx, "No nodepool mappings found, falling back to generic provider")
+				provider = capacity.NewProvider(capacity.ProviderGeneric, nil, nil)
+			}
+
+			// Setup AWS Spot Checker
+			specToInstance := specMgr.GetSpecToInstanceTypeMapping("aws-eks")
+			specToNodePool := specMgr.GetSpecToNodePoolMapping("aws-eks")
+			if len(specToInstance) > 0 || len(specToNodePool) > 0 {
+				ec2Client, region, err := createEC2Client(app.ctx, app.config.K8s.AWS)
+				if err != nil {
+					logger.WarnCtx(app.ctx, "Failed to create EC2 client for spot checker: %v", err)
+				} else {
+					spotChecker = capacity.NewAWSSpotChecker(ec2Client, region, specToInstance)
+					// 设置 NodePool fetcher 用于获取没有配置 instance-type 的 spec
+					spotChecker.SetNodePoolFetcher(k8sProvider, specToNodePool)
+					logger.InfoCtx(app.ctx, "AWS Spot checker enabled: %d from config, %d from nodepool", len(specToInstance), len(specToNodePool))
+				}
+			}
+		} else {
+			logger.WarnCtx(app.ctx, "Dynamic client or spec manager not available, falling back to generic provider")
+			provider = capacity.NewProvider(capacity.ProviderGeneric, nil, nil)
+		}
+	default:
+		// aliyun-ack, generic, etc - use generic provider
+		provider = capacity.NewProvider(capacity.ProviderGeneric, nil, nil)
+	}
+
+	// Create capacity manager
+	app.capacityMgr = capacity.NewManager(provider, app.mysqlRepo.SpecCapacity)
+
+	// Set pod count provider for running/pending count updates
+	app.capacityMgr.SetPodCountProvider(&k8sPodCountAdapter{provider: k8sProvider})
+
+	// Set spot checker if available
+	if spotChecker != nil {
+		app.capacityMgr.SetSpotChecker(spotChecker)
+	}
+
+	// Set capacity manager on spec manager
+	if specMgr != nil {
+		specMgr.SetCapacityManager(app.capacityMgr)
+	}
+
+	// Start capacity manager in background
+	go func() {
+		if err := app.capacityMgr.Start(app.ctx); err != nil {
+			logger.WarnCtx(app.ctx, "Capacity manager stopped: %v", err)
+		}
+	}()
+
+	logger.InfoCtx(app.ctx, "✅ Capacity manager setup completed")
+	return nil
+}
+
+// createEC2Client 创建 AWS EC2 客户端
+func createEC2Client(ctx context.Context, awsCfg *config.AWSConfig) (*ec2.Client, string, error) {
+	var opts []func(*awsconfig.LoadOptions) error
+
+	// 如果配置了 region
+	if awsCfg != nil && awsCfg.Region != "" {
+		opts = append(opts, awsconfig.WithRegion(awsCfg.Region))
+	}
+
+	// 如果配置了 AK/SK
+	if awsCfg != nil && awsCfg.AccessKeyID != "" && awsCfg.SecretAccessKey != "" {
+		opts = append(opts, awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(awsCfg.AccessKeyID, awsCfg.SecretAccessKey, ""),
+		))
+	}
+
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return ec2.NewFromConfig(cfg), cfg.Region, nil
+}
+
+// k8sPodCountAdapter 适配 k8s provider 到 capacity.PodCountProvider
+type k8sPodCountAdapter struct {
+	provider *k8s.K8sDeploymentProvider
+}
+
+func (a *k8sPodCountAdapter) GetPodCountsBySpec(ctx context.Context) (map[string]capacity.PodCounts, error) {
+	k8sCounts, err := a.provider.GetPodCountsBySpec(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]capacity.PodCounts)
+	for specName, counts := range k8sCounts {
+		result[specName] = capacity.PodCounts{
+			Running: counts.Running,
+			Pending: counts.Pending,
+		}
+	}
+	return result, nil
 }

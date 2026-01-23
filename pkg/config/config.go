@@ -88,10 +88,18 @@ type LoggerFileConfig struct {
 
 // K8sConfig K8s configuration
 type K8sConfig struct {
-	Enabled    bool   `yaml:"enabled"`     // whether to enable K8s features
-	Namespace  string `yaml:"namespace"`   // K8s namespace
-	Platform   string `yaml:"platform"`    // Platform type: generic, aliyun-ack, aws-eks
-	ConfigDir  string `yaml:"config_dir"`  // Configuration directory (specs.yaml and templates)
+	Enabled    bool       `yaml:"enabled"`     // whether to enable K8s features
+	Namespace  string     `yaml:"namespace"`   // K8s namespace
+	Platform   string     `yaml:"platform"`    // Platform type: generic, aliyun-ack, aws-eks
+	ConfigDir  string     `yaml:"config_dir"`  // Configuration directory (specs.yaml and templates)
+	AWS        *AWSConfig `yaml:"aws,omitempty"` // AWS configuration (for aws-eks platform)
+}
+
+// AWSConfig AWS configuration
+type AWSConfig struct {
+	Region          string `yaml:"region"`            // AWS region (optional, auto-detect if empty)
+	AccessKeyID     string `yaml:"access_key_id"`     // AWS Access Key ID (optional, use IAM role if empty)
+	SecretAccessKey string `yaml:"secret_access_key"` // AWS Secret Access Key (optional)
 }
 
 // ProvidersConfig providers configuration

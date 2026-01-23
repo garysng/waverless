@@ -18,7 +18,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -68,12 +71,13 @@ func validateK8sName(name string) error {
 
 // Manager K8s application manager
 type Manager struct {
-	client      kubernetes.Interface
-	config      *rest.Config
-	namespace   string
-	platform    Platform
-	specManager *SpecManager
-	renderer    *TemplateRenderer
+	client        kubernetes.Interface
+	dynamicClient dynamic.Interface
+	config        *rest.Config
+	namespace     string
+	platform      Platform
+	specManager   *SpecManager
+	renderer      *TemplateRenderer
 
 	informerFactory  informers.SharedInformerFactory
 	deploymentLister appslisters.DeploymentLister
@@ -143,6 +147,12 @@ func NewManager(namespace, platformName, configDir string) (*Manager, error) {
 		return nil, fmt.Errorf("failed to create kubernetes client: %v", err)
 	}
 
+	// Create dynamic client for CRDs (e.g., Karpenter NodeClaim)
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create dynamic client: %v", err)
+	}
+
 	// Create spec manager
 	specPath := fmt.Sprintf("%s/specs.yaml", configDir)
 	specManager, err := NewSpecManager(specPath)
@@ -171,6 +181,7 @@ func NewManager(namespace, platformName, configDir string) (*Manager, error) {
 
 	manager := &Manager{
 		client:                        client,
+		dynamicClient:                 dynamicClient,
 		config:                        config,
 		namespace:                     namespace,
 		platform:                      platform,
@@ -1489,7 +1500,9 @@ func deploymentToAppInfo(deployment *appsv1.Deployment) *AppInfo {
 		info.Image = deployment.Spec.Template.Spec.Containers[0].Image
 	}
 
-	if deployment.Status.AvailableReplicas == *deployment.Spec.Replicas {
+	if *deployment.Spec.Replicas == 0 {
+		info.Status = "Stopped"
+	} else if deployment.Status.AvailableReplicas == *deployment.Spec.Replicas {
 		info.Status = "Running"
 	} else {
 		info.Status = "Pending"
@@ -1636,6 +1649,124 @@ func (m *Manager) ListSpecs() []*ResourceSpec {
 // GetSpec gets spec details
 func (m *Manager) GetSpec(name string) (*ResourceSpec, error) {
 	return m.specManager.GetSpec(name)
+}
+
+// GetSpecManager returns the spec manager
+func (m *Manager) GetSpecManager() *SpecManager {
+	return m.specManager
+}
+
+// GetDynamicClient returns the dynamic client for CRDs
+func (m *Manager) GetDynamicClient() dynamic.Interface {
+	return m.dynamicClient
+}
+
+// GetCapacityStatus gets capacity status for a spec
+func (m *Manager) GetCapacityStatus(specName string) interfaces.CapacityStatus {
+	return m.specManager.GetCapacityStatus(specName)
+}
+
+// PodCounts Pod 数量统计
+type PodCounts struct {
+	Running int
+	Pending int
+}
+
+// GetPodCountsBySpec 按 spec 统计 Pod 数量 (实现 capacity.PodCountProvider 接口)
+func (m *Manager) GetPodCountsBySpec(ctx context.Context) (map[string]PodCounts, error) {
+	result := make(map[string]PodCounts)
+
+	pods, err := m.podLister.Pods(m.namespace).List(labels.Everything())
+	if err != nil {
+		return nil, err
+	}
+
+	for _, pod := range pods {
+		// 从 Pod 的 nodeSelector 获取 spec
+		specName := m.getSpecFromPod(pod)
+		if specName == "" {
+			continue
+		}
+
+		counts := result[specName]
+		switch pod.Status.Phase {
+		case corev1.PodRunning:
+			counts.Running++
+		case corev1.PodPending:
+			counts.Pending++
+		}
+		result[specName] = counts
+	}
+
+	return result, nil
+}
+
+// getSpecFromPod 从 Pod 获取对应的 spec 名称
+func (m *Manager) getSpecFromPod(pod *corev1.Pod) string {
+	if pod.Spec.NodeSelector == nil {
+		return ""
+	}
+
+	// 通过 nodepool label 反查 spec
+	nodePool := pod.Spec.NodeSelector["karpenter.sh/nodepool"]
+	if nodePool == "" {
+		return ""
+	}
+
+	// 遍历所有 spec 找到匹配的
+	specs := m.specManager.ListSpecs()
+	for _, spec := range specs {
+		for _, platformConfig := range spec.Platforms {
+			if platformConfig.NodeSelector["karpenter.sh/nodepool"] == nodePool {
+				return spec.Name
+			}
+		}
+	}
+
+	return ""
+}
+
+// GetInstanceTypesFromNodePool 从 Karpenter NodePool 获取 instance types
+func (m *Manager) GetInstanceTypesFromNodePool(ctx context.Context, nodePoolName string) ([]string, error) {
+	nodePoolGVR := schema.GroupVersionResource{
+		Group:    "karpenter.sh",
+		Version:  "v1",
+		Resource: "nodepools",
+	}
+
+	nodePool, err := m.dynamicClient.Resource(nodePoolGVR).Get(ctx, nodePoolName, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	// 解析 spec.template.spec.requirements
+	requirements, found, err := unstructured.NestedSlice(nodePool.Object, "spec", "template", "spec", "requirements")
+	if err != nil || !found {
+		return nil, fmt.Errorf("requirements not found in nodepool %s", nodePoolName)
+	}
+
+	for _, req := range requirements {
+		reqMap, ok := req.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		key, _ := reqMap["key"].(string)
+		if key == "node.kubernetes.io/instance-type" {
+			values, ok := reqMap["values"].([]interface{})
+			if ok {
+				var instanceTypes []string
+				for _, v := range values {
+					if s, ok := v.(string); ok {
+						instanceTypes = append(instanceTypes, s)
+					}
+				}
+				return instanceTypes, nil
+			}
+		}
+	}
+
+	return nil, nil
 }
 
 // UpdateDeployment updates deployment

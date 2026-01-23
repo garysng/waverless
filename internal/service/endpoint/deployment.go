@@ -84,6 +84,12 @@ func (m *DeploymentManager) Update(ctx context.Context, req *interfaces.UpdateDe
 			}
 			if req.Replicas != nil {
 				meta.Replicas = *req.Replicas
+				// Update status based on replicas
+				if *req.Replicas == 0 {
+					meta.Status = "Stopped"
+				} else if meta.Status == "Stopped" || meta.Status == "Deploying" {
+					meta.Status = "Pending"
+				}
 			}
 			if req.TaskTimeout != nil {
 				meta.TaskTimeout = *req.TaskTimeout

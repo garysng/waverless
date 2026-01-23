@@ -13,6 +13,7 @@ type Repository struct {
 	ScalingEvent     *ScalingEventRepository
 	AutoscalerConfig *AutoscalerConfigRepository
 	Spec             *SpecRepository
+	SpecCapacity     *SpecCapacityRepository
 	Worker           *WorkerRepository
 	Monitoring       *MonitoringRepository
 }
@@ -33,6 +34,7 @@ func NewRepository(dsn string, proxyConfig *config.ProxyConfig) (*Repository, er
 		ScalingEvent:     NewScalingEventRepository(ds),
 		AutoscalerConfig: NewAutoscalerConfigRepository(ds),
 		Spec:             NewSpecRepository(ds),
+		SpecCapacity:     NewSpecCapacityRepository(ds),
 		Worker:           NewWorkerRepository(ds),
 		Monitoring:       NewMonitoringRepository(ds),
 	}, nil

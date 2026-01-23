@@ -12,6 +12,7 @@ import (
 	"waverless/internal/service"
 	endpointsvc "waverless/internal/service/endpoint"
 	"waverless/pkg/autoscaler"
+	"waverless/pkg/capacity"
 	"waverless/pkg/config"
 	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
@@ -53,6 +54,9 @@ type Application struct {
 
 	// Monitoring
 	monitoringCollector *monitoring.Collector
+
+	// Capacity
+	capacityMgr *capacity.Manager
 
 	// Auto-scaler
 	autoscalerMgr *autoscaler.Manager
