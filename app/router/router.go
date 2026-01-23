@@ -86,6 +86,9 @@ func (r *Router) Setup(engine *gin.Engine) {
 	if r.endpointHandler != nil {
 		api := engine.Group("/api/v1")
 		{
+			// Worker detail API (by database ID, regardless of status)
+			api.GET("/workers/:id", r.workerHandler.GetWorkerByID)
+
 			// Endpoint lifecycle management
 			endpoints := api.Group("/endpoints")
 			{

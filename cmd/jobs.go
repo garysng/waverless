@@ -389,6 +389,8 @@ func (j *hourlyAggregationJob) Name() string { return "monitoring-hourly-aggrega
 
 func (j *hourlyAggregationJob) Interval() time.Duration { return j.interval }
 
+func (j *hourlyAggregationJob) AlignToInterval() bool { return true }
+
 func (j *hourlyAggregationJob) Run(ctx context.Context) error {
 	if j.monitoringService == nil {
 		return fmt.Errorf("monitoring service not configured")
@@ -421,6 +423,8 @@ func newDailyAggregationJob(interval time.Duration, svc *service.MonitoringServi
 func (j *dailyAggregationJob) Name() string { return "monitoring-daily-aggregation" }
 
 func (j *dailyAggregationJob) Interval() time.Duration { return j.interval }
+
+func (j *dailyAggregationJob) AlignToInterval() bool { return true }
 
 func (j *dailyAggregationJob) Run(ctx context.Context) error {
 	if j.monitoringService == nil {

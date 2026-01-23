@@ -53,6 +53,9 @@ type RenderContext struct {
 	// 环境变量配置
 	Env map[string]string `json:"env,omitempty"` // Custom environment variables
 
+	// Image pull secret for private registries
+	ImagePullSecret string `json:"imagePullSecret,omitempty"` // Additional image pull secret name
+
 	// 平台配置追踪（用于记录到 Deployment annotations）
 	PlatformLabelsJSON      string `json:"platformLabelsJSON,omitempty"`      // 平台labels的JSON记录
 	PlatformAnnotationsJSON string `json:"platformAnnotationsJSON,omitempty"` // 平台annotations的JSON记录

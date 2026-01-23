@@ -25,6 +25,7 @@ type Worker struct {
 	RuntimeState         JSONMap    `gorm:"column:runtime_state;type:json"` // Pod runtime: phase, status, reason, message, ip, nodeName
 	CreatedAt            time.Time  `gorm:"column:created_at;not null"`
 	UpdatedAt            time.Time  `gorm:"column:updated_at;not null"`
+	TerminatedAt         *time.Time `gorm:"column:terminated_at"` // Time when worker reached terminal state (pod deleted)
 }
 
 func (Worker) TableName() string {

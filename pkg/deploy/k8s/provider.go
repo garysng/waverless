@@ -41,10 +41,18 @@ func (p *K8sDeploymentProvider) Deploy(ctx context.Context, req *interfaces.Depl
 		SpecName:     req.SpecName,
 		Image:        req.Image,
 		Replicas:     req.Replicas,
+		GpuCount:     req.GpuCount,
 		TaskTimeout:  req.TaskTimeout,
 		Env:          req.Env,
 		VolumeMounts: req.VolumeMounts,
 		ShmSize:      req.ShmSize,
+	}
+	if req.RegistryCredential != nil {
+		k8sReq.RegistryCredential = &RegistryCredential{
+			Registry: req.RegistryCredential.Registry,
+			Username: req.RegistryCredential.Username,
+			Password: req.RegistryCredential.Password,
+		}
 	}
 
 	if err := p.manager.DeployApp(ctx, k8sReq); err != nil {
@@ -211,6 +219,7 @@ func (p *K8sDeploymentProvider) PreviewDeploymentYAML(ctx context.Context, req *
 		SpecName:     req.SpecName,
 		Image:        req.Image,
 		Replicas:     req.Replicas,
+		GpuCount:     req.GpuCount,
 		TaskTimeout:  req.TaskTimeout,
 		Env:          req.Env,
 		VolumeMounts: req.VolumeMounts,
