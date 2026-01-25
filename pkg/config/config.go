@@ -18,16 +18,18 @@ type Config struct {
 	Logger       LoggerConfig       `yaml:"logger"`
 	K8s          K8sConfig          `yaml:"k8s"`
 	AutoScaler   AutoScalerConfig   `yaml:"autoscaler"`
-	Docker       DockerConfig       `yaml:"docker"`                  // Docker registry authentication
-	Notification NotificationConfig `yaml:"notification"`            // Notification configuration
-	Providers    *ProvidersConfig   `yaml:"providers,omitempty"`     // Providers configuration (optional)
+	Docker       DockerConfig       `yaml:"docker"`              // Docker registry authentication
+	Notification NotificationConfig `yaml:"notification"`        // Notification configuration
+	Providers    *ProvidersConfig   `yaml:"providers,omitempty"` // Providers configuration (optional)
+	Novita       NovitaConfig       `yaml:"novita"`              // Novita serverless configuration
 }
 
 // ServerConfig server configuration
 type ServerConfig struct {
-	Port   int    `yaml:"port"`
-	Mode   string `yaml:"mode"`    // debug, release
-	APIKey string `yaml:"api_key"` // API key for worker authentication (optional, if empty, auth is disabled)
+	Port    int    `yaml:"port"`
+	Mode    string `yaml:"mode"`     // debug, release
+	APIKey  string `yaml:"api_key"`  // API key for worker authentication (optional, if empty, auth is disabled)
+	BaseURL string `yaml:"base_url"` // Base URL for the server
 }
 
 // RedisConfig Redis configuration
@@ -80,19 +82,20 @@ type LoggerConfig struct {
 // LoggerFileConfig logger file configuration
 type LoggerFileConfig struct {
 	Path       string `yaml:"path"`
-	MaxSize    int    `yaml:"max_size"`     // MB per file (default: 100)
-	MaxBackups int    `yaml:"max_backups"`  // max backup files (default: 3)
-	MaxAge     int    `yaml:"max_age"`      // days to keep (default: 7)
-	Compress   bool   `yaml:"compress"`     // compress rotated files (default: false)
+	MaxSize    int    `yaml:"max_size"`    // MB per file (default: 100)
+	MaxBackups int    `yaml:"max_backups"` // max backup files (default: 3)
+	MaxAge     int    `yaml:"max_age"`     // days to keep (default: 7)
+	Compress   bool   `yaml:"compress"`    // compress rotated files (default: false)
 }
 
 // K8sConfig K8s configuration
 type K8sConfig struct {
-	Enabled    bool       `yaml:"enabled"`     // whether to enable K8s features
-	Namespace  string     `yaml:"namespace"`   // K8s namespace
-	Platform   string     `yaml:"platform"`    // Platform type: generic, aliyun-ack, aws-eks
-	ConfigDir  string     `yaml:"config_dir"`  // Configuration directory (specs.yaml and templates)
-	AWS        *AWSConfig `yaml:"aws,omitempty"` // AWS configuration (for aws-eks platform)
+	Enabled   bool              `yaml:"enabled"`              // whether to enable K8s features
+	Namespace string            `yaml:"namespace"`            // K8s namespace
+	Platform  string            `yaml:"platform"`             // Platform type: generic, aliyun-ack, aws-eks
+	ConfigDir string            `yaml:"config_dir"`           // Configuration directory (specs.yaml and templates)
+	GlobalEnv map[string]string `yaml:"global_env,omitempty"` // Global environment variables for all deployments
+	AWS       *AWSConfig        `yaml:"aws,omitempty"`        // AWS configuration (for aws-eks platform)
 }
 
 // AWSConfig AWS configuration
@@ -135,6 +138,15 @@ type DockerRegistryAuth struct {
 // NotificationConfig Notification configuration
 type NotificationConfig struct {
 	FeishuWebhookURL string `yaml:"feishu_webhook_url"` // Feishu (Lark) webhook URL
+}
+
+// NovitaConfig Novita serverless configuration
+type NovitaConfig struct {
+	Enabled      bool   `yaml:"enabled"`       // Whether to enable Novita provider
+	APIKey       string `yaml:"api_key"`       // Novita API key (Bearer token)
+	BaseURL      string `yaml:"base_url"`      // API base URL, default: https://api.novita.ai
+	ConfigDir    string `yaml:"config_dir"`    // Configuration directory (specs.yaml and templates)
+	PollInterval int    `yaml:"poll_interval"` // Poll interval for status updates (seconds, default: 10)
 }
 
 // Init initializes configuration

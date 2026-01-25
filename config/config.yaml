@@ -2,6 +2,7 @@ server:
   port: 8080
   mode: debug  # debug or release
   api_key: test
+  base_url: http://localhost:8080
 
 redis:
   addr: 127.0.0.1:6379
@@ -50,6 +51,7 @@ k8s:
   namespace: wavespeed-test           # K8s namespace
   platform: aliyun-ack           # Platform type: generic, aliyun-ack, aws-eks
   config_dir: ./config           # Configuration directory (contains specs.yaml and templates/)
+  # global_env: {}               # Optional: override default environment variables
 
 autoscaler:
   enabled: true                 # Enable autoscaling
@@ -61,6 +63,15 @@ autoscaler:
 
 # Storage providers configuration
 providers:
+  deployment: k8s            # Deployment provider: k8s, docker, novita
   metadata: mysql               # Metadata storage: mysql (persistent), redis (ephemeral)
   # MySQL stores: endpoints, tasks, autoscaler configs, scaling events
   # Redis stores: worker heartbeats, task queues, distributed locks, cache
+
+# Novita Serverless Configuration
+novita:
+  enabled: false  # Enable Novita serverless provider
+  api_key: ""     # Your Novita API key (Bearer token)
+  base_url: "https://api.novita.ai"  # Novita API base URL
+  config_dir: "./config"  # Configuration directory (contains specs.yaml and templates/)
+  poll_interval: 10  # Poll interval for status updates (seconds, default: 10)

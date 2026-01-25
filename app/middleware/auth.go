@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 
 	"waverless/pkg/config"
 	"waverless/pkg/logger"
@@ -24,6 +25,7 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		// Get token from Authorization header
 		authHeader := c.GetHeader("Authorization")
+		authHeader = strings.TrimPrefix(authHeader, "Bearer ")
 
 		// Validate token
 		if authHeader != expectedAPIKey {

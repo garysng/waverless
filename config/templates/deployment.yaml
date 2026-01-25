@@ -64,23 +64,19 @@ spec:
         - containerPort: {{.ContainerPort}}
           protocol: TCP
         env:
-        - name: RUNPOD_ENDPOINT_ID
-          value: {{.Endpoint}}
-        - name: RUNPOD_PING_INTERVAL
-          value: "10000"
-        - name: RUNPOD_WEBHOOK_GET_JOB
-          value: http://waverless-svc/v2/{{.Endpoint}}/job-take/$ID?
-        - name: RUNPOD_WEBHOOK_PING
-          value: http://waverless-svc/v2/{{.Endpoint}}/ping/$RUNPOD_POD_ID
-        - name: RUNPOD_WEBHOOK_POST_OUTPUT
-          value: http://waverless-svc/v2/{{.Endpoint}}/job-done/$RUNPOD_POD_ID/$ID?
-        - name: RUNPOD_WEBHOOK_JOB_STREAM
-          value: http://waverless-svc/v2/{{.Endpoint}}/job-stream/$RUNPOD_POD_ID/$ID?
         - name: RUNPOD_POD_ID
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
         - name: RUNPOD_POD_HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: WAVERLESS_POD_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: WAVERLESS_POD_HOSTNAME
           valueFrom:
             fieldRef:
               fieldPath: metadata.name

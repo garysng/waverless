@@ -9,7 +9,7 @@ import (
 	"waverless/internal/model"
 	"waverless/pkg/config"
 	"waverless/pkg/constants"
-	"waverless/pkg/deploy/k8s"
+	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
 	"waverless/pkg/store/mysql"
 	mysqlModel "waverless/pkg/store/mysql/model"
@@ -21,15 +21,15 @@ type WorkerService struct {
 	taskRepo           *mysql.TaskRepository
 	taskService        *TaskService
 	workerEventService *WorkerEventService
-	k8sDeployProvider  *k8s.K8sDeploymentProvider
+	deployProvider     interfaces.DeploymentProvider
 }
 
 // NewWorkerService creates a new Worker service
-func NewWorkerService(workerRepo *mysql.WorkerRepository, taskRepo *mysql.TaskRepository, k8sDeployProvider *k8s.K8sDeploymentProvider) *WorkerService {
+func NewWorkerService(workerRepo *mysql.WorkerRepository, taskRepo *mysql.TaskRepository, deployProvider interfaces.DeploymentProvider) *WorkerService {
 	return &WorkerService{
-		workerRepo:        workerRepo,
-		taskRepo:          taskRepo,
-		k8sDeployProvider: k8sDeployProvider,
+		workerRepo:     workerRepo,
+		taskRepo:       taskRepo,
+		deployProvider: deployProvider,
 	}
 }
 
@@ -111,8 +111,8 @@ func (s *WorkerService) PullJobs(ctx context.Context, req *model.JobPullRequest,
 	}
 
 	// Safety check: verify pod is not terminating
-	if s.k8sDeployProvider != nil {
-		isTerminating, err := s.k8sDeployProvider.IsPodTerminating(ctx, worker.PodName)
+	if s.deployProvider != nil {
+		isTerminating, err := s.deployProvider.IsPodTerminating(ctx, worker.PodName)
 		if err == nil && isTerminating {
 			logger.WarnCtx(ctx, "🛡️ Pod %s is terminating, marking as DRAINING", worker.PodName)
 			s.workerRepo.UpdateStatus(ctx, worker.WorkerID, constants.WorkerStatusDraining.String())

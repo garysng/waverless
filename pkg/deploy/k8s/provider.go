@@ -24,7 +24,37 @@ func NewK8sDeploymentProvider(cfg *config.Config) (interfaces.DeploymentProvider
 		return nil, fmt.Errorf("k8s is not enabled in config")
 	}
 
-	manager, err := NewManager(cfg.K8s.Namespace, cfg.K8s.Platform, cfg.K8s.ConfigDir)
+	// Build globalEnv with defaults, then merge config overrides
+	globalEnv := map[string]string{
+		// RunPod compatible environment variables (for runpod-python SDK)
+		"RUNPOD_ENDPOINT_ID":         "{{.Endpoint}}",
+		"RUNPOD_PING_INTERVAL":       "10000",
+		"RUNPOD_WEBHOOK_GET_JOB":     "http://waverless-svc/v2/{{.Endpoint}}/job-take/$ID?",
+		"RUNPOD_WEBHOOK_PING":        "http://waverless-svc/v2/{{.Endpoint}}/ping/$RUNPOD_POD_ID",
+		"RUNPOD_WEBHOOK_POST_OUTPUT": "http://waverless-svc/v2/{{.Endpoint}}/job-done/$RUNPOD_POD_ID/$ID?",
+		"RUNPOD_WEBHOOK_POST_STREAM": "http://waverless-svc/v2/{{.Endpoint}}/job-stream/$RUNPOD_POD_ID/$ID?",
+		// Waverless native environment variables (for wavespeed-python SDK)
+		"WAVERLESS_ENDPOINT_ID":         "{{.Endpoint}}",
+		"WAVERLESS_PING_INTERVAL":       "10000",
+		"WAVERLESS_WEBHOOK_GET_JOB":     "http://waverless-svc/v2/{{.Endpoint}}/job-take/$ID?",
+		"WAVERLESS_WEBHOOK_PING":        "http://waverless-svc/v2/{{.Endpoint}}/ping/$WAVERLESS_POD_ID",
+		"WAVERLESS_WEBHOOK_POST_OUTPUT": "http://waverless-svc/v2/{{.Endpoint}}/job-done/$WAVERLESS_POD_ID/$ID?",
+		"WAVERLESS_WEBHOOK_POST_STREAM": "http://waverless-svc/v2/{{.Endpoint}}/job-stream/$WAVERLESS_POD_ID/$ID?",
+	}
+
+	// Merge config overrides (config takes precedence)
+	for k, v := range cfg.K8s.GlobalEnv {
+		globalEnv[k] = v
+	}
+
+	// Inject server api_key
+	if cfg.Server.APIKey != "" {
+		globalEnv["WAVERLESS_API_KEY"] = cfg.Server.APIKey
+		globalEnv["RUNPOD_AI_API_KEY"] = cfg.Server.APIKey
+		globalEnv["RUNPOD_API_KEY"] = cfg.Server.APIKey
+	}
+
+	manager, err := NewManager(cfg.K8s.Namespace, cfg.K8s.Platform, cfg.K8s.ConfigDir, globalEnv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create k8s manager: %w", err)
 	}
@@ -306,11 +336,6 @@ func (p *K8sDeploymentProvider) IsPodDraining(ctx context.Context, podName strin
 // This is used as a safety net to prevent Terminating pods from pulling tasks
 func (p *K8sDeploymentProvider) IsPodTerminating(ctx context.Context, podName string) (bool, error) {
 	return p.manager.IsPodTerminating(ctx, podName)
-}
-
-// MarkPodsAsDraining 标记Pod为排空状态
-func (p *K8sDeploymentProvider) MarkPodsAsDraining(ctx context.Context, endpoint string, count int) error {
-	return p.manager.MarkPodsAsDraining(ctx, endpoint, count)
 }
 
 // MarkPodDraining marks a specific pod as draining (for smart scale-down)

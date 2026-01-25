@@ -78,6 +78,7 @@ type Manager struct {
 	platform      Platform
 	specManager   *SpecManager
 	renderer      *TemplateRenderer
+	globalEnv     map[string]string
 
 	informerFactory  informers.SharedInformerFactory
 	deploymentLister appslisters.DeploymentLister
@@ -119,7 +120,7 @@ type DeploymentSpecChangeCallback func(endpoint string)
 type DeploymentStatusChangeCallback func(endpoint string, deployment *appsv1.Deployment)
 
 // NewManager creates a K8s manager
-func NewManager(namespace, platformName, configDir string) (*Manager, error) {
+func NewManager(namespace, platformName, configDir string, globalEnv map[string]string) (*Manager, error) {
 	// Create K8s client
 	var config *rest.Config
 	var err error
@@ -187,6 +188,7 @@ func NewManager(namespace, platformName, configDir string) (*Manager, error) {
 		platform:                      platform,
 		specManager:                   specManager,
 		renderer:                      renderer,
+		globalEnv:                     globalEnv,
 		informerFactory:               informerFactory,
 		deploymentLister:              deploymentInformer.Lister(),
 		podLister:                     podInformer.Lister(),
@@ -455,7 +457,7 @@ func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) 
 	if ctx.IsGpu {
 		var maxGpu int
 		fmt.Sscanf(spec.Resources.GPU, "%d", &maxGpu)
-		
+
 		if req.GpuCount > 0 {
 			// Validate: requested gpuCount must not exceed spec's max
 			if req.GpuCount > maxGpu {
@@ -466,7 +468,7 @@ func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) 
 			// Default to 1 GPU if not specified
 			ctx.GpuCount = 1
 		}
-		
+
 		// Scale resources by gpuCount (spec defines per-GPU resources)
 		ctx.CpuLimit = multiplyResource(spec.Resources.CPU, ctx.GpuCount)
 		ctx.MemoryRequest = multiplyResource(spec.Resources.Memory, ctx.GpuCount)
@@ -510,11 +512,15 @@ func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) 
 	// Enable ptrace capability (only for fixed resource pools)
 	ctx.EnablePtrace = req.EnablePtrace
 
-	// Environment variables
-	if req.Env != nil {
-		ctx.Env = req.Env
-	} else {
-		ctx.Env = make(map[string]string)
+	// Environment variables: merge globalEnv with request env (request takes precedence)
+	ctx.Env = make(map[string]string)
+	for k, v := range m.globalEnv {
+		// Replace placeholders in globalEnv values
+		v = strings.ReplaceAll(v, "{{.Endpoint}}", req.Endpoint)
+		ctx.Env[k] = v
+	}
+	for k, v := range req.Env {
+		ctx.Env[k] = v
 	}
 
 	return ctx, nil
@@ -2113,11 +2119,11 @@ func (m *Manager) UpdateDeployment(ctx context.Context, endpoint string, specNam
 	if env != nil && len(deployment.Spec.Template.Spec.Containers) > 0 {
 		container := &deployment.Spec.Template.Spec.Containers[0]
 
-		// Separate system env vars (RUNPOD_*) from custom env vars
+		// Separate system env vars from custom env vars
 		var systemEnvVars []corev1.EnvVar
 		for _, envVar := range container.Env {
-			// Keep system env vars (those starting with RUNPOD_)
-			if len(envVar.Name) >= 7 && envVar.Name[:7] == "RUNPOD_" {
+			// Keep system env vars (RUNPOD_* and WAVERLESS_* prefixes, or those with valueFrom)
+			if strings.HasPrefix(envVar.Name, "RUNPOD_") || strings.HasPrefix(envVar.Name, "WAVERLESS_") || envVar.ValueFrom != nil {
 				systemEnvVars = append(systemEnvVars, envVar)
 			}
 		}
@@ -2216,57 +2222,6 @@ func (m *Manager) IsPodTerminating(ctx context.Context, podName string) (bool, e
 
 	// Check if pod has DeletionTimestamp set (K8s marks pod for deletion)
 	return pod.DeletionTimestamp != nil, nil
-}
-
-// MarkPodsAsDraining marks the oldest N pods of an endpoint as draining
-// Uses Informer cache for listing pods to reduce API server pressure
-func (m *Manager) MarkPodsAsDraining(ctx context.Context, endpoint string, count int) error {
-	if count <= 0 {
-		return nil
-	}
-
-	// List pods from Informer cache
-	labelSelector := labels.SelectorFromSet(labels.Set{"waverless.io/endpoint": endpoint})
-	cachedPods, err := m.podLister.Pods(m.namespace).List(labelSelector)
-	if err != nil {
-		return fmt.Errorf("failed to list pods from cache: %v", err)
-	}
-
-	if len(cachedPods) == 0 {
-		return nil
-	}
-
-	// Sort by creation timestamp (oldest first)
-	// We'll select the oldest pods to drain
-	oldestPods := make([]*corev1.Pod, 0, count)
-	for i := 0; i < len(cachedPods) && i < count; i++ {
-		pod := cachedPods[i]
-
-		// Skip pods already draining
-		if pod.Labels != nil {
-			if draining, exists := pod.Labels["waverless.io/draining"]; exists && draining == "true" {
-				continue
-			}
-		}
-
-		oldestPods = append(oldestPods, pod)
-	}
-
-	// Mark pods as draining (must use API for updates)
-	pods := m.client.CoreV1().Pods(m.namespace)
-	for _, pod := range oldestPods {
-		if pod.Labels == nil {
-			pod.Labels = make(map[string]string)
-		}
-		pod.Labels["waverless.io/draining"] = "true"
-
-		_, err := pods.Update(ctx, pod, metav1.UpdateOptions{})
-		if err != nil {
-			return fmt.Errorf("failed to update pod %s: %v", pod.Name, err)
-		}
-	}
-
-	return nil
 }
 
 // MarkPodDraining marks a specific pod as draining (for smart scale-down)
@@ -2529,15 +2484,15 @@ func multiplyResource(resource string, factor int) string {
 	if factor <= 1 || resource == "" {
 		return resource
 	}
-	
+
 	// Try to parse as number with unit suffix
 	var value int
 	var unit string
-	
+
 	n, _ := fmt.Sscanf(resource, "%d%s", &value, &unit)
 	if n >= 1 {
 		return fmt.Sprintf("%d%s", value*factor, unit)
 	}
-	
+
 	return resource
 }

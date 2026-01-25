@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { message, Popconfirm, Modal, Form, Input, InputNumber, Select, Switch, Collapse, Drawer, Tabs, Tooltip, Timeline } from 'antd';
+import { message, Popconfirm, Modal, Form, Input, InputNumber, Select, Switch, Collapse, Drawer, Tabs, Tooltip, Timeline, Button } from 'antd';
 import {
   ArrowLeftOutlined, DeleteOutlined, ReloadOutlined, EditOutlined,
   PlayCircleOutlined, CopyOutlined, PlusOutlined, SyncOutlined,
@@ -1114,18 +1114,54 @@ const AutoScalerPanel = ({ endpoint, onSave, saving }: { endpoint: AppInfo; onSa
 
 const EnvVarsPanel = ({ endpoint, name, onSave, saving }: { endpoint: AppInfo; name: string; onSave: (d: UpdateDeploymentRequest) => void; saving: boolean }) => {
   const [envVars, setEnvVars] = useState<{ key: string; value: string }[]>([]);
+  const [mode, setMode] = useState<'form' | 'text'>('form');
+  const [envText, setEnvText] = useState('');
   useEffect(() => { const vars = endpoint.env ? Object.entries(endpoint.env).map(([key, value]) => ({ key, value })) : []; setEnvVars(vars.length > 0 ? vars : [{ key: '', value: '' }]); }, [endpoint]);
-  const handleSave = () => { const env: Record<string, string> = {}; envVars.filter(v => v.key && v.value).forEach(v => { env[v.key] = v.value; }); onSave({ endpoint: name, env }); };
+  const handleSave = () => {
+    const env: Record<string, string> = {};
+    if (mode === 'text') {
+      envText.split('\n').filter(line => line.includes('=')).forEach(line => {
+        const idx = line.indexOf('=');
+        const key = line.slice(0, idx).trim();
+        const value = line.slice(idx + 1).trim();
+        if (key) env[key] = value;
+      });
+    } else {
+      envVars.filter(v => v.key).forEach(v => { env[v.key] = v.value || ''; });
+    }
+    onSave({ endpoint: name, env });
+  };
+  const toggleMode = () => {
+    if (mode === 'form') {
+      setEnvText(envVars.filter(v => v.key).map(v => `${v.key}=${v.value || ''}`).join('\n'));
+    } else {
+      const vars = envText.split('\n').filter(line => line.includes('=')).map(line => {
+        const idx = line.indexOf('=');
+        return { key: line.slice(0, idx).trim(), value: line.slice(idx + 1).trim() };
+      });
+      setEnvVars(vars.length ? vars : [{ key: '', value: '' }]);
+    }
+    setMode(mode === 'form' ? 'text' : 'form');
+  };
   return (
     <div>
-      {envVars.map((v, i) => (
-        <div key={i} className="flex gap-2 mb-2">
-          <Input value={v.key} onChange={e => { const n = [...envVars]; n[i].key = e.target.value; setEnvVars(n); }} placeholder="KEY" style={{ flex: 1 }} />
-          <Input value={v.value} onChange={e => { const n = [...envVars]; n[i].value = e.target.value; setEnvVars(n); }} placeholder="value" style={{ flex: 2 }} />
-          <button type="button" className="btn btn-outline btn-icon" onClick={() => setEnvVars(envVars.filter((_, idx) => idx !== i))}><DeleteOutlined /></button>
-        </div>
-      ))}
-      <button type="button" className="btn btn-outline mb-3" onClick={() => setEnvVars([...envVars, { key: '', value: '' }])}><PlusOutlined /> Add</button>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+        <Button type="link" size="small" onClick={toggleMode}>{mode === 'form' ? 'Switch to Text' : 'Switch to Form'}</Button>
+      </div>
+      {mode === 'text' ? (
+        <Input.TextArea value={envText} onChange={e => setEnvText(e.target.value)} placeholder="KEY=value&#10;ANOTHER_KEY=another value" rows={8} style={{ fontFamily: 'monospace', marginBottom: 12 }} />
+      ) : (
+        <>
+          {envVars.map((v, i) => (
+            <div key={i} className="flex gap-2 mb-2">
+              <Input value={v.key} onChange={e => { const n = [...envVars]; n[i].key = e.target.value; setEnvVars(n); }} placeholder="KEY" style={{ flex: 1 }} />
+              <Input value={v.value} onChange={e => { const n = [...envVars]; n[i].value = e.target.value; setEnvVars(n); }} placeholder="value" style={{ flex: 2 }} />
+              <button type="button" className="btn btn-outline btn-icon" onClick={() => setEnvVars(envVars.filter((_, idx) => idx !== i))}><DeleteOutlined /></button>
+            </div>
+          ))}
+          <button type="button" className="btn btn-outline mb-3" onClick={() => setEnvVars([...envVars, { key: '', value: '' }])}><PlusOutlined /> Add</button>
+        </>
+      )}
       <div><button type="button" className="btn btn-blue" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button></div>
     </div>
   );
