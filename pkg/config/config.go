@@ -90,11 +90,12 @@ type LoggerFileConfig struct {
 
 // K8sConfig K8s configuration
 type K8sConfig struct {
-	Enabled   bool       `yaml:"enabled"`       // whether to enable K8s features
-	Namespace string     `yaml:"namespace"`     // K8s namespace
-	Platform  string     `yaml:"platform"`      // Platform type: generic, aliyun-ack, aws-eks
-	ConfigDir string     `yaml:"config_dir"`    // Configuration directory (specs.yaml and templates)
-	AWS       *AWSConfig `yaml:"aws,omitempty"` // AWS configuration (for aws-eks platform)
+	Enabled   bool              `yaml:"enabled"`              // whether to enable K8s features
+	Namespace string            `yaml:"namespace"`            // K8s namespace
+	Platform  string            `yaml:"platform"`             // Platform type: generic, aliyun-ack, aws-eks
+	ConfigDir string            `yaml:"config_dir"`           // Configuration directory (specs.yaml and templates)
+	GlobalEnv map[string]string `yaml:"global_env,omitempty"` // Global environment variables for all deployments
+	AWS       *AWSConfig        `yaml:"aws,omitempty"`        // AWS configuration (for aws-eks platform)
 }
 
 // AWSConfig AWS configuration

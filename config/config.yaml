@@ -51,6 +51,7 @@ k8s:
   namespace: wavespeed-test           # K8s namespace
   platform: aliyun-ack           # Platform type: generic, aliyun-ack, aws-eks
   config_dir: ./config           # Configuration directory (contains specs.yaml and templates/)
+  # global_env: {}               # Optional: override default environment variables
 
 autoscaler:
   enabled: true                 # Enable autoscaling

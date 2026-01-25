@@ -138,7 +138,7 @@ func (app *Application) initServices() error {
 	app.workerService = service.NewWorkerService(
 		app.mysqlRepo.Worker,
 		app.mysqlRepo.Task,
-		k8sDeployProvider,
+		app.deploymentProvider,
 	)
 
 	// Initialize worker event service for monitoring

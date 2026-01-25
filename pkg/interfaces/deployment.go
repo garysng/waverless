@@ -62,6 +62,9 @@ type DeploymentProvider interface {
 
 	// GetDefaultEnv retrieves default environment variables from wavespeed-config ConfigMap
 	GetDefaultEnv(ctx context.Context) (map[string]string, error)
+
+	// IsPodTerminating checks if a worker/pod is terminating
+	IsPodTerminating(ctx context.Context, podName string) (bool, error)
 }
 
 // ReplicaEvent represents Deployment replica change event

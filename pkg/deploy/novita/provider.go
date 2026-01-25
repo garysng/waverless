@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,6 +46,7 @@ type NovitaDeploymentProvider struct {
 	client        clientInterface
 	config        *config.NovitaConfig
 	specsConfig   *SpecsConfig
+	globalEnv     map[string]string
 	endpointCache sync.Map // Cache endpoint ID mappings: name -> endpointID
 
 	// WatchReplicas support
@@ -81,10 +83,25 @@ func NewNovitaDeploymentProvider(cfg *config.Config) (interfaces.DeploymentProvi
 		pollInterval = time.Duration(cfg.Novita.PollInterval) * time.Second
 	}
 
+	// Build globalEnv with defaults
+	globalEnv := map[string]string{
+		// Waverless native environment variables (for wavespeed-python SDK)
+		"WAVERLESS_ENDPOINT_ID":         "{{.Endpoint}}",
+		"WAVERLESS_PING_INTERVAL":       "10000",
+		"WAVERLESS_WEBHOOK_GET_JOB":     cfg.Server.BaseURL + "/v2/{{.Endpoint}}/job-take/$ID?",
+		"WAVERLESS_WEBHOOK_PING":        cfg.Server.BaseURL + "/v2/{{.Endpoint}}/ping/$WAVERLESS_POD_ID",
+		"WAVERLESS_WEBHOOK_POST_OUTPUT": cfg.Server.BaseURL + "/v2/{{.Endpoint}}/job-done/$WAVERLESS_POD_ID/$ID?",
+		"WAVERLESS_WEBHOOK_POST_STREAM": cfg.Server.BaseURL + "/v2/{{.Endpoint}}/job-stream/$WAVERLESS_POD_ID/$ID?",
+		"WAVERLESS_API_KEY":             cfg.Server.APIKey,
+		EnvKeyNovitaProvider:            EnvValueTrue,
+		EnvKeyProviderType:              EnvValueNovita,
+	}
+
 	return &NovitaDeploymentProvider{
 		client:           client,
 		config:           &cfg.Novita,
 		specsConfig:      specsConfig,
+		globalEnv:        globalEnv,
 		replicaCallbacks: make(map[uint64]*replicaCallbackEntry),
 		watcherStopCh:    make(chan struct{}),
 		pollInterval:     pollInterval,
@@ -94,6 +111,18 @@ func NewNovitaDeploymentProvider(cfg *config.Config) (interfaces.DeploymentProvi
 // Deploy deploys an application to Novita serverless
 func (p *NovitaDeploymentProvider) Deploy(ctx context.Context, req *interfaces.DeployRequest) (*interfaces.DeployResponse, error) {
 	logger.Infof("Deploying endpoint %s to Novita", req.Endpoint)
+
+	// Merge globalEnv with request env (request takes precedence)
+	mergedEnv := make(map[string]string)
+	for k, v := range p.globalEnv {
+		// Replace placeholders
+		v = strings.ReplaceAll(v, "{{.Endpoint}}", req.Endpoint)
+		mergedEnv[k] = v
+	}
+	for k, v := range req.Env {
+		mergedEnv[k] = v
+	}
+	req.Env = mergedEnv
 
 	// Get spec from configuration
 	specInfo, err := p.specsConfig.GetSpec(req.SpecName)
@@ -629,4 +658,9 @@ func (p *NovitaDeploymentProvider) getEndpointID(ctx context.Context, endpoint s
 	}
 
 	return "", fmt.Errorf("endpoint %s not found in Novita", endpoint)
+}
+
+// IsPodTerminating checks if a worker is terminating (Novita doesn't have this concept)
+func (p *NovitaDeploymentProvider) IsPodTerminating(ctx context.Context, podName string) (bool, error) {
+	return false, nil
 }

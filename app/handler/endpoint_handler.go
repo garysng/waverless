@@ -15,7 +15,6 @@ import (
 
 	"waverless/internal/service"
 	endpointsvc "waverless/internal/service/endpoint"
-	"waverless/pkg/config"
 	"waverless/pkg/deploy/k8s"
 	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
@@ -876,14 +875,6 @@ func (h *EndpointHandler) GetDefaultEnv(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	// 拼接下waverless python sdk 的环境变量
-	env["WAVERLESS_API_KEY"] = config.GlobalConfig.Server.APIKey
-	env["WAVERLESS_PING_INTERVAL"] = "10000"
-	env["WAVERLESS_WEBHOOK_GET_JOB"] = config.GlobalConfig.Server.BaseURL + "/v2/$ENDPOINT_ID/job-take/$WAVERLESS_POD_ID?"
-	env["WAVERLESS_WEBHOOK_PING"] = config.GlobalConfig.Server.BaseURL + "/v2/$ENDPOINT_ID/ping/$WAVERLESS_POD_ID"
-	env["WAVERLESS_WEBHOOK_POST_OUTPUT"] = config.GlobalConfig.Server.BaseURL + "/v2/$ENDPOINT_ID/job-done/$WAVERLESS_POD_ID/$ID?"
-	env["WAVERLESS_POD_ID"] = "$WAVERLESS_POD_ID"
 
 	c.JSON(http.StatusOK, env)
 }
