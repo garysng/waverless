@@ -26,9 +26,10 @@ type Config struct {
 
 // ServerConfig server configuration
 type ServerConfig struct {
-	Port   int    `yaml:"port"`
-	Mode   string `yaml:"mode"`    // debug, release
-	APIKey string `yaml:"api_key"` // API key for worker authentication (optional, if empty, auth is disabled)
+	Port    int    `yaml:"port"`
+	Mode    string `yaml:"mode"`     // debug, release
+	APIKey  string `yaml:"api_key"`  // API key for worker authentication (optional, if empty, auth is disabled)
+	BaseURL string `yaml:"base_url"` // Base URL for the server
 }
 
 // RedisConfig Redis configuration

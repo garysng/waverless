@@ -2,6 +2,7 @@ server:
   port: 8080
   mode: debug  # debug or release
   api_key: test
+  base_url: http://localhost:8080
 
 redis:
   addr: 127.0.0.1:6379
@@ -61,6 +62,7 @@ autoscaler:
 
 # Storage providers configuration
 providers:
+  deployment: k8s            # Deployment provider: k8s, docker, novita
   metadata: mysql               # Metadata storage: mysql (persistent), redis (ephemeral)
   # MySQL stores: endpoints, tasks, autoscaler configs, scaling events
   # Redis stores: worker heartbeats, task queues, distributed locks, cache

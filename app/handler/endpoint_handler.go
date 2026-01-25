@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -13,6 +15,7 @@ import (
 
 	"waverless/internal/service"
 	endpointsvc "waverless/internal/service/endpoint"
+	"waverless/pkg/config"
 	"waverless/pkg/deploy/k8s"
 	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
@@ -60,6 +63,19 @@ func (h *EndpointHandler) CreateEndpoint(c *gin.Context) {
 	if req.TaskTimeout == 0 {
 		req.TaskTimeout = 3600
 	}
+
+	// Replace env placeholders for WAVERLESS keys only
+	if req.Env != nil {
+		podID := req.Endpoint + "-" + uuid.New().String()[:8]
+		for k, v := range req.Env {
+			if strings.Contains(k, "WAVERLESS") {
+				v = strings.ReplaceAll(v, "$ENDPOINT_ID", req.Endpoint)
+				v = strings.ReplaceAll(v, "$WAVERLESS_POD_ID", podID)
+				req.Env[k] = v
+			}
+		}
+	}
+
 	providerReq := &interfaces.DeployRequest{
 		Endpoint:     req.Endpoint,
 		SpecName:     req.SpecName,
@@ -860,6 +876,14 @@ func (h *EndpointHandler) GetDefaultEnv(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// 拼接下waverless python sdk 的环境变量
+	env["WAVERLESS_API_KEY"] = config.GlobalConfig.Server.APIKey
+	env["WAVERLESS_PING_INTERVAL"] = "10000"
+	env["WAVERLESS_WEBHOOK_GET_JOB"] = config.GlobalConfig.Server.BaseURL + "/v2/$ENDPOINT_ID/job-take/$WAVERLESS_POD_ID?"
+	env["WAVERLESS_WEBHOOK_PING"] = config.GlobalConfig.Server.BaseURL + "/v2/$ENDPOINT_ID/ping/$WAVERLESS_POD_ID"
+	env["WAVERLESS_WEBHOOK_POST_OUTPUT"] = config.GlobalConfig.Server.BaseURL + "/v2/$ENDPOINT_ID/job-done/$WAVERLESS_POD_ID/$ID?"
+	env["WAVERLESS_POD_ID"] = "$WAVERLESS_POD_ID"
 
 	c.JSON(http.StatusOK, env)
 }
