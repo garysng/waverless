@@ -1,6 +1,7 @@
 package novita
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,12 @@ import (
 const (
 	PlatformNovita = "novita"
 )
+
+// SpecRepositoryInterface defines the interface for spec repository
+type SpecRepositoryInterface interface {
+	GetSpec(ctx context.Context, name string) (*interfaces.SpecInfo, error)
+	ListSpecs(ctx context.Context) ([]*interfaces.SpecInfo, error)
+}
 
 // ResourceSpec 资源规格定义
 type ResourceSpec struct {
@@ -45,6 +52,7 @@ type PlatformConfig struct {
 type SpecsConfig struct {
 	specs     map[string]*ResourceSpec
 	configDir string
+	specRepo  SpecRepositoryInterface
 }
 
 // NewSpecsConfig creates a new specs configuration manager
@@ -58,17 +66,17 @@ func NewSpecsConfig(configDir string) (*SpecsConfig, error) {
 		configDir: configDir,
 	}
 
-	// Load specs from config file
+	// Load specs from config file as fallback
 	if err := sc.loadSpecs(); err != nil {
-		return nil, fmt.Errorf("failed to load Novita specs: %w", err)
-	}
-
-	// Ensure at least one spec is loaded
-	if len(sc.specs) == 0 {
-		return nil, fmt.Errorf("no Novita-compatible specs found in %s", filepath.Join(configDir, "specs.yaml"))
+		logger.Warnf("Failed to load Novita specs from file: %v", err)
 	}
 
 	return sc, nil
+}
+
+// SetSpecRepository sets the spec repository for database access
+func (sc *SpecsConfig) SetSpecRepository(repo SpecRepositoryInterface) {
+	sc.specRepo = repo
 }
 
 // SpecsFileConfig represents the structure of specs.yaml file
@@ -109,12 +117,18 @@ func (sc *SpecsConfig) loadSpecs() error {
 	return nil
 }
 
-// GetSpec returns a specific spec info by name
+// GetSpec returns a specific spec info by name (database first, then YAML fallback)
 func (sc *SpecsConfig) GetSpec(specName string) (*interfaces.SpecInfo, error) {
-	fmt.Printf("%v  ----------- %s \n", sc.specs, specName)
-	for k, sv := range sc.specs {
-		fmt.Printf("%s %v \n ", k, sv)
+	// Try database first
+	if sc.specRepo != nil {
+		dbSpec, err := sc.specRepo.GetSpec(context.Background(), specName)
+		if err == nil && dbSpec != nil {
+			return dbSpec, nil
+		}
+		logger.Warnf("Failed to get spec from database, falling back to YAML: %v", err)
 	}
+
+	// Fallback to YAML
 	resourceSpec, ok := sc.specs[specName]
 	if !ok {
 		return nil, fmt.Errorf("spec %s not found", specName)
@@ -123,9 +137,18 @@ func (sc *SpecsConfig) GetSpec(specName string) (*interfaces.SpecInfo, error) {
 	return sc.convertToSpecInfo(resourceSpec), nil
 }
 
-// ListSpecs returns all available spec infos
+// ListSpecs returns all available spec infos (database first, then YAML fallback)
 func (sc *SpecsConfig) ListSpecs() []*interfaces.SpecInfo {
-	// Return a copy to prevent external modification
+	// Try database first
+	if sc.specRepo != nil {
+		dbSpecs, err := sc.specRepo.ListSpecs(context.Background())
+		if err == nil && len(dbSpecs) > 0 {
+			return dbSpecs
+		}
+		logger.Warnf("Failed to list specs from database, falling back to YAML: %v", err)
+	}
+
+	// Fallback to YAML
 	specs := make([]*interfaces.SpecInfo, 0, len(sc.specs))
 	for _, spec := range sc.specs {
 		specs = append(specs, sc.convertToSpecInfo(spec))

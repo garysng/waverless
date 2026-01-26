@@ -131,6 +131,11 @@ func (app *Application) initServices() error {
 	if app.config.Novita.Enabled {
 		if novitaProv, ok := app.deploymentProvider.(*novita.NovitaDeploymentProvider); ok {
 			novitaDeployProvider = novitaProv
+			// Inject spec service for database access
+			if app.specService != nil {
+				novitaDeployProvider.SetSpecRepository(app.specService)
+				logger.InfoCtx(app.ctx, "Spec service injected into Novita provider - specs will be read from database first")
+			}
 		}
 	}
 
