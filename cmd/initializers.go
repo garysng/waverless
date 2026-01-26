@@ -118,26 +118,6 @@ func (app *Application) initProviders() error {
 
 // initServices initializes service layer
 func (app *Application) initServices() error {
-	// Get K8s deployment provider for draining check
-	var k8sDeployProvider *k8s.K8sDeploymentProvider
-	if app.config.K8s.Enabled {
-		if k8sProv, ok := app.deploymentProvider.(*k8s.K8sDeploymentProvider); ok {
-			k8sDeployProvider = k8sProv
-		}
-	}
-
-	// Get Novita deployment provider for status sync
-	var novitaDeployProvider *novita.NovitaDeploymentProvider
-	if app.config.Novita.Enabled {
-		if novitaProv, ok := app.deploymentProvider.(*novita.NovitaDeploymentProvider); ok {
-			novitaDeployProvider = novitaProv
-			// Inject spec service for database access
-			if app.specService != nil {
-				novitaDeployProvider.SetSpecRepository(app.specService)
-				logger.InfoCtx(app.ctx, "Spec service injected into Novita provider - specs will be read from database first")
-			}
-		}
-	}
 
 	// Initialize worker service (MySQL-based)
 	app.workerService = service.NewWorkerService(
@@ -187,6 +167,27 @@ func (app *Application) initServices() error {
 
 	// Initialize monitoring collector
 	app.monitoringCollector = monitoring.NewCollector(app.mysqlRepo.Monitoring, app.mysqlRepo.Worker, app.mysqlRepo.Task)
+
+	// Get K8s deployment provider for draining check
+	var k8sDeployProvider *k8s.K8sDeploymentProvider
+	if app.config.K8s.Enabled {
+		if k8sProv, ok := app.deploymentProvider.(*k8s.K8sDeploymentProvider); ok {
+			k8sDeployProvider = k8sProv
+		}
+	}
+
+	// Get Novita deployment provider for status sync
+	var novitaDeployProvider *novita.NovitaDeploymentProvider
+	if app.config.Novita.Enabled {
+		if novitaProv, ok := app.deploymentProvider.(*novita.NovitaDeploymentProvider); ok {
+			novitaDeployProvider = novitaProv
+			// Inject spec service for database access
+			if app.specService != nil {
+				novitaDeployProvider.SetSpecRepository(app.specService)
+				logger.InfoCtx(app.ctx, "Spec service injected into Novita provider - specs will be read from database first")
+			}
+		}
+	}
 
 	// Setup Pod watcher for graceful shutdown (when K8s is enabled)
 	if err := app.setupPodWatcher(k8sDeployProvider); err != nil {

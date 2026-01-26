@@ -124,11 +124,41 @@ const (
 	MessageWatchNotSupported = "WatchReplicas is implemented using polling mechanism"
 )
 
+// extractNovitaConfig extracts PlatformConfig from spec.Platforms
+func extractNovitaConfig(spec *interfaces.SpecInfo) (PlatformConfig, error) {
+	platformData, ok := spec.Platforms[PlatformNovita]
+	if !ok {
+		return PlatformConfig{}, fmt.Errorf("novita config not found for spec %s (available platforms: %v)", spec.Name, spec.Platforms)
+	}
+
+	// Direct type assertion
+	if cfg, ok := platformData.(PlatformConfig); ok {
+		return cfg, nil
+	}
+
+	// Handle map[string]interface{} from database
+	if m, ok := platformData.(map[string]interface{}); ok {
+		cfg := PlatformConfig{}
+		if v, ok := m["productId"].(string); ok {
+			cfg.ProductID = v
+		}
+		if v, ok := m["region"].(string); ok {
+			cfg.Region = v
+		}
+		if v, ok := m["cudaVersion"].(string); ok {
+			cfg.CudaVersion = v
+		}
+		return cfg, nil
+	}
+
+	return PlatformConfig{}, fmt.Errorf("invalid novita config type %T for spec %s", platformData, spec.Name)
+}
+
 // mapDeployRequestToNovita converts Waverless DeployRequest to Novita CreateEndpointRequest
 func mapDeployRequestToNovita(req *interfaces.DeployRequest, spec *interfaces.SpecInfo) (*CreateEndpointRequest, error) {
-	novitaConfig, ok := spec.Platforms[PlatformNovita].(PlatformConfig)
-	if !ok {
-		return nil, fmt.Errorf("novita config not found for spec %s", spec.Name)
+	novitaConfig, err := extractNovitaConfig(spec)
+	if err != nil {
+		return nil, err
 	}
 	gpuNum, err := strconv.ParseInt(spec.Resources.GPU, 10, 64)
 	if err != nil {
