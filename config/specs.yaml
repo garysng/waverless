@@ -92,3 +92,35 @@ specs:
             operator: "Equal"
             value: "gpu"
             effect: "NoSchedule"
+
+  # Novita 5090 Single GPU
+  - name: "novita-5090-single"
+    displayName: "Novita 5090 1x GPU"
+    category: "gpu"
+    resourceType: "serverless"
+    resources:
+      gpu: "1"
+      gpuType: "NVIDIA GeForce RTX 5090"
+      cpu: "12"
+      memory: "50"
+      ephemeralStorage: "100"
+    platforms:
+      novita:
+        productId: "SL-serverless-3"  # Replace with actual Novita product ID
+        region: "us-dallas-nas-2"
+
+  # Novita 4090 Single GPU
+  - name: "novita-4090-single"
+    displayName: "Novita 4090 1x GPU"
+    category: "gpu"
+    resourceType: "serverless"
+    resources:
+      gpu: "1"
+      gpuType: "NVIDIA GeForce RTX 4090"
+      cpu: "8"
+      memory: "32"
+      ephemeralStorage: "50"
+    platforms:
+      novita:
+        productId: "1"  # Replace with actual Novita product ID
+        region: "us-dallas-nas-2"
