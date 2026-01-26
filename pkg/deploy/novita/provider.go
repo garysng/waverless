@@ -660,6 +660,11 @@ func (p *NovitaDeploymentProvider) getEndpointID(ctx context.Context, endpoint s
 	return "", fmt.Errorf("endpoint %s not found in Novita", endpoint)
 }
 
+// SetSpecRepository sets the spec repository for database access
+func (p *NovitaDeploymentProvider) SetSpecRepository(repo SpecRepositoryInterface) {
+	p.specsConfig.SetSpecRepository(repo)
+}
+
 // IsPodTerminating checks if a worker is terminating (Novita doesn't have this concept)
 func (p *NovitaDeploymentProvider) IsPodTerminating(ctx context.Context, podName string) (bool, error) {
 	return false, nil
