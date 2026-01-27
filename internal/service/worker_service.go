@@ -235,6 +235,9 @@ func (s *WorkerService) GetWorker(ctx context.Context, workerID string) (*model.
 func (s *WorkerService) GetWorkerByID(ctx context.Context, id int64) (*mysqlModel.Worker, error) {
 	return s.workerRepo.GetByID(ctx, id)
 }
+func (s *WorkerService) GetWorkerByWorkerID(ctx context.Context, workerID string) (*mysqlModel.Worker, error) {
+	return s.workerRepo.Get(ctx, workerID)
+}
 
 // GetWorkerByPodName finds a worker by its pod name
 func (s *WorkerService) GetWorkerByPodName(ctx context.Context, endpoint, podName string) (*model.Worker, error) {
