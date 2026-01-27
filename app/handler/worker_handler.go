@@ -3,7 +3,6 @@ package handler
 import (
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"waverless/internal/model"
@@ -119,7 +118,7 @@ func (h *WorkerHandler) PullJobs(c *gin.Context) {
 	// Parse jobs_in_progress: support both task ID list and count
 	jobsInProgress := c.QueryArray("job_id")
 	jobsInProgressCount := 0
-	
+
 	if len(jobsInProgress) == 0 {
 		// Fallback: check job_in_progress parameter (RunPod SDK compatibility)
 		if jobInProgressParam := c.Query("job_in_progress"); jobInProgressParam != "" {
@@ -406,26 +405,20 @@ func (h *WorkerHandler) GetWorkerYAML(c *gin.Context) {
 	c.String(http.StatusOK, yamlData)
 }
 
-// GetWorkerByID gets worker detail by database ID (regardless of status)
-// @Summary Get worker detail by ID
-// @Description Get worker detail by database ID, returns worker regardless of status
+// GetWorkerByID gets worker detail by worker ID
+// @Summary Get worker detail by worker ID
+// @Description Get worker detail by worker ID (e.g., "worker-abc123")
 // @Tags worker
 // @Produce json
-// @Param id path int true "Worker database ID"
+// @Param id path string true "Worker ID"
 // @Success 200 {object} model.Worker
 // @Failure 404 {object} map[string]string
 // @Router /api/v1/workers/:id [get]
 func (h *WorkerHandler) GetWorkerByID(c *gin.Context) {
 	ctx := c.Request.Context()
-	idStr := c.Param("id")
+	workerID := c.Param("id")
 
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid worker id"})
-		return
-	}
-
-	worker, err := h.workerService.GetWorkerByID(ctx, id)
+	worker, err := h.workerService.GetWorker(ctx, workerID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "worker not found"})
 		return
