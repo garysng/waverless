@@ -418,7 +418,7 @@ func (h *WorkerHandler) GetWorkerByID(c *gin.Context) {
 	ctx := c.Request.Context()
 	workerID := c.Param("id")
 
-	worker, err := h.workerService.GetWorker(ctx, workerID)
+	worker, err := h.workerService.GetWorkerByWorkerID(ctx, workerID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "worker not found"})
 		return
