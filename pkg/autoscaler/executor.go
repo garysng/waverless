@@ -18,9 +18,9 @@ type Executor struct {
 	deploymentProvider interfaces.DeploymentProvider
 	endpointService    *endpointsvc.Service
 	scalingEventRepo   *mysql.ScalingEventRepository
-	workerLister       interfaces.WorkerLister       // For smart scale-down
-	taskRepo           *mysql.TaskRepository         // For checking running tasks in database
-	k8sProvider        *k8s.K8sDeploymentProvider    // For pod draining & deletion
+	workerLister       interfaces.WorkerLister    // For smart scale-down
+	taskRepo           *mysql.TaskRepository      // For checking running tasks in database
+	k8sProvider        *k8s.K8sDeploymentProvider // For pod draining & deletion
 }
 
 // NewExecutor creates executor
@@ -171,6 +171,15 @@ func (e *Executor) scaleDown(ctx context.Context, decision *ScaleDecision) error
 	// Step 3: If no idle worker found, cannot safely scale down
 	if idleWorker == nil {
 		logger.WarnCtx(ctx, "no idle worker found for %s, skip scale down", decision.Endpoint)
+
+		// 🔧 Check if this is an orphaned endpoint (no deployment exists)
+		// If deployment doesn't exist and no idle workers, fix the database state
+		if e.isOrphanedEndpoint(ctx, decision) {
+			logger.WarnCtx(ctx, "🔧 detected orphaned endpoint %s: no deployment and no idle workers, fixing status", decision.Endpoint)
+			e.fixOrphanedEndpoint(ctx, decision)
+			return nil // Successfully fixed, no error
+		}
+
 		// Only record blocked event once per 5 minutes to avoid noise
 		recent, _ := e.scalingEventRepo.GetLatestByEndpoint(ctx, decision.Endpoint)
 		if recent == nil || recent.Action != "scale_down_blocked" || time.Since(recent.Timestamp) > 5*time.Minute {
@@ -397,4 +406,57 @@ func (e *Executor) revertScaleDown(ctx context.Context, decision *ScaleDecision,
 // generateEventID generates event ID
 func generateEventID() string {
 	return fmt.Sprintf("evt_%d", time.Now().UnixNano())
+}
+
+// isOrphanedEndpoint checks if an endpoint is orphaned (no deployment exists in K8s)
+// An orphaned endpoint has replicas > 0 in database but no actual deployment
+func (e *Executor) isOrphanedEndpoint(ctx context.Context, decision *ScaleDecision) bool {
+	// Check if deployment exists in K8s
+	_, err := e.deploymentProvider.GetApp(ctx, decision.Endpoint)
+	if err == nil {
+		// Deployment exists, not orphaned
+		return false
+	}
+
+	// Deployment doesn't exist, this is an orphaned endpoint
+	logger.InfoCtx(ctx, "endpoint %s: deployment not found in K8s, marking as orphaned", decision.Endpoint)
+	return true
+}
+
+// fixOrphanedEndpoint fixes an orphaned endpoint by updating database state to Stopped
+func (e *Executor) fixOrphanedEndpoint(ctx context.Context, decision *ScaleDecision) {
+	// Update endpoint metadata: set replicas to 0 and status to Stopped
+	meta, err := e.endpointService.GetEndpoint(ctx, decision.Endpoint)
+	if err != nil {
+		logger.ErrorCtx(ctx, "failed to get endpoint metadata for orphan fix: %v", err)
+		return
+	}
+
+	oldReplicas := meta.Replicas
+	meta.Replicas = 0
+	meta.Status = "Stopped"
+	meta.UpdatedAt = time.Now()
+
+	if err := e.endpointService.UpdateEndpoint(ctx, meta); err != nil {
+		logger.ErrorCtx(ctx, "failed to fix orphaned endpoint %s: %v", decision.Endpoint, err)
+		return
+	}
+
+	// Record the fix event
+	event := &mysql.ScalingEvent{
+		EventID:      generateEventID(),
+		Endpoint:     decision.Endpoint,
+		Timestamp:    time.Now(),
+		Action:       "orphan_fixed",
+		FromReplicas: oldReplicas,
+		ToReplicas:   0,
+		Reason:       "Auto-fixed orphaned endpoint: deployment not found in K8s, no active workers",
+		QueueLength:  decision.QueueLength,
+		Priority:     decision.Priority,
+	}
+	if err := e.scalingEventRepo.Create(ctx, event); err != nil {
+		logger.WarnCtx(ctx, "failed to record orphan fix event: %v", err)
+	}
+
+	logger.InfoCtx(ctx, "✅ fixed orphaned endpoint %s: status changed to Stopped, replicas %d -> 0", decision.Endpoint, oldReplicas)
 }

@@ -207,8 +207,10 @@ func (r *TaskRepository) ListWithTaskIDExcludeInput(ctx context.Context, filters
 		limit = 100
 	}
 
+	// Exclude both input and output fields to avoid sort memory issues
+	// These fields can contain large JSON data (e.g., base64 images)
 	query := r.ds.DB(ctx).Model(&Task{}).
-		Select("id", "task_id", "endpoint", "status", "output", "error", "worker_id", "webhook_url", "created_at", "updated_at", "started_at", "completed_at", "extend")
+		Select("id", "task_id", "endpoint", "status", "error", "worker_id", "webhook_url", "created_at", "updated_at", "started_at", "completed_at", "extend")
 
 	// Apply filters
 	for key, value := range filters {
@@ -425,7 +427,6 @@ func (r *TaskRepository) AssignTasksToWorker(ctx context.Context, taskIDs []stri
 func (r *TaskRepository) ExecTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	return r.ds.ExecTx(ctx, fn)
 }
-
 
 // CleanupOldTasks removes completed/failed tasks older than the given time in batches
 func (r *TaskRepository) CleanupOldTasks(ctx context.Context, before time.Time) (int64, error) {

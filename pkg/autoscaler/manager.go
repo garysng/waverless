@@ -38,10 +38,10 @@ type Manager struct {
 	scalingEventRepo   *mysql.ScalingEventRepository
 	lastRunTime        time.Time
 	specManager        *k8s.SpecManager
-	redisClient        *redis.Client            // Redis用于全局配置存储
-	configKey          string                   // 全局配置key
-	distributedLock    DistributedLock          // 分布式锁，防止多副本冲突
-	workerLister       interfaces.WorkerLister  // For worker queries
+	redisClient        *redis.Client           // Redis用于全局配置存储
+	configKey          string                  // 全局配置key
+	distributedLock    DistributedLock         // 分布式锁，防止多副本冲突
+	workerLister       interfaces.WorkerLister // For worker queries
 
 	// 缓存集群资源状态，避免每次 API 调用都重新计算
 	cachedClusterMu        sync.RWMutex
