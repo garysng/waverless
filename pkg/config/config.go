@@ -26,9 +26,10 @@ type Config struct {
 
 // ServerConfig server configuration
 type ServerConfig struct {
-	Port   int    `yaml:"port"`
-	Mode   string `yaml:"mode"`    // debug, release
-	APIKey string `yaml:"api_key"` // API key for worker authentication (optional, if empty, auth is disabled)
+	Port    int    `yaml:"port"`
+	Mode    string `yaml:"mode"`     // debug, release
+	APIKey  string `yaml:"api_key"`  // API key for worker authentication (optional, if empty, auth is disabled)
+	BaseURL string `yaml:"base_url"` // Base URL for the server
 }
 
 // RedisConfig Redis configuration
@@ -89,10 +90,19 @@ type LoggerFileConfig struct {
 
 // K8sConfig K8s configuration
 type K8sConfig struct {
-	Enabled   bool   `yaml:"enabled"`    // whether to enable K8s features
-	Namespace string `yaml:"namespace"`  // K8s namespace
-	Platform  string `yaml:"platform"`   // Platform type: generic, aliyun-ack, aws-eks
-	ConfigDir string `yaml:"config_dir"` // Configuration directory (specs.yaml and templates)
+	Enabled   bool              `yaml:"enabled"`              // whether to enable K8s features
+	Namespace string            `yaml:"namespace"`            // K8s namespace
+	Platform  string            `yaml:"platform"`             // Platform type: generic, aliyun-ack, aws-eks
+	ConfigDir string            `yaml:"config_dir"`           // Configuration directory (specs.yaml and templates)
+	GlobalEnv map[string]string `yaml:"global_env,omitempty"` // Global environment variables for all deployments
+	AWS       *AWSConfig        `yaml:"aws,omitempty"`        // AWS configuration (for aws-eks platform)
+}
+
+// AWSConfig AWS configuration
+type AWSConfig struct {
+	Region          string `yaml:"region"`            // AWS region (optional, auto-detect if empty)
+	AccessKeyID     string `yaml:"access_key_id"`     // AWS Access Key ID (optional, use IAM role if empty)
+	SecretAccessKey string `yaml:"secret_access_key"` // AWS Secret Access Key (optional)
 }
 
 // ProvidersConfig providers configuration

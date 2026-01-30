@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -23,7 +24,37 @@ func NewK8sDeploymentProvider(cfg *config.Config) (interfaces.DeploymentProvider
 		return nil, fmt.Errorf("k8s is not enabled in config")
 	}
 
-	manager, err := NewManager(cfg.K8s.Namespace, cfg.K8s.Platform, cfg.K8s.ConfigDir)
+	// Build globalEnv with defaults, then merge config overrides
+	globalEnv := map[string]string{
+		// RunPod compatible environment variables (for runpod-python SDK)
+		"RUNPOD_ENDPOINT_ID":         "{{.Endpoint}}",
+		"RUNPOD_PING_INTERVAL":       "10000",
+		"RUNPOD_WEBHOOK_GET_JOB":     "http://waverless-svc/v2/{{.Endpoint}}/job-take/$ID?",
+		"RUNPOD_WEBHOOK_PING":        "http://waverless-svc/v2/{{.Endpoint}}/ping/$RUNPOD_POD_ID",
+		"RUNPOD_WEBHOOK_POST_OUTPUT": "http://waverless-svc/v2/{{.Endpoint}}/job-done/$RUNPOD_POD_ID/$ID?",
+		"RUNPOD_WEBHOOK_POST_STREAM": "http://waverless-svc/v2/{{.Endpoint}}/job-stream/$RUNPOD_POD_ID/$ID?",
+		// Waverless native environment variables (for wavespeed-python SDK)
+		"WAVERLESS_ENDPOINT_ID":         "{{.Endpoint}}",
+		"WAVERLESS_PING_INTERVAL":       "10000",
+		"WAVERLESS_WEBHOOK_GET_JOB":     "http://waverless-svc/v2/{{.Endpoint}}/job-take/$ID?",
+		"WAVERLESS_WEBHOOK_PING":        "http://waverless-svc/v2/{{.Endpoint}}/ping/$WAVERLESS_POD_ID",
+		"WAVERLESS_WEBHOOK_POST_OUTPUT": "http://waverless-svc/v2/{{.Endpoint}}/job-done/$WAVERLESS_POD_ID/$ID?",
+		"WAVERLESS_WEBHOOK_POST_STREAM": "http://waverless-svc/v2/{{.Endpoint}}/job-stream/$WAVERLESS_POD_ID/$ID?",
+	}
+
+	// Merge config overrides (config takes precedence)
+	for k, v := range cfg.K8s.GlobalEnv {
+		globalEnv[k] = v
+	}
+
+	// Inject server api_key
+	if cfg.Server.APIKey != "" {
+		globalEnv["WAVERLESS_API_KEY"] = cfg.Server.APIKey
+		globalEnv["RUNPOD_AI_API_KEY"] = cfg.Server.APIKey
+		globalEnv["RUNPOD_API_KEY"] = cfg.Server.APIKey
+	}
+
+	manager, err := NewManager(cfg.K8s.Namespace, cfg.K8s.Platform, cfg.K8s.ConfigDir, globalEnv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create k8s manager: %w", err)
 	}
@@ -183,6 +214,35 @@ func (p *K8sDeploymentProvider) ListSpecs(ctx context.Context) ([]*interfaces.Sp
 	return result, nil
 }
 
+// ListSpecsWithCapacity 列出可用规格（带容量状态）
+func (p *K8sDeploymentProvider) ListSpecsWithCapacity(ctx context.Context) ([]*interfaces.SpecWithCapacity, error) {
+	specs := p.manager.ListSpecs()
+	result := make([]*interfaces.SpecWithCapacity, len(specs))
+	for i, spec := range specs {
+		platforms := make(map[string]interface{}, len(spec.Platforms))
+		for k, v := range spec.Platforms {
+			platforms[k] = v
+		}
+		result[i] = &interfaces.SpecWithCapacity{
+			SpecInfo: &interfaces.SpecInfo{
+				Name:        spec.Name,
+				DisplayName: spec.DisplayName,
+				Category:    spec.Category,
+				Resources: interfaces.ResourceRequirements{
+					GPU:              spec.Resources.GPU,
+					GPUType:          spec.Resources.GpuType,
+					CPU:              spec.Resources.CPU,
+					Memory:           spec.Resources.Memory,
+					EphemeralStorage: spec.Resources.EphemeralStorage,
+				},
+				Platforms: platforms,
+			},
+			Capacity: p.manager.GetCapacityStatus(spec.Name),
+		}
+	}
+	return result, nil
+}
+
 // GetSpec 获取规格详情
 func (p *K8sDeploymentProvider) GetSpec(ctx context.Context, specName string) (*interfaces.SpecInfo, error) {
 	spec, err := p.manager.GetSpec(specName)
@@ -247,6 +307,21 @@ func (p *K8sDeploymentProvider) GetSpecManager() *SpecManager {
 	return p.manager.specManager
 }
 
+// GetDynamicClient 获取 dynamic client（用于 CRD 操作）
+func (p *K8sDeploymentProvider) GetDynamicClient() dynamic.Interface {
+	return p.manager.GetDynamicClient()
+}
+
+// GetPodCountsBySpec 按 spec 统计 Pod 数量
+func (p *K8sDeploymentProvider) GetPodCountsBySpec(ctx context.Context) (map[string]PodCounts, error) {
+	return p.manager.GetPodCountsBySpec(ctx)
+}
+
+// GetInstanceTypesFromNodePool 从 NodePool 获取 instance types
+func (p *K8sDeploymentProvider) GetInstanceTypesFromNodePool(ctx context.Context, nodePoolName string) ([]string, error) {
+	return p.manager.GetInstanceTypesFromNodePool(ctx, nodePoolName)
+}
+
 // GetDefaultEnv 获取默认环境变量（从 wavespeed-config ConfigMap 读取）
 func (p *K8sDeploymentProvider) GetDefaultEnv(ctx context.Context) (map[string]string, error) {
 	return p.manager.GetDefaultEnvFromConfigMap(ctx)
@@ -261,11 +336,6 @@ func (p *K8sDeploymentProvider) IsPodDraining(ctx context.Context, podName strin
 // This is used as a safety net to prevent Terminating pods from pulling tasks
 func (p *K8sDeploymentProvider) IsPodTerminating(ctx context.Context, podName string) (bool, error) {
 	return p.manager.IsPodTerminating(ctx, podName)
-}
-
-// MarkPodsAsDraining 标记Pod为排空状态
-func (p *K8sDeploymentProvider) MarkPodsAsDraining(ctx context.Context, endpoint string, count int) error {
-	return p.manager.MarkPodsAsDraining(ctx, endpoint, count)
 }
 
 // MarkPodDraining marks a specific pod as draining (for smart scale-down)

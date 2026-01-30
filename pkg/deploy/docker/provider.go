@@ -88,3 +88,7 @@ func (p *DockerDeploymentProvider) ListPVCs(ctx context.Context) ([]*interfaces.
 func (p *DockerDeploymentProvider) GetDefaultEnv(ctx context.Context) (map[string]string, error) {
 	return nil, p.unsupported("GetDefaultEnv")
 }
+
+func (p *DockerDeploymentProvider) IsPodTerminating(ctx context.Context, podName string) (bool, error) {
+	return false, nil
+}

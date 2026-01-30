@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Modal, Form, Input, Select, InputNumber, message, Collapse, Switch, Row, Col, Button } from 'antd';
-import { ThunderboltOutlined, PlusOutlined, DeleteOutlined, SettingOutlined, DatabaseOutlined } from '@ant-design/icons';
+import { ThunderboltOutlined, PlusOutlined, DeleteOutlined, SettingOutlined, DatabaseOutlined, LockOutlined } from '@ant-design/icons';
 import { api } from '@/api/client';
 import type { SpecInfo } from '@/types';
 
@@ -12,12 +12,14 @@ const ServerlessPage = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedSpec, setSelectedSpec] = useState<SpecInfo | null>(null);
   const [form] = Form.useForm();
+  const [envMode, setEnvMode] = useState<'form' | 'text'>('form');
+  const [envText, setEnvText] = useState('');
 
-  // Fetch specs
+  // Fetch specs with capacity
   const { data: specs, isLoading } = useQuery({
-    queryKey: ['specs'],
+    queryKey: ['specs-capacity'],
     queryFn: async () => {
-      const res = await api.specs.list();
+      const res = await api.specs.listWithCapacity();
       return res.data || [];
     },
   });
@@ -109,18 +111,35 @@ const ServerlessPage = () => {
         priorityBoost: allValues.autoscaler?.priorityBoost,
       };
 
-      // Env vars
-      const envVars = allValues.envVars || [];
-      if (envVars.length > 0) {
-        const env: Record<string, string> = {};
-        envVars.filter((item: any) => item?.key && item?.value).forEach((item: any) => { env[item.key] = item.value; });
-        if (Object.keys(env).length > 0) data.env = env;
+      // Env vars - support both form and text mode
+      const env: Record<string, string> = {};
+      if (envMode === 'text') {
+        envText.split('\n').filter(line => line.includes('=')).forEach(line => {
+          const idx = line.indexOf('=');
+          const key = line.slice(0, idx).trim();
+          const value = line.slice(idx + 1).trim();
+          if (key) env[key] = value;
+        });
+      } else {
+        const envVars = allValues.envVars || [];
+        envVars.filter((item: any) => item?.key).forEach((item: any) => { env[item.key] = item.value || ''; });
       }
+      if (Object.keys(env).length > 0) data.env = env;
 
       // Volume mounts
       const volumeMounts = allValues.volumeMounts || [];
       if (volumeMounts.length > 0) {
         data.volumeMounts = volumeMounts.filter((vm: any) => vm?.pvcName && vm?.mountPath).map((vm: any) => ({ pvcName: vm.pvcName, mountPath: vm.mountPath }));
+      }
+
+      // Registry credential
+      const regCred = allValues.registryCredential;
+      if (regCred?.registry && regCred?.username && regCred?.password) {
+        data.registryCredential = {
+          registry: regCred.registry,
+          username: regCred.username,
+          password: regCred.password,
+        };
       }
 
       createMutation.mutate(data);
@@ -147,10 +166,15 @@ const ServerlessPage = () => {
         <div className="card-body">
           <div className="specs-grid">
             {gpuSpecs.map((spec: SpecInfo) => (
-              <div key={spec.name} className="spec-card" onClick={() => openCreateModal(spec)}>
+              <div key={spec.name} className={`spec-card ${spec.capacity === 'sold_out' ? 'sold-out' : ''}`} onClick={() => openCreateModal(spec)}>
                 <div className="spec-header">
                   <span className="spec-vram">Up to {spec.resources.gpu}× GPU</span>
                   <span className="spec-gpu">{spec.resources.gpuType}</span>
+                  {spec.capacity && (
+                    <span className={`capacity-badge ${spec.capacity}`}>
+                      {spec.capacity === 'available' ? 'Available' : spec.capacity === 'limited' ? 'Limited' : 'Sold Out'}
+                    </span>
+                  )}
                 </div>
                 <div className="spec-desc">
                   {spec.displayName || spec.name}
@@ -158,6 +182,7 @@ const ServerlessPage = () => {
                 <div className="spec-footer">
                   <span className="spec-resources">
                     {spec.resources.cpu} CPU • {spec.resources.memory}
+                    {spec.spotPrice ? ` • $${spec.spotPrice.toFixed(2)}/hr` : ''}
                   </span>
                   <button className="btn btn-primary">
                     <PlusOutlined /> Create
@@ -183,14 +208,21 @@ const ServerlessPage = () => {
           <div className="card-body">
             <div className="specs-grid">
               {cpuSpecs.map((spec: SpecInfo) => (
-                <div key={spec.name} className="spec-card" onClick={() => openCreateModal(spec)}>
+                <div key={spec.name} className={`spec-card ${spec.capacity === 'sold_out' ? 'sold-out' : ''}`} onClick={() => openCreateModal(spec)}>
                   <div className="spec-header">
                     <span className="spec-vram">{spec.resources.cpu} CPU</span>
                     <span className="spec-gpu">{spec.resources.memory}</span>
+                    {spec.capacity && (
+                      <span className={`capacity-badge ${spec.capacity}`}>
+                        {spec.capacity === 'available' ? 'Available' : spec.capacity === 'limited' ? 'Limited' : 'Sold Out'}
+                      </span>
+                    )}
                   </div>
                   <div className="spec-desc">{spec.displayName || spec.name}</div>
                   <div className="spec-footer">
-                    <span className="spec-resources">CPU Only</span>
+                    <span className="spec-resources">
+                      CPU Only{spec.spotPrice ? ` • $${spec.spotPrice.toFixed(2)}/hr` : ''}
+                    </span>
                     <button className="btn btn-primary">
                       <PlusOutlined /> Create
                     </button>
@@ -247,6 +279,17 @@ const ServerlessPage = () => {
           </Row>
 
           <Collapse ghost items={[
+            { key: 'registry', label: <span><LockOutlined /> Registry Auth (Optional)</span>, children: (
+              <>
+                <Form.Item name={['registryCredential', 'registry']} label="Registry URL" tooltip="e.g., docker.io, ghcr.io, your-registry.com">
+                  <Input placeholder="docker.io" />
+                </Form.Item>
+                <Row gutter={16}>
+                  <Col span={12}><Form.Item name={['registryCredential', 'username']} label="Username"><Input placeholder="username" /></Form.Item></Col>
+                  <Col span={12}><Form.Item name={['registryCredential', 'password']} label="Password"><Input.Password placeholder="password or token" /></Form.Item></Col>
+                </Row>
+              </>
+            )},
             { key: 'autoscaler', label: <span><SettingOutlined /> AutoScaler Config</span>, children: (
               <>
                 <Row gutter={16}>
@@ -269,7 +312,34 @@ const ServerlessPage = () => {
                 </Row>
               </>
             )},
-            { key: 'env', label: <span><SettingOutlined /> Environment Variables</span>, children: (
+            { key: 'env', label: (
+              <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
+                <span><SettingOutlined /> Environment Variables</span>
+                <Button type="link" size="small" onClick={(e) => {
+                  e.stopPropagation();
+                  if (envMode === 'form') {
+                    const envVars = form.getFieldValue('envVars') || [];
+                    const text = envVars.filter((v: any) => v?.key).map((v: any) => `${v.key}=${v.value || ''}`).join('\n');
+                    setEnvText(text);
+                  } else {
+                    const vars = envText.split('\n').filter(line => line.includes('=')).map(line => {
+                      const idx = line.indexOf('=');
+                      return { key: line.slice(0, idx).trim(), value: line.slice(idx + 1).trim() };
+                    });
+                    form.setFieldValue('envVars', vars.length ? vars : [{ key: '', value: '' }]);
+                  }
+                  setEnvMode(envMode === 'form' ? 'text' : 'form');
+                }}>{envMode === 'form' ? 'Switch to Text' : 'Switch to Form'}</Button>
+              </div>
+            ), children: envMode === 'text' ? (
+              <Input.TextArea
+                value={envText}
+                onChange={e => setEnvText(e.target.value)}
+                placeholder="KEY=value&#10;ANOTHER_KEY=another value"
+                rows={6}
+                style={{ fontFamily: 'monospace' }}
+              />
+            ) : (
               <Form.List name="envVars">
                 {(fields, { add, remove }) => (
                   <>

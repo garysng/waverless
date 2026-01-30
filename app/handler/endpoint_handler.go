@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -60,6 +62,19 @@ func (h *EndpointHandler) CreateEndpoint(c *gin.Context) {
 	if req.TaskTimeout == 0 {
 		req.TaskTimeout = 3600
 	}
+
+	// Replace env placeholders for WAVERLESS keys only
+	if req.Env != nil {
+		podID := req.Endpoint + "-" + uuid.New().String()[:8]
+		for k, v := range req.Env {
+			if strings.Contains(k, "WAVERLESS") {
+				v = strings.ReplaceAll(v, "$ENDPOINT_ID", req.Endpoint)
+				v = strings.ReplaceAll(v, "$WAVERLESS_POD_ID", podID)
+				req.Env[k] = v
+			}
+		}
+	}
+
 	providerReq := &interfaces.DeployRequest{
 		Endpoint:     req.Endpoint,
 		SpecName:     req.SpecName,

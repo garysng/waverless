@@ -124,11 +124,13 @@ func (r *Router) Setup(engine *gin.Engine) {
 			if r.specHandler != nil {
 				specs := api.Group("/specs")
 				{
-					specs.POST("", r.specHandler.CreateSpec)         // Create spec
-					specs.GET("", r.specHandler.ListSpecs)           // List specs
-					specs.GET("/:name", r.specHandler.GetSpec)       // Get spec
-					specs.PUT("/:name", r.specHandler.UpdateSpec)    // Update spec
-					specs.DELETE("/:name", r.specHandler.DeleteSpec) // Delete spec
+					specs.GET("/capacity", r.specHandler.ListSpecsWithCapacity) // List specs with capacity (must be before /:name)
+					specs.POST("", r.specHandler.CreateSpec)                    // Create spec
+					specs.GET("", r.specHandler.ListSpecs)                      // List specs
+					specs.GET("/:name", r.specHandler.GetSpec)                  // Get spec
+					specs.GET("/:name/capacity", r.specHandler.GetSpecCapacity) // Get spec capacity
+					specs.PUT("/:name", r.specHandler.UpdateSpec)               // Update spec
+					specs.DELETE("/:name", r.specHandler.DeleteSpec)            // Delete spec
 				}
 			}
 

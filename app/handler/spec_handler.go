@@ -5,14 +5,18 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"waverless/pkg/capacity"
 	"waverless/internal/service"
 	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
+	"waverless/pkg/store/mysql"
 )
 
 // SpecHandler handles spec CRUD APIs
 type SpecHandler struct {
-	specService *service.SpecService
+	specService  *service.SpecService
+	capacityMgr  *capacity.Manager
+	capacityRepo *mysql.SpecCapacityRepository
 }
 
 // NewSpecHandler creates a new spec handler
@@ -20,6 +24,12 @@ func NewSpecHandler(specService *service.SpecService) *SpecHandler {
 	return &SpecHandler{
 		specService: specService,
 	}
+}
+
+// SetCapacityManager sets the capacity manager
+func (h *SpecHandler) SetCapacityManager(mgr *capacity.Manager, repo *mysql.SpecCapacityRepository) {
+	h.capacityMgr = mgr
+	h.capacityRepo = repo
 }
 
 // CreateSpec creates a new spec
@@ -157,5 +167,79 @@ func (h *SpecHandler) DeleteSpec(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Spec deleted successfully",
 		"name":    name,
+	})
+}
+
+
+// ListSpecsWithCapacity lists all specs with capacity status
+// @Summary List specs with capacity
+// @Description Get all specs with their capacity availability status
+// @Tags Specs
+// @Produce json
+// @Success 200 {array} interfaces.SpecWithCapacity
+// @Router /api/v1/k8s/specs/capacity [get]
+func (h *SpecHandler) ListSpecsWithCapacity(c *gin.Context) {
+	specs, err := h.specService.ListSpecs(c.Request.Context())
+	if err != nil {
+		logger.ErrorCtx(c.Request.Context(), "Failed to list specs: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 获取所有 capacity 信息
+	var capMap = make(map[string]*interfaces.SpecWithCapacity)
+	if h.capacityRepo != nil {
+		caps, _ := h.capacityRepo.List(c.Request.Context())
+		for _, cap := range caps {
+			swc := &interfaces.SpecWithCapacity{
+				Capacity:     interfaces.CapacityStatus(cap.Status),
+				RunningCount: cap.RunningCount,
+				PendingCount: cap.PendingCount,
+			}
+			if cap.SpotScore != nil {
+				swc.SpotScore = *cap.SpotScore
+			}
+			if cap.SpotPrice != nil {
+				swc.SpotPrice = cap.SpotPrice.InexactFloat64()
+			}
+			capMap[cap.SpecName] = swc
+		}
+	}
+
+	result := make([]*interfaces.SpecWithCapacity, len(specs))
+	for i, spec := range specs {
+		if cap, ok := capMap[spec.Name]; ok {
+			cap.SpecInfo = spec
+			result[i] = cap
+		} else {
+			result[i] = &interfaces.SpecWithCapacity{
+				SpecInfo: spec,
+				Capacity: interfaces.CapacityAvailable,
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// GetSpecCapacity gets capacity status for a spec
+// @Summary Get spec capacity
+// @Description Get capacity availability status for a specific spec
+// @Tags Specs
+// @Produce json
+// @Param name path string true "Spec name"
+// @Success 200 {object} interfaces.CapacityEvent
+// @Router /api/v1/k8s/specs/{name}/capacity [get]
+func (h *SpecHandler) GetSpecCapacity(c *gin.Context) {
+	name := c.Param("name")
+
+	cap := interfaces.CapacityAvailable
+	if h.capacityMgr != nil {
+		cap = h.capacityMgr.GetStatus(name)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"specName": name,
+		"status":   cap,
 	})
 }

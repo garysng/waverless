@@ -18,7 +18,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -68,12 +71,14 @@ func validateK8sName(name string) error {
 
 // Manager K8s application manager
 type Manager struct {
-	client      kubernetes.Interface
-	config      *rest.Config
-	namespace   string
-	platform    Platform
-	specManager *SpecManager
-	renderer    *TemplateRenderer
+	client        kubernetes.Interface
+	dynamicClient dynamic.Interface
+	config        *rest.Config
+	namespace     string
+	platform      Platform
+	specManager   *SpecManager
+	renderer      *TemplateRenderer
+	globalEnv     map[string]string
 
 	informerFactory  informers.SharedInformerFactory
 	deploymentLister appslisters.DeploymentLister
@@ -115,7 +120,7 @@ type DeploymentSpecChangeCallback func(endpoint string)
 type DeploymentStatusChangeCallback func(endpoint string, deployment *appsv1.Deployment)
 
 // NewManager creates a K8s manager
-func NewManager(namespace, platformName, configDir string) (*Manager, error) {
+func NewManager(namespace, platformName, configDir string, globalEnv map[string]string) (*Manager, error) {
 	// Create K8s client
 	var config *rest.Config
 	var err error
@@ -141,6 +146,12 @@ func NewManager(namespace, platformName, configDir string) (*Manager, error) {
 	client, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kubernetes client: %v", err)
+	}
+
+	// Create dynamic client for CRDs (e.g., Karpenter NodeClaim)
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create dynamic client: %v", err)
 	}
 
 	// Create spec manager
@@ -171,11 +182,13 @@ func NewManager(namespace, platformName, configDir string) (*Manager, error) {
 
 	manager := &Manager{
 		client:                        client,
+		dynamicClient:                 dynamicClient,
 		config:                        config,
 		namespace:                     namespace,
 		platform:                      platform,
 		specManager:                   specManager,
 		renderer:                      renderer,
+		globalEnv:                     globalEnv,
 		informerFactory:               informerFactory,
 		deploymentLister:              deploymentInformer.Lister(),
 		podLister:                     podInformer.Lister(),
@@ -444,7 +457,7 @@ func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) 
 	if ctx.IsGpu {
 		var maxGpu int
 		fmt.Sscanf(spec.Resources.GPU, "%d", &maxGpu)
-		
+
 		if req.GpuCount > 0 {
 			// Validate: requested gpuCount must not exceed spec's max
 			if req.GpuCount > maxGpu {
@@ -455,7 +468,7 @@ func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) 
 			// Default to 1 GPU if not specified
 			ctx.GpuCount = 1
 		}
-		
+
 		// Scale resources by gpuCount (spec defines per-GPU resources)
 		ctx.CpuLimit = multiplyResource(spec.Resources.CPU, ctx.GpuCount)
 		ctx.MemoryRequest = multiplyResource(spec.Resources.Memory, ctx.GpuCount)
@@ -499,11 +512,15 @@ func (m *Manager) buildRenderContext(req *DeployAppRequest, spec *ResourceSpec) 
 	// Enable ptrace capability (only for fixed resource pools)
 	ctx.EnablePtrace = req.EnablePtrace
 
-	// Environment variables
-	if req.Env != nil {
-		ctx.Env = req.Env
-	} else {
-		ctx.Env = make(map[string]string)
+	// Environment variables: merge globalEnv with request env (request takes precedence)
+	ctx.Env = make(map[string]string)
+	for k, v := range m.globalEnv {
+		// Replace placeholders in globalEnv values
+		v = strings.ReplaceAll(v, "{{.Endpoint}}", req.Endpoint)
+		ctx.Env[k] = v
+	}
+	for k, v := range req.Env {
+		ctx.Env[k] = v
 	}
 
 	return ctx, nil
@@ -1489,7 +1506,9 @@ func deploymentToAppInfo(deployment *appsv1.Deployment) *AppInfo {
 		info.Image = deployment.Spec.Template.Spec.Containers[0].Image
 	}
 
-	if deployment.Status.AvailableReplicas == *deployment.Spec.Replicas {
+	if *deployment.Spec.Replicas == 0 {
+		info.Status = "Stopped"
+	} else if deployment.Status.AvailableReplicas == *deployment.Spec.Replicas {
 		info.Status = "Running"
 	} else {
 		info.Status = "Pending"
@@ -1636,6 +1655,124 @@ func (m *Manager) ListSpecs() []*ResourceSpec {
 // GetSpec gets spec details
 func (m *Manager) GetSpec(name string) (*ResourceSpec, error) {
 	return m.specManager.GetSpec(name)
+}
+
+// GetSpecManager returns the spec manager
+func (m *Manager) GetSpecManager() *SpecManager {
+	return m.specManager
+}
+
+// GetDynamicClient returns the dynamic client for CRDs
+func (m *Manager) GetDynamicClient() dynamic.Interface {
+	return m.dynamicClient
+}
+
+// GetCapacityStatus gets capacity status for a spec
+func (m *Manager) GetCapacityStatus(specName string) interfaces.CapacityStatus {
+	return m.specManager.GetCapacityStatus(specName)
+}
+
+// PodCounts Pod 数量统计
+type PodCounts struct {
+	Running int
+	Pending int
+}
+
+// GetPodCountsBySpec 按 spec 统计 Pod 数量 (实现 capacity.PodCountProvider 接口)
+func (m *Manager) GetPodCountsBySpec(ctx context.Context) (map[string]PodCounts, error) {
+	result := make(map[string]PodCounts)
+
+	pods, err := m.podLister.Pods(m.namespace).List(labels.Everything())
+	if err != nil {
+		return nil, err
+	}
+
+	for _, pod := range pods {
+		// 从 Pod 的 nodeSelector 获取 spec
+		specName := m.getSpecFromPod(pod)
+		if specName == "" {
+			continue
+		}
+
+		counts := result[specName]
+		switch pod.Status.Phase {
+		case corev1.PodRunning:
+			counts.Running++
+		case corev1.PodPending:
+			counts.Pending++
+		}
+		result[specName] = counts
+	}
+
+	return result, nil
+}
+
+// getSpecFromPod 从 Pod 获取对应的 spec 名称
+func (m *Manager) getSpecFromPod(pod *corev1.Pod) string {
+	if pod.Spec.NodeSelector == nil {
+		return ""
+	}
+
+	// 通过 nodepool label 反查 spec
+	nodePool := pod.Spec.NodeSelector["karpenter.sh/nodepool"]
+	if nodePool == "" {
+		return ""
+	}
+
+	// 遍历所有 spec 找到匹配的
+	specs := m.specManager.ListSpecs()
+	for _, spec := range specs {
+		for _, platformConfig := range spec.Platforms {
+			if platformConfig.NodeSelector["karpenter.sh/nodepool"] == nodePool {
+				return spec.Name
+			}
+		}
+	}
+
+	return ""
+}
+
+// GetInstanceTypesFromNodePool 从 Karpenter NodePool 获取 instance types
+func (m *Manager) GetInstanceTypesFromNodePool(ctx context.Context, nodePoolName string) ([]string, error) {
+	nodePoolGVR := schema.GroupVersionResource{
+		Group:    "karpenter.sh",
+		Version:  "v1",
+		Resource: "nodepools",
+	}
+
+	nodePool, err := m.dynamicClient.Resource(nodePoolGVR).Get(ctx, nodePoolName, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	// 解析 spec.template.spec.requirements
+	requirements, found, err := unstructured.NestedSlice(nodePool.Object, "spec", "template", "spec", "requirements")
+	if err != nil || !found {
+		return nil, fmt.Errorf("requirements not found in nodepool %s", nodePoolName)
+	}
+
+	for _, req := range requirements {
+		reqMap, ok := req.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		key, _ := reqMap["key"].(string)
+		if key == "node.kubernetes.io/instance-type" {
+			values, ok := reqMap["values"].([]interface{})
+			if ok {
+				var instanceTypes []string
+				for _, v := range values {
+					if s, ok := v.(string); ok {
+						instanceTypes = append(instanceTypes, s)
+					}
+				}
+				return instanceTypes, nil
+			}
+		}
+	}
+
+	return nil, nil
 }
 
 // UpdateDeployment updates deployment
@@ -1982,11 +2119,11 @@ func (m *Manager) UpdateDeployment(ctx context.Context, endpoint string, specNam
 	if env != nil && len(deployment.Spec.Template.Spec.Containers) > 0 {
 		container := &deployment.Spec.Template.Spec.Containers[0]
 
-		// Separate system env vars (RUNPOD_*) from custom env vars
+		// Separate system env vars from custom env vars
 		var systemEnvVars []corev1.EnvVar
 		for _, envVar := range container.Env {
-			// Keep system env vars (those starting with RUNPOD_)
-			if len(envVar.Name) >= 7 && envVar.Name[:7] == "RUNPOD_" {
+			// Keep system env vars (RUNPOD_* and WAVERLESS_* prefixes, or those with valueFrom)
+			if strings.HasPrefix(envVar.Name, "RUNPOD_") || strings.HasPrefix(envVar.Name, "WAVERLESS_") || envVar.ValueFrom != nil {
 				systemEnvVars = append(systemEnvVars, envVar)
 			}
 		}
@@ -2085,57 +2222,6 @@ func (m *Manager) IsPodTerminating(ctx context.Context, podName string) (bool, e
 
 	// Check if pod has DeletionTimestamp set (K8s marks pod for deletion)
 	return pod.DeletionTimestamp != nil, nil
-}
-
-// MarkPodsAsDraining marks the oldest N pods of an endpoint as draining
-// Uses Informer cache for listing pods to reduce API server pressure
-func (m *Manager) MarkPodsAsDraining(ctx context.Context, endpoint string, count int) error {
-	if count <= 0 {
-		return nil
-	}
-
-	// List pods from Informer cache
-	labelSelector := labels.SelectorFromSet(labels.Set{"waverless.io/endpoint": endpoint})
-	cachedPods, err := m.podLister.Pods(m.namespace).List(labelSelector)
-	if err != nil {
-		return fmt.Errorf("failed to list pods from cache: %v", err)
-	}
-
-	if len(cachedPods) == 0 {
-		return nil
-	}
-
-	// Sort by creation timestamp (oldest first)
-	// We'll select the oldest pods to drain
-	oldestPods := make([]*corev1.Pod, 0, count)
-	for i := 0; i < len(cachedPods) && i < count; i++ {
-		pod := cachedPods[i]
-
-		// Skip pods already draining
-		if pod.Labels != nil {
-			if draining, exists := pod.Labels["waverless.io/draining"]; exists && draining == "true" {
-				continue
-			}
-		}
-
-		oldestPods = append(oldestPods, pod)
-	}
-
-	// Mark pods as draining (must use API for updates)
-	pods := m.client.CoreV1().Pods(m.namespace)
-	for _, pod := range oldestPods {
-		if pod.Labels == nil {
-			pod.Labels = make(map[string]string)
-		}
-		pod.Labels["waverless.io/draining"] = "true"
-
-		_, err := pods.Update(ctx, pod, metav1.UpdateOptions{})
-		if err != nil {
-			return fmt.Errorf("failed to update pod %s: %v", pod.Name, err)
-		}
-	}
-
-	return nil
 }
 
 // MarkPodDraining marks a specific pod as draining (for smart scale-down)
@@ -2398,15 +2484,15 @@ func multiplyResource(resource string, factor int) string {
 	if factor <= 1 || resource == "" {
 		return resource
 	}
-	
+
 	// Try to parse as number with unit suffix
 	var value int
 	var unit string
-	
+
 	n, _ := fmt.Sscanf(resource, "%d%s", &value, &unit)
 	if n >= 1 {
 		return fmt.Sprintf("%d%s", value*factor, unit)
 	}
-	
+
 	return resource
 }

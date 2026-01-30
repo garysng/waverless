@@ -24,7 +24,7 @@ const SpecsPage = () => {
   const { data: specs, isLoading, refetch } = useQuery({
     queryKey: ['specs'],
     queryFn: async () => {
-      const response = await api.specs.list();
+      const response = await api.specs.listWithCapacity();
       return response.data;
     },
   });
@@ -139,6 +139,17 @@ const SpecsPage = () => {
     }
   };
 
+  const getCapacityBadge = (capacity?: string) => {
+    switch (capacity) {
+      case 'sold_out':
+        return <span className="tag" style={{ background: '#fee2e2', color: '#dc2626' }}>Sold Out</span>;
+      case 'limited':
+        return <span className="tag" style={{ background: '#fef3c7', color: '#d97706' }}>Limited</span>;
+      default:
+        return <span className="tag" style={{ background: '#d1fae5', color: '#059669' }}>Available</span>;
+    }
+  };
+
   if (isLoading) {
     return <div className="loading"><div className="spinner"></div></div>;
   }
@@ -171,7 +182,7 @@ const SpecsPage = () => {
       {/* Specs Grid */}
       <div className="specs-grid">
         {filteredSpecs?.map((spec) => (
-          <div key={spec.name} className="spec-card" style={{ cursor: 'default' }}>
+          <div key={spec.name} className="spec-card" style={{ cursor: 'default', opacity: spec.capacity === 'sold_out' ? 0.6 : 1 }}>
             <div className="flex justify-between items-center mb-2">
               <div className="spec-header">
                 <DatabaseOutlined style={{ marginRight: 8, color: '#8b5cf6' }} />
@@ -194,13 +205,14 @@ const SpecsPage = () => {
               </div>
             </div>
 
-            <div className="flex gap-2 mb-3">
+            <div className="flex gap-2 mb-3 flex-wrap">
               <span className={`tag ${spec.category === 'gpu' ? 'running' : 'success'}`}>
                 {spec.category.toUpperCase()}
               </span>
               <span className={`tag ${spec.resourceType === 'fixed' ? 'pending' : ''}`} style={{ background: 'rgba(139,92,246,0.1)', color: '#8b5cf6' }}>
                 {spec.resourceType === 'fixed' ? 'FIXED' : 'SERVERLESS'}
               </span>
+              {getCapacityBadge(spec.capacity)}
             </div>
 
             <div style={{ fontSize: 13, color: '#6b7280' }}>
@@ -221,6 +233,17 @@ const SpecsPage = () => {
               {spec.resources.ephemeralStorage && (
                 <div className="mb-1">
                   <strong>Storage:</strong> {spec.resources.ephemeralStorage}GB
+                </div>
+              )}
+              {(spec.runningCount !== undefined || spec.pendingCount !== undefined) && (
+                <div className="mb-1">
+                  <strong>Pods:</strong> {spec.runningCount || 0} running, {spec.pendingCount || 0} pending
+                </div>
+              )}
+              {spec.spotScore !== undefined && (
+                <div className="mb-1">
+                  <strong>Spot:</strong> Score {spec.spotScore}/10
+                  {spec.spotPrice !== undefined && ` · $${spec.spotPrice.toFixed(4)}/hr`}
                 </div>
               )}
             </div>

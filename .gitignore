@@ -27,6 +27,7 @@ go.work
 *.swp
 *.swo
 *~
+.kiro/
 
 # OS
 .DS_Store
@@ -36,6 +37,7 @@ config/local.yaml
 *.log
 .version
 .version-web
+scripts/mysql-ssh-tunnel.sh
 
 # Output
 output/
