@@ -213,6 +213,12 @@ func (app *Application) initServices() error {
 		// Non-critical feature, continue startup
 	}
 
+	// Setup Novita pod status watcher for worker runtime state sync (when Novita is enabled)
+	if err := app.setupNovitaPodStatusWatcher(novitaDeployProvider); err != nil {
+		logger.WarnCtx(app.ctx, "Failed to setup Novita pod status watcher: %v (non-critical, continuing)", err)
+		// Non-critical feature, continue startup
+	}
+
 	return nil
 }
 
@@ -362,6 +368,58 @@ func (app *Application) setupNovitaStatusWatcher(novitaProvider *novita.NovitaDe
 		return err
 	}
 
+	return nil
+}
+
+// setupNovitaPodStatusWatcher syncs Novita worker runtime state to worker table
+func (app *Application) setupNovitaPodStatusWatcher(novitaProvider *novita.NovitaDeploymentProvider) error {
+	if novitaProvider == nil {
+		return nil
+	}
+
+	logger.InfoCtx(app.ctx, "Setting up Novita pod status watcher for worker runtime sync...")
+
+	// Watch worker status changes
+	err := novitaProvider.WatchPodStatusChange(app.ctx, func(workerID, endpoint string, info *interfaces.PodInfo) {
+		// For Novita, workerID is the Novita Worker ID (used as podName)
+		podName := workerID
+
+		// Check if this is a new worker (for WORKER_STARTED event)
+		existingWorker, _ := app.mysqlRepo.Worker.GetByPodName(app.ctx, endpoint, podName)
+		isNewWorker := existingWorker == nil
+
+		// Create or update worker (status STARTING until heartbeat)
+		// Note: Novita doesn't provide IP/NodeName/CreatedAt/StartedAt, pass nil/empty
+		if err := app.mysqlRepo.Worker.UpsertFromPod(app.ctx, podName, endpoint, info.Phase, info.Status, info.Reason, info.Message, "", "", nil, nil); err != nil {
+			logger.WarnCtx(app.ctx, "Failed to upsert worker from Novita worker %s: %v", workerID, err)
+		}
+
+		// Record WORKER_STARTED event for new workers
+		if isNewWorker && app.workerEventService != nil {
+			app.workerEventService.RecordWorkerStarted(app.ctx, podName, endpoint)
+		}
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to setup Novita pod status watcher: %w", err)
+	}
+
+	// Watch worker deletions to mark workers as OFFLINE
+	err = novitaProvider.WatchPodDelete(app.ctx, func(workerID, endpoint string) {
+		podName := workerID
+		// Record WORKER_OFFLINE event before marking offline
+		if app.workerEventService != nil {
+			app.workerEventService.RecordWorkerOffline(app.ctx, workerID, endpoint, podName)
+		}
+		if err := app.mysqlRepo.Worker.MarkOfflineByPodName(app.ctx, podName); err != nil {
+			logger.WarnCtx(app.ctx, "Failed to mark worker offline for deleted Novita worker %s: %v", workerID, err)
+		}
+	})
+	if err != nil {
+		logger.WarnCtx(app.ctx, "Failed to setup Novita pod delete watcher: %v", err)
+	}
+
+	logger.InfoCtx(app.ctx, "Novita pod status watcher registered successfully")
 	return nil
 }
 

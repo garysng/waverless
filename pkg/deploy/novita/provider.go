@@ -24,6 +24,8 @@ type clientInterface interface {
 	CreateRegistryAuth(ctx context.Context, req *CreateRegistryAuthRequest) (*CreateRegistryAuthResponse, error)
 	ListRegistryAuths(ctx context.Context) (*ListRegistryAuthsResponse, error)
 	DeleteRegistryAuth(ctx context.Context, authID string) error
+	// Worker methods
+	DrainWorker(ctx context.Context, req *DrainWorkerRequest) error
 }
 
 // replicaCallbackEntry represents a registered replica callback
@@ -40,6 +42,20 @@ type endpointState struct {
 	Status            string
 }
 
+// workerState stores the last known state of a worker
+type workerState struct {
+	ID       string
+	Endpoint string
+	State    string
+	Healthy  bool
+}
+
+// WorkerStatusChangeCallback is called when a worker's status changes
+type WorkerStatusChangeCallback func(workerID, endpoint string, info *interfaces.PodInfo)
+
+// WorkerDeleteCallback is called when a worker is deleted
+type WorkerDeleteCallback func(workerID, endpoint string)
+
 // NovitaDeploymentProvider implements interfaces.DeploymentProvider for Novita Serverless
 type NovitaDeploymentProvider struct {
 	client        clientInterface
@@ -55,6 +71,13 @@ type NovitaDeploymentProvider struct {
 	watcherRunning       atomic.Bool
 	watcherStopCh        chan struct{}
 	pollInterval         time.Duration // Configurable poll interval
+
+	// Worker status watch support
+	workerStatusCallbacks     map[uint64]WorkerStatusChangeCallback
+	workerStatusCallbacksLock sync.RWMutex
+	workerDeleteCallbacks     map[uint64]WorkerDeleteCallback
+	workerDeleteCallbacksLock sync.RWMutex
+	workerStates              sync.Map // workerID -> *workerState
 }
 
 // NewNovitaDeploymentProvider creates a new Novita deployment provider
@@ -82,12 +105,14 @@ func NewNovitaDeploymentProvider(cfg *config.Config) (interfaces.DeploymentProvi
 	}
 
 	return &NovitaDeploymentProvider{
-		client:           client,
-		config:           &cfg.Novita,
-		specsConfig:      specsConfig,
-		replicaCallbacks: make(map[uint64]*replicaCallbackEntry),
-		watcherStopCh:    make(chan struct{}),
-		pollInterval:     pollInterval,
+		client:                client,
+		config:                &cfg.Novita,
+		specsConfig:           specsConfig,
+		replicaCallbacks:      make(map[uint64]*replicaCallbackEntry),
+		watcherStopCh:         make(chan struct{}),
+		pollInterval:          pollInterval,
+		workerStatusCallbacks: make(map[uint64]WorkerStatusChangeCallback),
+		workerDeleteCallbacks: make(map[uint64]WorkerDeleteCallback),
 	}, nil
 }
 
@@ -198,6 +223,7 @@ func (p *NovitaDeploymentProvider) DeleteApp(ctx context.Context, endpoint strin
 }
 
 // ScaleApp scales application replicas
+// For scale down operations, it first drains the workers to be removed before updating the endpoint
 func (p *NovitaDeploymentProvider) ScaleApp(ctx context.Context, endpoint string, replicas int) error {
 	logger.Infof("Scaling endpoint %s to %d replicas", endpoint, replicas)
 
@@ -207,10 +233,32 @@ func (p *NovitaDeploymentProvider) ScaleApp(ctx context.Context, endpoint string
 		return err
 	}
 
-	// Get current configuration
+	// Get current configuration (includes worker list)
 	currentConfig, err := p.client.GetEndpoint(ctx, endpointID)
 	if err != nil {
 		return fmt.Errorf("failed to get current endpoint config: %w", err)
+	}
+
+	currentReplicas := currentConfig.Endpoint.WorkerConfig.MinNum
+	if currentReplicas == replicas {
+		logger.Infof("Endpoint %s is already at %d replicas, no need to scale", endpoint, replicas)
+		return nil
+	}
+	isScaleDown := replicas < currentReplicas
+	// For scale down operations, drain workers first
+	if isScaleDown {
+		drainedWorkerIDs, err := p.drainWorkersForScaleDown(ctx, &currentConfig.Endpoint, currentReplicas-replicas)
+		if err != nil {
+			return fmt.Errorf("failed to drain workers for scale down: %w", err)
+		}
+		logger.Infof("Drained %d workers for endpoint %s: %v", len(drainedWorkerIDs), endpoint, drainedWorkerIDs)
+
+		// TODO: Use drainedWorkerIDs to notify API server to stop dispatching tasks to these workers
+		// Possible implementations:
+		// 1. Modify DeploymentProvider interface's ScaleApp return type to (*ScaleResult, error)
+		// 2. Or add a callback mechanism to notify upper layer services
+		// 3. Or directly call worker service in provider to update worker status
+		_ = drainedWorkerIDs
 	}
 
 	// Create update request with modified replicas
@@ -231,6 +279,98 @@ func (p *NovitaDeploymentProvider) ScaleApp(ctx context.Context, endpoint string
 
 	logger.Infof("Successfully scaled endpoint %s to %d replicas", endpoint, replicas)
 	return nil
+}
+
+// drainWorkersForScaleDown drains workers that will be removed during scale down
+// It selects workers to drain based on their state (preferring non-healthy or recently created workers)
+// Returns the list of drained worker IDs
+func (p *NovitaDeploymentProvider) drainWorkersForScaleDown(ctx context.Context, endpoint *EndpointConfig, numToDrain int) ([]string, error) {
+	if numToDrain <= 0 {
+		return []string{}, nil
+	}
+
+	workers := endpoint.Workers
+	if len(workers) == 0 {
+		logger.Warnf("No workers found for endpoint %s, nothing to drain", endpoint.Name)
+		return []string{}, nil
+	}
+
+	// Select workers to drain
+	// Strategy: prefer non-healthy workers first, then any workers
+	workersToDrain := p.selectWorkersToDrain(workers, numToDrain)
+
+	drainedIDs := make([]string, 0, len(workersToDrain))
+	for _, worker := range workersToDrain {
+		logger.Infof("Draining worker %s for endpoint %s", worker.ID, endpoint.Name)
+
+		err := p.client.DrainWorker(ctx, &DrainWorkerRequest{
+			WorkerID: worker.ID,
+			Drain:    true,
+		})
+		if err != nil {
+			// Log error but continue draining other workers
+			logger.Errorf("Failed to drain worker %s: %v", worker.ID, err)
+			return nil, err
+		}
+
+		drainedIDs = append(drainedIDs, worker.ID)
+		logger.Infof("Successfully drained worker %s", worker.ID)
+	}
+
+	return drainedIDs, nil
+}
+
+// selectWorkersToDrain selects workers to drain for scale down operation
+// Selection strategy:
+// 1. Prefer non-healthy workers
+// 2. Prefer workers that are not in running state
+// 3. If all workers are healthy and running, select any workers
+func (p *NovitaDeploymentProvider) selectWorkersToDrain(workers []WorkerInfo, numToDrain int) []WorkerInfo {
+	if numToDrain >= len(workers) {
+		// Drain all workers
+		return workers
+	}
+
+	// Separate workers into categories
+	var nonHealthy, notRunning, healthyRunning []WorkerInfo
+	for _, w := range workers {
+		if !w.Healthy {
+			nonHealthy = append(nonHealthy, w)
+		} else if w.State.State != NovitaStatusRunning {
+			notRunning = append(notRunning, w)
+		} else {
+			healthyRunning = append(healthyRunning, w)
+		}
+	}
+
+	// Select workers in priority order
+	selected := make([]WorkerInfo, 0, numToDrain)
+
+	// First, add non-healthy workers
+	for _, w := range nonHealthy {
+		if len(selected) >= numToDrain {
+			break
+		}
+		selected = append(selected, w)
+	}
+
+	// Then, add not running workers
+	for _, w := range notRunning {
+		if len(selected) >= numToDrain {
+			break
+		}
+		selected = append(selected, w)
+	}
+
+	// Finally, add healthy running workers if needed
+	for _, w := range healthyRunning {
+		if len(selected) >= numToDrain {
+			break
+		}
+		selected = append(selected, w)
+	}
+
+	return selected
 }
 
 // GetAppStatus retrieves application status
@@ -398,6 +538,9 @@ func (p *NovitaDeploymentProvider) pollEndpointStates(ctx context.Context) {
 		return
 	}
 
+	// Collect all current worker IDs for deletion detection
+	currentWorkerIDs := make(map[string]bool)
+
 	// Process each endpoint
 	for _, item := range resp.Endpoints {
 		endpointName := item.Name
@@ -433,7 +576,16 @@ func (p *NovitaDeploymentProvider) pollEndpointStates(ctx context.Context) {
 				Conditions:        p.buildConditions(status),
 			})
 		}
+
+		// Process worker-level changes
+		for _, worker := range item.Workers {
+			currentWorkerIDs[worker.ID] = true
+			p.processWorkerState(endpointName, &worker)
+		}
 	}
+
+	// Detect deleted workers
+	p.detectDeletedWorkers(currentWorkerIDs)
 }
 
 // getEndpointStateFromListItem extracts state from list item
@@ -527,6 +679,193 @@ func (p *NovitaDeploymentProvider) triggerReplicaCallbacks(event interfaces.Repl
 			cb(e)
 		}(entry.callback, event)
 	}
+}
+
+// processWorkerState processes a single worker's state and detects changes
+func (p *NovitaDeploymentProvider) processWorkerState(endpoint string, worker *WorkerInfo) {
+	if worker == nil {
+		return
+	}
+
+	workerID := worker.ID
+	currentState := &workerState{
+		ID:       workerID,
+		Endpoint: endpoint,
+		State:    worker.State.State,
+		Healthy:  worker.Healthy,
+	}
+
+	previousStateInterface, exists := p.workerStates.Load(workerID)
+
+	if !exists {
+		// New worker - trigger status change callback
+		p.workerStates.Store(workerID, currentState)
+		logger.Infof("New worker detected: %s (endpoint: %s, state: %s)", workerID, endpoint, worker.State.State)
+		p.notifyWorkerStatusChange(workerID, endpoint, p.workerToPodInfo(worker))
+		return
+	}
+
+	previousState := previousStateInterface.(*workerState)
+	if p.hasWorkerStateChanged(previousState, currentState) {
+		// State changed - trigger status change callback
+		p.workerStates.Store(workerID, currentState)
+		logger.Infof("Worker state changed: %s (endpoint: %s, state: %s -> %s)",
+			workerID, endpoint, previousState.State, currentState.State)
+		p.notifyWorkerStatusChange(workerID, endpoint, p.workerToPodInfo(worker))
+	}
+}
+
+// hasWorkerStateChanged checks if the worker state has changed
+func (p *NovitaDeploymentProvider) hasWorkerStateChanged(previous, current *workerState) bool {
+	return previous.State != current.State || previous.Healthy != current.Healthy
+}
+
+// detectDeletedWorkers detects workers that have been deleted
+func (p *NovitaDeploymentProvider) detectDeletedWorkers(currentWorkerIDs map[string]bool) {
+	p.workerStates.Range(func(key, value interface{}) bool {
+		workerID := key.(string)
+		if !currentWorkerIDs[workerID] {
+			state := value.(*workerState)
+			// Worker has been deleted
+			logger.Infof("Worker deleted: %s (endpoint: %s)", workerID, state.Endpoint)
+			p.workerStates.Delete(workerID)
+			p.notifyWorkerDelete(workerID, state.Endpoint)
+		}
+		return true
+	})
+}
+
+// workerToPodInfo converts Novita WorkerInfo to interfaces.PodInfo
+func (p *NovitaDeploymentProvider) workerToPodInfo(worker *WorkerInfo) *interfaces.PodInfo {
+	if worker == nil {
+		return nil
+	}
+
+	status := mapNovitaStatusToWaverless(worker.State.State)
+
+	info := &interfaces.PodInfo{
+		Name:    worker.ID,
+		Phase:   worker.State.State,
+		Status:  status,
+		Reason:  worker.State.Error,
+		Message: worker.State.Message,
+	}
+
+	// Set Ready status based on Healthy flag
+	if worker.Healthy && worker.State.State == NovitaStatusRunning {
+		info.Reason = "Ready"
+		info.Message = "Worker is healthy and running"
+	}
+
+	return info
+}
+
+// notifyWorkerStatusChange notifies all registered callbacks about worker status change
+func (p *NovitaDeploymentProvider) notifyWorkerStatusChange(workerID, endpoint string, info *interfaces.PodInfo) {
+	p.workerStatusCallbacksLock.RLock()
+	callbacks := make([]WorkerStatusChangeCallback, 0, len(p.workerStatusCallbacks))
+	for _, cb := range p.workerStatusCallbacks {
+		callbacks = append(callbacks, cb)
+	}
+	p.workerStatusCallbacksLock.RUnlock()
+
+	for _, cb := range callbacks {
+		cb := cb // capture for goroutine
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Errorf("Panic in worker status change callback: %v", r)
+				}
+			}()
+			cb(workerID, endpoint, info)
+		}()
+	}
+}
+
+// notifyWorkerDelete notifies all registered callbacks about worker deletion
+func (p *NovitaDeploymentProvider) notifyWorkerDelete(workerID, endpoint string) {
+	p.workerDeleteCallbacksLock.RLock()
+	callbacks := make([]WorkerDeleteCallback, 0, len(p.workerDeleteCallbacks))
+	for _, cb := range p.workerDeleteCallbacks {
+		callbacks = append(callbacks, cb)
+	}
+	p.workerDeleteCallbacksLock.RUnlock()
+
+	for _, cb := range callbacks {
+		cb := cb // capture for goroutine
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Errorf("Panic in worker delete callback: %v", r)
+				}
+			}()
+			cb(workerID, endpoint)
+		}()
+	}
+}
+
+// WatchPodStatusChange registers a callback to observe worker status changes
+// This is the Novita equivalent of K8s WatchPodStatusChange
+func (p *NovitaDeploymentProvider) WatchPodStatusChange(ctx context.Context, callback WorkerStatusChangeCallback) error {
+	if callback == nil {
+		return fmt.Errorf("worker status change callback is nil")
+	}
+
+	p.workerStatusCallbacksLock.Lock()
+	callbackID := atomic.AddUint64(&p.nextCallbackID, 1)
+	p.workerStatusCallbacks[callbackID] = callback
+	p.workerStatusCallbacksLock.Unlock()
+
+	logger.Infof("Registered worker status change callback (ID: %d) for Novita", callbackID)
+
+	// Start watcher if not already running
+	if p.watcherRunning.CompareAndSwap(false, true) {
+		logger.Infof("Starting Novita watcher (poll interval: %v)", p.pollInterval)
+		go p.runReplicaWatcher(ctx)
+	}
+
+	// Unregister callback when context is done
+	go func() {
+		<-ctx.Done()
+		p.workerStatusCallbacksLock.Lock()
+		delete(p.workerStatusCallbacks, callbackID)
+		p.workerStatusCallbacksLock.Unlock()
+		logger.Infof("Unregistered worker status change callback (ID: %d)", callbackID)
+	}()
+
+	return nil
+}
+
+// WatchPodDelete registers a callback to observe worker deletions
+// This is the Novita equivalent of K8s WatchPodDelete
+func (p *NovitaDeploymentProvider) WatchPodDelete(ctx context.Context, callback WorkerDeleteCallback) error {
+	if callback == nil {
+		return fmt.Errorf("worker delete callback is nil")
+	}
+
+	p.workerDeleteCallbacksLock.Lock()
+	callbackID := atomic.AddUint64(&p.nextCallbackID, 1)
+	p.workerDeleteCallbacks[callbackID] = callback
+	p.workerDeleteCallbacksLock.Unlock()
+
+	logger.Infof("Registered worker delete callback (ID: %d) for Novita", callbackID)
+
+	// Start watcher if not already running
+	if p.watcherRunning.CompareAndSwap(false, true) {
+		logger.Infof("Starting Novita watcher (poll interval: %v)", p.pollInterval)
+		go p.runReplicaWatcher(ctx)
+	}
+
+	// Unregister callback when context is done
+	go func() {
+		<-ctx.Done()
+		p.workerDeleteCallbacksLock.Lock()
+		delete(p.workerDeleteCallbacks, callbackID)
+		p.workerDeleteCallbacksLock.Unlock()
+		logger.Infof("Unregistered worker delete callback (ID: %d)", callbackID)
+	}()
+
+	return nil
 }
 
 // StopReplicaWatcher stops the replica watcher
