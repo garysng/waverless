@@ -123,20 +123,6 @@ func (r *EndpointRepository) UpdateRuntimeState(ctx context.Context, endpointNam
 				}
 			}
 		}
-
-		// CRITICAL FIX: Prevent race condition between K8s informer and autoscaler
-		// If database shows replicas > 0 but K8s informer reports Stopped (Spec.Replicas == 0),
-		// this is likely a race condition where autoscaler has already scaled up but K8s informer
-		// is still processing the old state. In this case, keep status as Pending instead of Stopped.
-		if status == "Stopped" && endpoint.Replicas > 0 {
-			// Check if the incoming runtimeState also shows replicas > 0
-			// This handles the case where K8s deployment was just updated
-			if incomingReplicas, ok := runtimeState["replicas"].(int32); ok && incomingReplicas > 0 {
-				status = "Pending"
-			} else if incomingReplicas, ok := runtimeState["replicas"].(int); ok && incomingReplicas > 0 {
-				status = "Pending"
-			}
-		}
 	}
 
 	return r.ds.DB(ctx).Model(&Endpoint{}).
