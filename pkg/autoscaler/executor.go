@@ -107,6 +107,13 @@ func (e *Executor) scaleUp(ctx context.Context, decision *ScaleDecision) error {
 		meta.Replicas = decision.DesiredReplicas
 		meta.LastScaleTime = time.Now()
 		meta.UpdatedAt = time.Now()
+		// Fix status if it was incorrectly set to Stopped by K8s informer race condition
+		// When scaling up, status should be Pending (waiting for pods to be ready)
+		if meta.Status == "Stopped" && decision.DesiredReplicas > 0 {
+			logger.InfoCtx(ctx, "fixing status for %s: Stopped -> Pending (scaling up to %d replicas)",
+				decision.Endpoint, decision.DesiredReplicas)
+			meta.Status = "Pending"
+		}
 		if err := e.endpointService.UpdateEndpoint(ctx, meta); err != nil {
 			logger.ErrorCtx(ctx, "failed to update endpoint metadata: %v", err)
 		}
@@ -408,9 +415,25 @@ func generateEventID() string {
 	return fmt.Sprintf("evt_%d", time.Now().UnixNano())
 }
 
-// isOrphanedEndpoint checks if an endpoint is orphaned (no deployment exists in K8s)
+// isOrphanedEndpoint checks if an endpoint is orphaned (no deployment exists)
 // An orphaned endpoint has replicas > 0 in database but no actual deployment
+//
+// IMPORTANT: This check is ONLY for K8s provider, not for Novita or other providers
+// because different providers have different behaviors for GetApp when endpoint is being created
+//
+// Conditions to be considered orphaned (ALL must be true):
+// 1. Using K8s provider (not Novita)
+// 2. Deployment doesn't exist in K8s
+// 3. Endpoint was created more than 10 minutes ago (not a new deployment)
+// 4. Has had worker records before (was deployed successfully at some point)
 func (e *Executor) isOrphanedEndpoint(ctx context.Context, decision *ScaleDecision) bool {
+	// Only apply this logic for K8s provider
+	// Novita and other providers have different behaviors
+	if e.k8sProvider == nil {
+		logger.DebugCtx(ctx, "endpoint %s: skipping orphan check (not K8s provider)", decision.Endpoint)
+		return false
+	}
+
 	// Check if deployment exists in K8s
 	_, err := e.deploymentProvider.GetApp(ctx, decision.Endpoint)
 	if err == nil {
@@ -418,8 +441,46 @@ func (e *Executor) isOrphanedEndpoint(ctx context.Context, decision *ScaleDecisi
 		return false
 	}
 
-	// Deployment doesn't exist, this is an orphaned endpoint
-	logger.InfoCtx(ctx, "endpoint %s: deployment not found in K8s, marking as orphaned", decision.Endpoint)
+	// Deployment doesn't exist, but we need more checks to confirm it's truly orphaned
+	// Get endpoint metadata to check creation time
+	meta, err := e.endpointService.GetEndpoint(ctx, decision.Endpoint)
+	if err != nil {
+		logger.WarnCtx(ctx, "endpoint %s: failed to get metadata for orphan check: %v", decision.Endpoint, err)
+		return false
+	}
+
+	// Check 1: Endpoint must be created more than 10 minutes ago
+	// This prevents marking newly created endpoints as orphaned
+	endpointAge := time.Since(meta.CreatedAt)
+	if endpointAge < 10*time.Minute {
+		logger.DebugCtx(ctx, "endpoint %s: skipping orphan check (created only %.1f minutes ago)",
+			decision.Endpoint, endpointAge.Minutes())
+		return false
+	}
+
+	// Check 2: Must have had worker records before (indicates it was deployed at some point)
+	// If no workers ever existed, it might be a deployment that never succeeded
+	workers, err := e.workerLister.ListWorkers(ctx, decision.Endpoint)
+	if err != nil {
+		logger.WarnCtx(ctx, "endpoint %s: failed to list workers for orphan check: %v", decision.Endpoint, err)
+		return false
+	}
+
+	if len(workers) == 0 {
+		// No worker records at all - this could be a deployment that's still initializing
+		// or one that failed before any worker registered
+		// Be conservative and don't mark as orphaned
+		logger.DebugCtx(ctx, "endpoint %s: skipping orphan check (no worker records found)", decision.Endpoint)
+		return false
+	}
+
+	// All checks passed - this is truly an orphaned endpoint:
+	// - K8s provider
+	// - No deployment exists
+	// - Created more than 10 minutes ago
+	// - Had workers before (so it was deployed successfully at some point)
+	logger.InfoCtx(ctx, "endpoint %s: confirmed orphaned (no deployment, age=%.1f min, had %d workers)",
+		decision.Endpoint, endpointAge.Minutes(), len(workers))
 	return true
 }
 
