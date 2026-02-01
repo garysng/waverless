@@ -77,16 +77,17 @@ func (h *EndpointHandler) CreateEndpoint(c *gin.Context) {
 	}
 
 	providerReq := &interfaces.DeployRequest{
-		Endpoint:     req.Endpoint,
-		SpecName:     req.SpecName,
-		Image:        req.Image,
-		Replicas:     req.Replicas,
-		GpuCount:     req.GpuCount,
-		TaskTimeout:  req.TaskTimeout,
-		Env:          req.Env,
-		VolumeMounts: req.VolumeMounts,
-		ShmSize:      req.ShmSize,
-		EnablePtrace: req.EnablePtrace,
+		Endpoint:      req.Endpoint,
+		SpecName:      req.SpecName,
+		Image:         req.Image,
+		Replicas:      req.Replicas,
+		GpuCount:      req.GpuCount,
+		TaskTimeout:   req.TaskTimeout,
+		Env:           req.Env,
+		VolumeMounts:  req.VolumeMounts,
+		ShmSize:       req.ShmSize,
+		EnablePtrace:  req.EnablePtrace,
+		ValidateImage: req.ValidateImage,
 	}
 	if req.RegistryCredential != nil {
 		providerReq.RegistryCredential = &interfaces.RegistryCredential{

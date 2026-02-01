@@ -79,10 +79,17 @@ func (m *DeploymentManager) Deploy(ctx context.Context, req *interfaces.DeployRe
 	}
 
 	// Step 2: Check image existence if validation is enabled (Requirements 2.1, 2.2, 2.3)
-	logger.InfoCtx(ctx, "Image validation config: validator=%v, config=%v, enabled=%v, image=%s",
-		m.imageValidator != nil, m.imageConfig != nil, m.imageConfig != nil && m.imageConfig.Enabled, req.Image)
+	// Use request-level validateImage if provided, otherwise use config-level setting
+	shouldValidateImage := m.imageConfig != nil && m.imageConfig.Enabled
+	if req.ValidateImage != nil {
+		shouldValidateImage = *req.ValidateImage
+	}
 
-	if m.imageValidator != nil && m.imageConfig != nil && m.imageConfig.Enabled && req.Image != "" {
+	logger.InfoCtx(ctx, "Image validation config: validator=%v, config=%v, configEnabled=%v, requestValidateImage=%v, shouldValidate=%v, image=%s",
+		m.imageValidator != nil, m.imageConfig != nil, m.imageConfig != nil && m.imageConfig.Enabled,
+		req.ValidateImage, shouldValidateImage, req.Image)
+
+	if m.imageValidator != nil && shouldValidateImage && req.Image != "" {
 		logger.InfoCtx(ctx, "Checking image existence for endpoint %s, image: %s", req.Endpoint, req.Image)
 
 		// Convert registry credential if provided
