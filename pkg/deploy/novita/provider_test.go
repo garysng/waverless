@@ -225,6 +225,18 @@ func (m *mockClient) DeleteEndpoint(ctx context.Context, endpointID string) erro
 	return nil
 }
 
+func (m *mockClient) CreateRegistryAuth(ctx context.Context, req *CreateRegistryAuthRequest) (*CreateRegistryAuthResponse, error) {
+	return &CreateRegistryAuthResponse{ID: "auth-123"}, nil
+}
+
+func (m *mockClient) ListRegistryAuths(ctx context.Context) (*ListRegistryAuthsResponse, error) {
+	return &ListRegistryAuthsResponse{Data: []RegistryAuthItem{}}, nil
+}
+
+func (m *mockClient) DeleteRegistryAuth(ctx context.Context, authID string) error {
+	return nil
+}
+
 // createTestSpecsFile creates a temporary specs.yaml file for testing
 func createTestSpecsFile(t *testing.T) string {
 	tmpDir := t.TempDir()

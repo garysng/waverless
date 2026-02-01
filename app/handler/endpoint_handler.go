@@ -18,6 +18,7 @@ import (
 	"waverless/pkg/deploy/k8s"
 	"waverless/pkg/interfaces"
 	"waverless/pkg/logger"
+	"waverless/pkg/status"
 
 	"github.com/gin-gonic/gin"
 )
@@ -474,6 +475,7 @@ func (h *EndpointHandler) getEndpointFromRuntimeOnly(c *gin.Context, name string
 		AvailableReplicas: int(app.AvailableReplicas),
 		ShmSize:           app.ShmSize,
 		VolumeMounts:      app.VolumeMounts,
+		HealthStatus:      "HEALTHY", // Default to HEALTHY when metadata unavailable
 	}
 
 	c.JSON(http.StatusOK, result)
@@ -505,6 +507,7 @@ func (h *EndpointHandler) listEndpointsFromRuntimeOnly(c *gin.Context) {
 			AvailableReplicas: int(app.AvailableReplicas),
 			ShmSize:           app.ShmSize,
 			VolumeMounts:      app.VolumeMounts,
+			HealthStatus:      "HEALTHY", // Default to HEALTHY when metadata unavailable
 		}
 	}
 
@@ -653,6 +656,10 @@ func (h *EndpointHandler) GetEndpointWorkers(c *gin.Context) {
 		PodStartedAt      string   `json:"podStartedAt,omitempty"`
 		PodRestartCount   int32    `json:"podRestartCount,omitempty"`
 		DeletionTimestamp string   `json:"deletionTimestamp,omitempty"`
+		// Failure information fields
+		FailureType       string `json:"failureType,omitempty"`
+		FailureReason     string `json:"failureReason,omitempty"`
+		FailureSuggestion string `json:"failureSuggestion,omitempty"`
 	}
 
 	result := make([]WorkerWithPodInfo, 0, len(workers))
@@ -681,6 +688,18 @@ func (h *EndpointHandler) GetEndpointWorkers(c *gin.Context) {
 		}
 		if worker.LastTaskTime != nil {
 			workerWithPod.LastTaskTime = worker.LastTaskTime.Format("2006-01-02T15:04:05Z07:00")
+		}
+
+		// Add failure information if available
+		if worker.FailureType != "" {
+			workerWithPod.FailureType = worker.FailureType
+			workerWithPod.FailureReason = worker.FailureReason
+			// Get suggestion using status sanitizer
+			sanitizer := status.NewStatusSanitizer()
+			sanitized := sanitizer.Sanitize(interfaces.FailureType(worker.FailureType), worker.FailureReason, "")
+			if sanitized != nil {
+				workerWithPod.FailureSuggestion = sanitized.Suggestion
+			}
 		}
 
 		// Extract from runtime_state

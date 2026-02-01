@@ -21,6 +21,7 @@ type Executor struct {
 	workerLister       interfaces.WorkerLister    // For smart scale-down
 	taskRepo           *mysql.TaskRepository      // For checking running tasks in database
 	k8sProvider        *k8s.K8sDeploymentProvider // For pod draining & deletion
+	endpointRepo       *mysql.EndpointRepository  // For checking endpoint health status
 }
 
 // NewExecutor creates executor
@@ -30,6 +31,7 @@ func NewExecutor(
 	scalingEventRepo *mysql.ScalingEventRepository,
 	workerLister interfaces.WorkerLister,
 	taskRepo *mysql.TaskRepository,
+	endpointRepo *mysql.EndpointRepository,
 ) *Executor {
 	// Try to get K8sDeploymentProvider for pod-level operations
 	k8sProvider, _ := deploymentProvider.(*k8s.K8sDeploymentProvider)
@@ -41,6 +43,7 @@ func NewExecutor(
 		workerLister:       workerLister,
 		taskRepo:           taskRepo,
 		k8sProvider:        k8sProvider,
+		endpointRepo:       endpointRepo,
 	}
 }
 
@@ -87,6 +90,37 @@ func (e *Executor) ExecuteDecisions(ctx context.Context, decisions []*ScaleDecis
 
 // scaleUp executes scale-up
 func (e *Executor) scaleUp(ctx context.Context, decision *ScaleDecision) error {
+	// Check if endpoint is blocked due to image failure (Property 8: Failed Endpoint Prevents New Pods)
+	// Validates: Requirements 5.5
+	if e.endpointRepo != nil {
+		blocked, reason, err := e.endpointRepo.IsBlockedDueToImageFailure(ctx, decision.Endpoint)
+		if err != nil {
+			logger.WarnCtx(ctx, "failed to check endpoint health status: %v", err)
+			// Continue with scale-up if check fails (fail-open for availability)
+		} else if blocked {
+			logger.WarnCtx(ctx, "scale up blocked for %s: endpoint is UNHEALTHY due to image issues - %s",
+				decision.Endpoint, reason)
+
+			// Record blocked event
+			event := &mysql.ScalingEvent{
+				EventID:      generateEventID(),
+				Endpoint:     decision.Endpoint,
+				Timestamp:    time.Now(),
+				Action:       "scale_up_blocked_image_failure",
+				FromReplicas: decision.CurrentReplicas,
+				ToReplicas:   decision.DesiredReplicas,
+				Reason:       fmt.Sprintf("Endpoint is UNHEALTHY due to image issues: %s. Please update the image configuration.", reason),
+				QueueLength:  decision.QueueLength,
+				Priority:     decision.Priority,
+			}
+			if err := e.scalingEventRepo.Create(ctx, event); err != nil {
+				logger.ErrorCtx(ctx, "failed to save blocked event: %v", err)
+			}
+
+			return fmt.Errorf("scale up blocked: endpoint %s is UNHEALTHY due to image issues, please update the image configuration", decision.Endpoint)
+		}
+	}
+
 	logger.InfoCtx(ctx, "scaling up %s from %d to %d replicas (reason: %s)",
 		decision.Endpoint, decision.CurrentReplicas, decision.DesiredReplicas, decision.Reason)
 
