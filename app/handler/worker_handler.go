@@ -452,6 +452,7 @@ type WorkerDetailResponse struct {
 	CreatedAt            string  `json:"createdAt"`
 	UpdatedAt            string  `json:"updatedAt"`
 	TerminatedAt         *string `json:"terminatedAt,omitempty"`
+	PodStartedAt         *string `json:"podStartedAt,omitempty"`
 
 	// Failure information fields (Requirements 6.1, 6.2)
 	FailureType       string  `json:"failureType,omitempty"`       // IMAGE_PULL_FAILED, CONTAINER_CRASH, RESOURCE_LIMIT, TIMEOUT, UNKNOWN
@@ -501,6 +502,12 @@ func (h *WorkerHandler) GetWorkerByID(c *gin.Context) {
 	if worker.TerminatedAt != nil {
 		terminatedAt := worker.TerminatedAt.Format("2006-01-02T15:04:05Z07:00")
 		response.TerminatedAt = &terminatedAt
+	}
+
+	// Add pod started timestamp if available
+	if worker.PodStartedAt != nil {
+		podStartedAt := worker.PodStartedAt.Format("2006-01-02T15:04:05Z07:00")
+		response.PodStartedAt = &podStartedAt
 	}
 
 	// Add failure information if available
