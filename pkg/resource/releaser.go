@@ -242,6 +242,26 @@ func (r *ResourceReleaser) CheckAndRelease(ctx context.Context) {
 		endpointsToUpdate[endpoint] = true
 	}
 
+	// Step 5: Check UNHEALTHY/DEGRADED endpoints that may have recovered
+	// When all failed workers become OFFLINE, the endpoint should recover to HEALTHY
+	unhealthyEndpoints, err := r.endpointRepo.GetByHealthStatus(ctx, string(model.HealthStatusUnhealthy))
+	if err != nil {
+		logger.Error("Failed to get unhealthy endpoints", zap.Error(err))
+	} else {
+		for _, ep := range unhealthyEndpoints {
+			endpointsToUpdate[ep.Endpoint] = true
+		}
+	}
+
+	degradedEndpoints, err := r.endpointRepo.GetByHealthStatus(ctx, string(model.HealthStatusDegraded))
+	if err != nil {
+		logger.Error("Failed to get degraded endpoints", zap.Error(err))
+	} else {
+		for _, ep := range degradedEndpoints {
+			endpointsToUpdate[ep.Endpoint] = true
+		}
+	}
+
 	for endpoint := range endpointsToUpdate {
 		if err := r.UpdateEndpointHealthStatus(ctx, endpoint); err != nil {
 			logger.Error("Failed to update endpoint health status",

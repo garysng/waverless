@@ -54,9 +54,21 @@ func NewK8sWorkerStatusMonitor(manager *Manager, workerRepo *mysql.WorkerReposit
 // - CrashLoopBackOff, Error -> CONTAINER_CRASH
 // - OutOfMemory, OutOfCpu -> RESOURCE_LIMIT
 //
+// IMPORTANT: Pods with DeletionTimestamp set are being gracefully terminated
+// (e.g., scale-down, manual deletion) and should NOT be marked as failures.
+// The "Error" reason during termination is expected K8s behavior, not a crash.
+//
 // Validates: Requirements 3.2, 3.3
 func (m *K8sWorkerStatusMonitor) DetectFailure(info *interfaces.PodInfo) *interfaces.WorkerFailureInfo {
 	if info == nil {
+		return nil
+	}
+
+	// CRITICAL: Skip failure detection for pods being gracefully terminated.
+	// When K8s deletes a pod (scale-down, manual deletion), the pod's reason
+	// becomes "Error" which would be misclassified as CONTAINER_CRASH.
+	// DeletionTimestamp being set indicates intentional termination, not a crash.
+	if info.DeletionTimestamp != "" {
 		return nil
 	}
 

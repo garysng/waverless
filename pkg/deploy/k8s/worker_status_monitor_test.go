@@ -287,6 +287,54 @@ func TestDetectFailure(t *testing.T) {
 			expectFailure: true,
 			expectedType:  interfaces.FailureTypeImagePull,
 		},
+		// DeletionTimestamp tests - pods being gracefully terminated should NOT be marked as failures
+		{
+			name: "Error reason with DeletionTimestamp - graceful termination, not a crash",
+			info: &interfaces.PodInfo{
+				Name:              "test-pod",
+				Reason:            "Error",
+				Message:           "Container exited with error",
+				Status:            "Terminated",
+				Phase:             "Failed",
+				DeletionTimestamp: "2026-02-01T13:30:47Z",
+			},
+			expectFailure: false, // Should NOT be marked as failure because DeletionTimestamp is set
+		},
+		{
+			name: "CrashLoopBackOff with DeletionTimestamp - pod being deleted",
+			info: &interfaces.PodInfo{
+				Name:              "test-pod",
+				Reason:            "CrashLoopBackOff",
+				Message:           "Container keeps crashing",
+				Status:            "Waiting",
+				DeletionTimestamp: "2026-02-01T13:30:47Z",
+			},
+			expectFailure: false, // Should NOT be marked as failure because DeletionTimestamp is set
+		},
+		{
+			name: "ImagePullBackOff with DeletionTimestamp - pod being deleted",
+			info: &interfaces.PodInfo{
+				Name:              "test-pod",
+				Reason:            "ImagePullBackOff",
+				Message:           "Back-off pulling image",
+				Status:            "Waiting",
+				DeletionTimestamp: "2026-02-01T13:30:47Z",
+			},
+			expectFailure: false, // Should NOT be marked as failure because DeletionTimestamp is set
+		},
+		{
+			name: "Error reason without DeletionTimestamp - real crash",
+			info: &interfaces.PodInfo{
+				Name:              "test-pod",
+				Reason:            "Error",
+				Message:           "Container exited with error",
+				Status:            "Terminated",
+				Phase:             "Failed",
+				DeletionTimestamp: "", // Empty - not being deleted
+			},
+			expectFailure: true,
+			expectedType:  interfaces.FailureTypeContainerCrash,
+		},
 	}
 
 	for _, tt := range tests {
