@@ -737,6 +737,144 @@ func (h *EndpointHandler) GetEndpointWorkers(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// GetEndpointWorkersForSync gets endpoint workers for Portal sync (includes recently terminated)
+// @Summary Get endpoint workers for sync
+// @Description Get all workers for specified endpoint including recently terminated OFFLINE workers (for Portal billing sync)
+// @Tags Endpoints
+// @Produce json
+// @Param name path string true "Endpoint name"
+// @Success 200 {array} WorkerWithPodInfo
+// @Router /api/v1/endpoints/{name}/workers/sync [get]
+func (h *EndpointHandler) GetEndpointWorkersForSync(c *gin.Context) {
+	ctx := c.Request.Context()
+	endpoint := c.Param("name")
+
+	if h.workerService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "worker service unavailable"})
+		return
+	}
+
+	workers, err := h.workerService.ListWorkersForSync(ctx, endpoint)
+	if err != nil {
+		logger.ErrorCtx(ctx, "Failed to get workers for sync endpoint %s: %v", endpoint, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Return structure matching frontend expectations
+	type WorkerWithPodInfo struct {
+		ID                string   `json:"id"`
+		Endpoint          string   `json:"endpoint"`
+		PodName           string   `json:"pod_name,omitempty"`
+		Status            string   `json:"status"`
+		Concurrency       int      `json:"concurrency"`
+		CurrentJobs       int      `json:"current_jobs"`
+		JobsInProgress    []string `json:"jobs_in_progress"`
+		LastHeartbeat     string   `json:"last_heartbeat"`
+		LastTaskTime      string   `json:"last_task_time,omitempty"`
+		Version           string   `json:"version,omitempty"`
+		RegisteredAt      string   `json:"registered_at"`
+		PodPhase          string   `json:"podPhase,omitempty"`
+		PodStatus         string   `json:"podStatus,omitempty"`
+		PodReason         string   `json:"podReason,omitempty"`
+		PodMessage        string   `json:"podMessage,omitempty"`
+		PodIP             string   `json:"podIP,omitempty"`
+		PodNodeName       string   `json:"podNodeName,omitempty"`
+		PodCreatedAt      string   `json:"podCreatedAt,omitempty"`
+		PodStartedAt      string   `json:"podStartedAt,omitempty"`
+		PodRestartCount   int32    `json:"podRestartCount,omitempty"`
+		DeletionTimestamp string   `json:"deletionTimestamp,omitempty"`
+		TerminatedAt      string   `json:"terminatedAt,omitempty"`
+		// Failure information fields
+		FailureType       string `json:"failureType,omitempty"`
+		FailureReason     string `json:"failureReason,omitempty"`
+		FailureSuggestion string `json:"failureSuggestion,omitempty"`
+		FailureOccurredAt string `json:"failureOccurredAt,omitempty"`
+	}
+
+	result := make([]WorkerWithPodInfo, 0, len(workers))
+
+	for _, worker := range workers {
+		// Parse jobs_in_progress JSON
+		var jobsInProgress []string
+		if worker.JobsInProgress != "" {
+			json.Unmarshal([]byte(worker.JobsInProgress), &jobsInProgress)
+		}
+		if jobsInProgress == nil {
+			jobsInProgress = []string{}
+		}
+
+		workerWithPod := WorkerWithPodInfo{
+			ID:             worker.WorkerID,
+			Endpoint:       worker.Endpoint,
+			PodName:        worker.PodName,
+			Status:         worker.Status,
+			Concurrency:    worker.Concurrency,
+			CurrentJobs:    worker.CurrentJobs,
+			JobsInProgress: jobsInProgress,
+			LastHeartbeat:  worker.LastHeartbeat.Format("2006-01-02T15:04:05Z07:00"),
+			Version:        worker.Version,
+			RegisteredAt:   worker.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		}
+		if worker.LastTaskTime != nil {
+			workerWithPod.LastTaskTime = worker.LastTaskTime.Format("2006-01-02T15:04:05Z07:00")
+		}
+		if worker.PodStartedAt != nil {
+			workerWithPod.PodStartedAt = worker.PodStartedAt.Format("2006-01-02T15:04:05Z07:00")
+		}
+		if worker.TerminatedAt != nil {
+			workerWithPod.TerminatedAt = worker.TerminatedAt.Format("2006-01-02T15:04:05Z07:00")
+		}
+
+		// Add failure information if available
+		if worker.FailureType != "" {
+			workerWithPod.FailureType = worker.FailureType
+			workerWithPod.FailureReason = worker.FailureReason
+			// Get suggestion using status sanitizer
+			sanitizer := status.NewStatusSanitizer()
+			sanitized := sanitizer.Sanitize(interfaces.FailureType(worker.FailureType), worker.FailureReason, "")
+			if sanitized != nil {
+				workerWithPod.FailureSuggestion = sanitized.Suggestion
+			}
+			if worker.FailureOccurredAt != nil {
+				workerWithPod.FailureOccurredAt = worker.FailureOccurredAt.Format("2006-01-02T15:04:05Z07:00")
+			}
+		}
+
+		// Extract from runtime_state
+		if rs := worker.RuntimeState; rs != nil {
+			if v, ok := rs["phase"].(string); ok {
+				workerWithPod.PodPhase = v
+			}
+			if v, ok := rs["status"].(string); ok {
+				workerWithPod.PodStatus = v
+			}
+			if v, ok := rs["reason"].(string); ok {
+				workerWithPod.PodReason = v
+			}
+			if v, ok := rs["message"].(string); ok {
+				workerWithPod.PodMessage = v
+			}
+			if v, ok := rs["ip"].(string); ok {
+				workerWithPod.PodIP = v
+			}
+			if v, ok := rs["nodeName"].(string); ok {
+				workerWithPod.PodNodeName = v
+			}
+			if v, ok := rs["createdAt"].(string); ok {
+				workerWithPod.PodCreatedAt = v
+			}
+			if v, ok := rs["startedAt"].(string); ok && workerWithPod.PodStartedAt == "" {
+				workerWithPod.PodStartedAt = v
+			}
+		}
+
+		result = append(result, workerWithPod)
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true // Allow all origins, production should use stricter checks

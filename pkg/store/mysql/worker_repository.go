@@ -251,6 +251,18 @@ func (r *WorkerRepository) GetByEndpoint(ctx context.Context, endpoint string) (
 	return workers, err
 }
 
+// GetByEndpointForSync lists workers for an endpoint including recently terminated ones
+// Used by Portal for billing sync - includes OFFLINE workers terminated within the last hour
+func (r *WorkerRepository) GetByEndpointForSync(ctx context.Context, endpoint string) ([]*model.Worker, error) {
+	var workers []*model.Worker
+	oneHourAgo := time.Now().Add(-1 * time.Hour)
+	err := r.ds.DB(ctx).Where(
+		"endpoint = ? AND (status != ? OR (status = ? AND terminated_at > ?))",
+		endpoint, constants.WorkerStatusOffline, constants.WorkerStatusOffline, oneHourAgo,
+	).Find(&workers).Error
+	return workers, err
+}
+
 // GetAll lists all active workers
 func (r *WorkerRepository) GetAll(ctx context.Context) ([]*model.Worker, error) {
 	var workers []*model.Worker
