@@ -226,7 +226,7 @@ func (m *mockClient) DeleteEndpoint(ctx context.Context, endpointID string) erro
 }
 
 func (m *mockClient) CreateRegistryAuth(ctx context.Context, req *CreateRegistryAuthRequest) (*CreateRegistryAuthResponse, error) {
-	return &CreateRegistryAuthResponse{ID: "mock-auth-id"}, nil
+	return &CreateRegistryAuthResponse{ID: "auth-123"}, nil
 }
 
 func (m *mockClient) ListRegistryAuths(ctx context.Context) (*ListRegistryAuthsResponse, error) {
